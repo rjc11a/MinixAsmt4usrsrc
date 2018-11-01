@@ -13,7 +13,7 @@
  *   free_mem:	release a previously allocated chunk of memory
  *   mem_init:	initialize the tables when PM start up
  */
-
+/* alloc.c */
 #define _SYSTEM 1
 
 #include <minix/com.h>
