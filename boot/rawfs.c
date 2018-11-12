@@ -2,6 +2,7 @@
  *								23 Dec 1991
  *					     Based on readfs by Paul Polderman
  */
+#define nil 0
 #define _POSIX_SOURCE	1
 #define _MINIX		1
 #include <sys/types.h>
@@ -60,7 +61,7 @@ static char dirbuf[_MAX_BLOCK_SIZE];	/* Scratch/Directory block. */
 static block_t a_indir, a_dindir;	/* Addresses of the indirects. */
 static off_t dirpos;			/* Reading pos in a dir. */
 
-#define fsbuf(b)	(* (union fsdata_u *) (b))
+#define fsbuf(b)	(* (struct buf *) (b))
 
 #define	zone_shift	(super.s_log_zone_size)	/* zone to block ratio */
 
@@ -109,7 +110,6 @@ void r_stat(Ino_t inum, struct stat *stp)
 	block_t block;
 	block_t ino_block;
 	ino_t ino_offset;
-	union fsdata_u *blockbuf;
 
 	/* Calculate start of i-list */
 	block = START_BLOCK + super.s_imap_blocks + super.s_zmap_blocks;
@@ -120,14 +120,13 @@ void r_stat(Ino_t inum, struct stat *stp)
 	block += ino_block;
 
 	/* Fetch the block */
-	blockbuf = (union fsdata_u *) scratch;
-	readblock(block, (char *) blockbuf, block_size);
+	readblock(block, scratch, block_size);
 
 	if (super.s_magic == SUPER_V2 || super.s_magic == SUPER_V3) {
 		d2_inode *dip;
 		int i;
 
-		dip= &blockbuf->b__v2_ino[(unsigned int) ino_offset];
+		dip= &fsbuf(scratch).b_v2_ino[ino_offset];
 
 		curfil.i_mode= dip->d2_mode;
 		curfil.i_nlinks= dip->d2_nlinks;
@@ -143,7 +142,7 @@ void r_stat(Ino_t inum, struct stat *stp)
 		d1_inode *dip;
 		int i;
 
-		dip= &blockbuf->b__v1_ino[(unsigned int) ino_offset];
+		dip= &fsbuf(scratch).b_v1_ino[ino_offset];
 
 		curfil.i_mode= dip->d1_mode;
 		curfil.i_nlinks= dip->d1_nlinks;
@@ -264,8 +263,8 @@ off_t r_vir2abs(off_t virblk)
 
 		i = zone / (zone_t) nr_indirects;
 		ind_zone = (super.s_magic == SUPER_V2 || super.s_magic == SUPER_V3)
-				? fsbuf(dindir).b__v2_ind[i]
-				: fsbuf(dindir).b__v1_ind[i];
+				? fsbuf(dindir).b_v2_ind[i]
+				: fsbuf(dindir).b_v1_ind[i];
 		zone %= (zone_t) nr_indirects;
 	}
 	if (ind_zone == 0) return 0;
@@ -277,15 +276,15 @@ off_t r_vir2abs(off_t virblk)
 		a_indir= z;
 	}
 	zone = (super.s_magic == SUPER_V2 || super.s_magic == SUPER_V3)
-		? fsbuf(indir).b__v2_ind[(int) zone]
-		: fsbuf(indir).b__v1_ind[(int) zone];
+		? fsbuf(indir).b_v2_ind[(int) zone]
+		: fsbuf(indir).b_v1_ind[(int) zone];
 
 	/* Calculate absolute datablock number */
 	z = ((block_t) zone << zone_shift) + zone_index;
 	return z;
 }
 
-ino_t r_lookup(Ino_t cwd, const char *path)
+ino_t r_lookup(Ino_t cwd, char *path)
 /* Translates a pathname to an inode number.  This is just a nice utility
  * function, it only needs r_stat and r_readdir.
  */

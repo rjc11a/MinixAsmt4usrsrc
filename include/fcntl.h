@@ -11,7 +11,7 @@
 #define _FCNTL_H
 
 #ifndef _TYPES_H
-#include <minix/types.h>
+#include <sys/types.h>
 #endif
 
 /* These values are used for cmd in fcntl().  POSIX Table 6-1.  */
@@ -42,9 +42,6 @@
 /* File status flags for open() and fcntl().  POSIX Table 6-5. */
 #define O_APPEND       02000	/* set append mode */
 #define O_NONBLOCK     04000	/* no delay */
-#define O_REOPEN      010000	/* automatically re-open device after driver
-				 * restart
-				 */
 
 /* File access modes for open() and fcntl().  POSIX Table 6-6. */
 #define O_RDONLY           0	/* open(name, O_RDONLY) opens read only */
@@ -64,7 +61,7 @@ struct flock {
 };
 
 /* Function Prototypes. */
-_PROTOTYPE( int creat, (const char *_path, mode_t _mode)		);
+_PROTOTYPE( int creat, (const char *_path, _mnx_Mode_t _mode)		);
 _PROTOTYPE( int fcntl, (int _filedes, int _cmd, ...)	  		);
 _PROTOTYPE( int open,  (const char *_path, int _oflag, ...) 		);
 

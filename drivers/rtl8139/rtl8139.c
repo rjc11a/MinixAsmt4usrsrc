@@ -4,6 +4,45 @@
  * This file contains a ethernet device driver for Realtek rtl8139 based
  * ethernet cards.
  *
+ * The valid messages and their parameters are:
+ *
+ *   m_type	  DL_PORT    DL_PROC   DL_COUNT   DL_MODE   DL_ADDR   DL_GRANT
+ * |------------+----------+---------+----------+---------+---------+---------|
+ * | HARDINT	|          |         |          |         |         |	      |
+ * |------------|----------|---------|----------|---------|---------|---------|
+ * | DL_WRITE	| port nr  | proc nr | count    | mode    | address |	      |
+ * |------------|----------|---------|----------|---------|---------|---------|
+ * | DL_WRITEV	| port nr  | proc nr | count    | mode    | address |	      |
+ * |------------|----------|---------|----------|---------|---------|---------|
+ * | DL_WRITEV_S| port nr  | proc nr | count    | mode    |	    |  grant  |
+ * |------------|----------|---------|----------|---------|---------|---------|
+ * | DL_READ	| port nr  | proc nr | count    |         | address |	      |
+ * |------------|----------|---------|----------|---------|---------|---------|
+ * | DL_READV	| port nr  | proc nr | count    |         | address |	      |
+ * |------------|----------|---------|----------|---------|---------|---------|
+ * | DL_READV_S	| port nr  | proc nr | count    |         |	    |  grant  |
+ * |------------|----------|---------|----------|---------|---------|---------|
+ * | DL_CONF	| port nr  | proc nr |		| mode    | address |	      |
+ * |------------|----------|---------|----------|---------|---------|---------|
+ * | DL_GETSTAT	| port nr  | proc nr |          |         | address |	      |
+ * |------------|----------|---------|----------|---------|---------|---------|
+ * |DL_GETSTAT_S| port nr  | proc nr |          |         |	    |  grant  |
+ * |------------|----------|---------|----------|---------|---------|---------|
+ * | DL_STOP	| port_nr  |         |          |         |	    |	      |
+ * |------------|----------|---------|----------|---------|---------|---------|
+ *
+ * The messages sent are:
+ *
+ *   m-type	  DL_POR T   DL_PROC   DL_COUNT   DL_STAT   DL_CLCK
+ * |------------|----------|---------|----------|---------|---------|
+ * |DL_TASK_REPL| port nr  | proc nr | rd-count | err|stat| clock   |
+ * |------------|----------|---------|----------|---------|---------|
+ *
+ *   m_type	  m3_i1     m3_i2       m3_ca1
+ * |------------+---------+-----------+---------------|
+ * |DL_CONF_REPL| port nr | last port | ethernet addr |
+ * |------------|---------|-----------|---------------|
+ *
  * Created:	Aug 2003 by Philip Homburg <philip@cs.vu.nl>
  * Changes:
  *   Aug 15, 2004   sync alarms replace watchdogs timers  (Jorrit N. Herder)
@@ -11,10 +50,54 @@
  *
  */
 
-#define VERBOSE 0 /* Verbose debugging output */
-#define RTL8139_FKEY 0 /* Use function key to dump RTL8139 status */
+#include "../drivers.h"
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <stddef.h>
+#include <minix/com.h>
+#include <minix/keymap.h>
+#include <minix/syslib.h>
+#include <minix/type.h>
+#include <minix/sysutil.h>
+#include <timers.h>
+#include <net/hton.h>
+#include <net/gen/ether.h>
+#include <net/gen/eth_io.h>
+#include <ibm/pci.h>
+
+#include <sys/types.h>
+#include <fcntl.h>
+#include <assert.h>
+#include <unistd.h>
+#include <sys/ioc_memory.h>
+#include "../../kernel/const.h"
+#include "../../kernel/config.h"
+#include "../../kernel/type.h"
+
+#define tmra_ut			timer_t
+#define tmra_inittimer(tp)	tmr_inittimer(tp)
+#define Proc_number(p)		proc_number(p)
+#define debug			0
+#define printW()		((void)0)
+#define vm_1phys2bus(p)		(p)
+
+#define VERBOSE		1	/* display message during init */
 
 #include "rtl8139.h"
+
+#define RX_BUFSIZE	RL_RCR_RBLEN_64K_SIZE
+#define RX_BUFBITS	RL_RCR_RBLEN_64K
+#define N_TX_BUF	RL_N_TX
+
+#define RE_PORT_NR	1		/* Minix */
+
+/* I/O vectors are handled IOVEC_NR entries at a time. */
+#define IOVEC_NR	16
+
+/* Configuration */
+#define RL_ENVVAR	"RTLETH"
 
 PRIVATE struct pcitab
 {
@@ -46,26 +129,93 @@ PRIVATE struct pcitab
 	{ 0x0000, 0x0000, 0 }
 };
 
-PUBLIC re_t re_state;
+typedef struct re
+{
+	port_t re_base_port;
+	int re_irq;
+	int re_mode;
+	int re_flags;
+	int re_client;
+	int re_link_up;
+	int re_got_int;
+	int re_send_int;
+	int re_report_link;
+	int re_clear_rx;
+	int re_need_reset;
+	int re_tx_alive;
+	char *re_model;
 
-static int re_instance;
+	/* Rx */
+	phys_bytes re_rx_buf;
+	char  *v_re_rx_buf;
+	vir_bytes re_read_s;
 
-static unsigned my_inb(u16_t port) {
+	/* Tx */
+	int re_tx_head;
+	int re_tx_tail;
+	struct
+	{
+		int ret_busy;
+		phys_bytes ret_buf;
+		char * v_ret_buf;
+	} re_tx[N_TX_BUF];
+	u32_t re_ertxth;	/* Early Tx Threshold */
+
+	/* PCI related */
+	int re_seen;			/* TRUE iff device available */
+	u8_t re_pcibus;	
+	u8_t re_pcidev;	
+	u8_t re_pcifunc;	
+
+	/* 'large' items */
+	int re_hook_id;			/* IRQ hook id at kernel */
+	eth_stat_t re_stat;
+	ether_addr_t re_address;
+	message re_rx_mess;
+	message re_tx_mess;
+	char re_name[sizeof("rtl8139#n")];
+	iovec_t re_iovec[IOVEC_NR];
+	iovec_s_t re_iovec_s[IOVEC_NR];
+}
+re_t;
+
+#define REM_DISABLED	0x0
+#define REM_ENABLED	0x1
+
+#define REF_PACK_SENT	0x001
+#define REF_PACK_RECV	0x002
+#define REF_SEND_AVAIL	0x004
+#define REF_READING	0x010
+#define REF_EMPTY	0x000
+#define REF_PROMISC	0x040
+#define REF_MULTI	0x080
+#define REF_BROAD	0x100
+#define REF_ENABLED	0x200
+
+static re_t re_table[RE_PORT_NR];
+
+static u16_t eth_ign_proto;
+static tmra_ut rl_watchdog;
+
+FORWARD _PROTOTYPE( unsigned my_inb, (U16_t port) );
+FORWARD _PROTOTYPE( unsigned my_inw, (U16_t port) );
+FORWARD _PROTOTYPE( unsigned my_inl, (U16_t port) );
+static unsigned my_inb(U16_t port) {
 	u32_t value;
 	int s;
 	if ((s=sys_inb(port, &value)) !=OK)
 		printf("RTL8139: warning, sys_inb failed: %d\n", s);
 	return value;
 }
-static unsigned my_inw(u16_t port) {
+static unsigned my_inw(U16_t port) {
 	u32_t value;
 	int s;
 	if ((s=sys_inw(port, &value)) !=OK)
 		printf("RTL8139: warning, sys_inw failed: %d\n", s);
 	return value;
 }
-static unsigned my_inl(u16_t port) {
-	u32_t value;
+static unsigned my_inl(U16_t port) {
+	U32_t value;
 	int s;
 	if ((s=sys_inl(port, &value)) !=OK)
 		printf("RTL8139: warning, sys_inl failed: %d\n", s);
@@ -75,17 +225,20 @@ static unsigned my_inl(u16_t port) {
 #define rl_inw(port, offset)	(my_inw((port) + (offset)))
 #define rl_inl(port, offset)	(my_inl((port) + (offset)))
 
-static void my_outb(u16_t port, u8_t value) {
+FORWARD _PROTOTYPE( void my_outb, (U16_t port, U8_t value) );
+FORWARD _PROTOTYPE( void my_outw, (U16_t port, U16_t value) );
+FORWARD _PROTOTYPE( void my_outl, (U16_t port, U32_t value) );
+static void my_outb(U16_t port, U8_t value) {
 	int s;
 	if ((s=sys_outb(port, value)) !=OK)
 		printf("RTL8139: warning, sys_outb failed: %d\n", s);
 }
-static void my_outw(u16_t port, u16_t value) {
+static void my_outw(U16_t port, U16_t value) {
 	int s;
 	if ((s=sys_outw(port, value)) !=OK)
 		printf("RTL8139: warning, sys_outw failed: %d\n", s);
 }
-static void my_outl(u16_t port, u32_t value) {
+static void my_outl(U16_t port, U32_t value) {
 	int s;
 	if ((s=sys_outl(port, value)) !=OK)
 		printf("RTL8139: warning, sys_outl failed: %d\n", s);
@@ -94,188 +247,151 @@ static void my_outl(u16_t port, u32_t value) {
 #define rl_outw(port, offset, value)	(my_outw((port) + (offset), (value)))
 #define rl_outl(port, offset, value)	(my_outl((port) + (offset), (value)))
 
+_PROTOTYPE( static void sig_handler, (void)				);
 _PROTOTYPE( static void rl_init, (message *mp)				);
 _PROTOTYPE( static void rl_pci_conf, (void)				);
-_PROTOTYPE( static int rl_probe, (re_t *rep, int skip)			);
+_PROTOTYPE( static int rl_probe, (re_t *rep)				);
 _PROTOTYPE( static void rl_conf_hw, (re_t *rep)				);
-_PROTOTYPE( static void rl_init_buf, (re_t *rep)			);
+_PROTOTYPE( static void rl_init_buf, (re_t *rep)				);
 _PROTOTYPE( static void rl_init_hw, (re_t *rep)				);
 _PROTOTYPE( static void rl_reset_hw, (re_t *rep)			);
 _PROTOTYPE( static void rl_confaddr, (re_t *rep)			);
 _PROTOTYPE( static void rl_rec_mode, (re_t *rep)			);
-_PROTOTYPE( static void rl_readv_s, (const message *mp, int from_int)	);
-_PROTOTYPE( static void rl_writev_s, (const message *mp, int from_int)	);
+_PROTOTYPE( static void rl_readv, (message *mp, int from_int, 
+							int vectored)	);
+_PROTOTYPE( static void rl_readv_s, (message *mp, int from_int)	);
+_PROTOTYPE( static void rl_writev, (message *mp, int from_int,
+							int vectored)	);
+_PROTOTYPE( static void rl_writev_s, (message *mp, int from_int)	);
 _PROTOTYPE( static void rl_check_ints, (re_t *rep)			);
 _PROTOTYPE( static void rl_report_link, (re_t *rep)			);
-_PROTOTYPE( static void mii_print_techab, (u16_t techab)		);
-_PROTOTYPE( static void mii_print_stat_speed, (u16_t stat,
-							u16_t extstat)	);
+_PROTOTYPE( static void mii_print_techab, (U16_t techab)		);
+_PROTOTYPE( static void mii_print_stat_speed, (U16_t stat,
+							U16_t extstat)	);
 _PROTOTYPE( static void rl_clear_rx, (re_t *rep)			);
 _PROTOTYPE( static void rl_do_reset, (re_t *rep)			);
+_PROTOTYPE( static void rl_getstat, (message *mp)			);
 _PROTOTYPE( static void rl_getstat_s, (message *mp)			);
-_PROTOTYPE( static void reply, (re_t *rep)				);
+_PROTOTYPE( static void rl_getname, (message *mp)			);
+_PROTOTYPE( static void reply, (re_t *rep, int err, int may_block)	);
 _PROTOTYPE( static void mess_reply, (message *req, message *reply)	);
-_PROTOTYPE( static void check_int_events, (void)			);
-_PROTOTYPE( static void do_hard_int, (void)				);
-_PROTOTYPE( static void rtl8139_dump, (message *m)			);
+_PROTOTYPE( static void rtl8139_stop, (void)				);
+_PROTOTYPE( static void check_int_events, (void)				);
+_PROTOTYPE( static int do_hard_int, (void)				);
+_PROTOTYPE( static void rtl8139_dump, (message *m)				);
 #if 0
 _PROTOTYPE( static void dump_phy, (re_t *rep)				);
 #endif
-_PROTOTYPE( static int rl_handler, (re_t *rep)				);
+_PROTOTYPE( static int rl_handler, (re_t *rep)			);
 _PROTOTYPE( static void rl_watchdog_f, (timer_t *tp)			);
-_PROTOTYPE( static void tell_dev, (vir_bytes start, size_t size,
-				int pci_bus, int pci_dev, int pci_func)	);
 
 /* The message used in the main loop is made global, so that rl_watchdog_f()
- * can change its message type to fake an interrupt message.
+ * can change its message type to fake a HARD_INT message.
  */
 PRIVATE message m;
 PRIVATE int int_event_check;		/* set to TRUE if events arrived */
 
-PRIVATE u32_t system_hz;
-
-/* SEF functions and variables. */
-FORWARD _PROTOTYPE( void sef_local_startup, (void) );
-FORWARD _PROTOTYPE( int sef_cb_init_fresh, (int type, sef_init_info_t *info) );
-FORWARD _PROTOTYPE( void sef_cb_signal_handler, (int signo) );
-EXTERN _PROTOTYPE( int sef_cb_lu_prepare, (int state) );
-EXTERN _PROTOTYPE( int sef_cb_lu_state_isvalid, (int state) );
-EXTERN _PROTOTYPE( void sef_cb_lu_state_dump, (int state) );
+static char *progname;
+extern int errno;
 
 /*===========================================================================*
- *				main					     *
+ *				main				     *
  *===========================================================================*/
 int main(int argc, char *argv[])
 {
-	int r;
-	int ipc_status;
+	int fkeys, sfkeys;
+	int inet_proc_nr;
+	int i, r;
+	re_t *rep;
+	long v;
 
-	/* SEF local startup. */
 	env_setargs(argc, argv);
-	sef_local_startup();
+
+	v= 0;
+	(void) env_parse("ETH_IGN_PROTO", "x", 0, &v, 0x0000L, 0xFFFFL);
+	eth_ign_proto= htons((u16_t) v);
+
+	/* Observe some function key for debug dumps. */
+	fkeys = sfkeys = 0; bit_set(sfkeys, 9);
+	if ((r=fkey_map(&fkeys, &sfkeys)) != OK) 
+	    printf("Warning: RTL8139 couldn't observe Shift+F9 key: %d\n",r);
+
+	/* Claim buffer memory now under Minix, before MM takes it all. */
+	for (rep= &re_table[0]; rep < re_table+RE_PORT_NR; rep++)
+		rl_init_buf(rep);
+
+	/* Try to notify INET that we are present (again). If INET cannot
+	 * be found, assume this is the first time we started and INET is
+	 * not yet alive.
+	 */
+	(progname=strrchr(argv[0],'/')) ? progname++ : (progname=argv[0]);
+	r = _pm_findproc("inet", &inet_proc_nr);
+	if (r == OK) notify(inet_proc_nr);
+
 
 	while (TRUE)
 	{
-		if ((r= netdriver_receive(ANY, &m, &ipc_status)) != OK)
-			panic("netdriver_receive failed: %d", r);
-
-		if (is_ipc_notify(ipc_status)) {
-			switch (_ENDPOINT_P(m.m_source)) {
-				case CLOCK:
-					/* 
-					 * Under MINIX, synchronous alarms are
-					 * used instead of watchdog functions.
-					 * The approach is very different: MINIX
-					 * VMD timeouts are handled within the
-					 * kernel (the watchdog is executed by
-					 * CLOCK), and notify() the driver in
-					 * some cases.  MINIX timeouts result in
-					 * a SYN_ALARM message to the driver and
-					 * thus are handled where they should be
-					 * handled. Locally, watchdog functions
-					 * are used again. 
-					 */
-					rl_watchdog_f(NULL);     
-					break;		 
-				case HARDWARE:
-					do_hard_int();
-					if (int_event_check)
-						check_int_events();
-					break ;
-				case TTY_PROC_NR:
-					rtl8139_dump(&m);
-					break;
-				default:
-					panic("illegal notify from: %d",
-					m.m_source);
-			}
-
-			/* done, get nwe message */
-			continue;
-		}
+		if ((r= receive(ANY, &m)) != OK)
+			panic("rtl8139","receive failed", r);
 
 		switch (m.m_type)
 		{
+		case DEV_PING: notify(m.m_source);		break;
+		case DL_WRITE:	rl_writev(&m, FALSE, FALSE);	break;
+		case DL_WRITEV:	rl_writev(&m, FALSE, TRUE);	break;
 		case DL_WRITEV_S: rl_writev_s(&m, FALSE);	break;
+		case DL_READ:	rl_readv(&m, FALSE, FALSE);	break;
+		case DL_READV:	rl_readv(&m, FALSE, TRUE);	break;
 		case DL_READV_S: rl_readv_s(&m, FALSE);		break;
 		case DL_CONF:	rl_init(&m);			break;
+		case DL_GETSTAT: rl_getstat(&m);		break;
 		case DL_GETSTAT_S: rl_getstat_s(&m);		break;
+		case DL_GETNAME: rl_getname(&m);		break;
+#if 0
+		case DL_STOP:	do_stop(&m);			break;
+#endif
+		case SYN_ALARM:
+			/* Under MINIX, synchronous alarms are used instead of
+			 * watchdog functions. The approach is very different:
+			 * MINIX VMD timeouts are handled within the kernel 
+			 * (the watchdog is executed by CLOCK), and notify()
+			 * the driver in some cases.
+			 * MINIX timeouts result in a SYN_ALARM message to the
+			 * driver and thus are handled where they should be
+			 * handled. Locally, watchdog functions are used again. 
+			 */
+			rl_watchdog_f(NULL);     
+			break;		 
+		case HARD_INT:
+			do_hard_int();
+			if (int_event_check)
+				check_int_events();
+			break ;
+		case FKEY_PRESSED: rtl8139_dump(&m);		break;
+		case PROC_EVENT:
+			sig_handler();
+			break;
 		default:
-			panic("illegal message: %d", m.m_type);
+			panic("rtl8139","illegal message", m.m_type);
 		}
 	}
 }
 
 /*===========================================================================*
- *			       sef_local_startup			     *
+ *				sig_handler                                  *
  *===========================================================================*/
-PRIVATE void sef_local_startup()
+PRIVATE void sig_handler()
 {
-  /* Register init callbacks. */
-  sef_setcb_init_fresh(sef_cb_init_fresh);
-  sef_setcb_init_lu(sef_cb_init_fresh);
-  sef_setcb_init_restart(sef_cb_init_fresh);
+  sigset_t sigset;
+  int sig;
 
-  /* Register live update callbacks. */
-  sef_setcb_lu_prepare(sef_cb_lu_prepare);
-  sef_setcb_lu_state_isvalid(sef_cb_lu_state_isvalid);
-  sef_setcb_lu_state_dump(sef_cb_lu_state_dump);
+  /* Try to obtain signal set from PM. */
+  if (getsigset(&sigset) != 0) return;
 
-  /* Register signal callbacks. */
-  sef_setcb_signal_handler(sef_cb_signal_handler);
-
-  /* Let SEF perform startup. */
-  sef_startup();
-}
-
-/*===========================================================================*
- *		            sef_cb_init_fresh                                *
- *===========================================================================*/
-PRIVATE int sef_cb_init_fresh(int type, sef_init_info_t *UNUSED(info))
-{
-/* Initialize the rtl8139 driver. */
-	long v;
-#if RTL8139_FKEY
-	int r, fkeys, sfkeys;
-#endif
-
-	system_hz = sys_hz();
-
-	v = 0;
-	(void) env_parse("instance", "d", 0, &v, 0, 255);
-	re_instance = (int) v;
-
-#if RTL8139_FKEY
-	/* Observe some function key for debug dumps. */
-	fkeys = sfkeys = 0; bit_set(sfkeys, 9);
-	if ((r=fkey_map(&fkeys, &sfkeys)) != OK) 
-	    printf("Warning: RTL8139 couldn't observe Shift+F9 key: %d\n",r);
-#endif
-
-	/* Claim buffer memory now. */
-	rl_init_buf(&re_state);
-
-	/* Announce we are up! */
-	netdriver_announce();
-
-	return(OK);
-}
-
-/*===========================================================================*
- *		           sef_cb_signal_handler                             *
- *===========================================================================*/
-PRIVATE void sef_cb_signal_handler(int signo)
-{
-	re_t *rep;
-
-	/* Only check for termination signal, ignore anything else. */
-	if (signo != SIGTERM) return;
-
-	rep = &re_state;
-	if (rep->re_mode == REM_ENABLED)
-		rl_outb(rep->re_base_port, RL_CR, 0);
-
-	exit(0);
+  /* Check for known signals. */
+  if (sigismember(&sigset, SIGTERM)) {
+      rtl8139_stop();
+  }
 }
 
 /*===========================================================================*
@@ -283,17 +399,35 @@ PRIVATE void sef_cb_signal_handler(int signo)
  *===========================================================================*/
 static void check_int_events(void) 
 {
+  int i;
+  re_t *rep;
+			for (i= 0, rep= &re_table[0]; i<RE_PORT_NR; i++, rep++)
+			{
+				if (rep->re_mode != REM_ENABLED)
+					continue;
+				if (!rep->re_got_int)
+					continue;
+				rep->re_got_int= 0;
+				assert(rep->re_flags & REF_ENABLED);
+				rl_check_ints(rep);
+			}
+}
+
+/*===========================================================================*
+ *				rtl8139_stop				     *
+ *===========================================================================*/
+static void rtl8139_stop()
+{
+	int i;
 	re_t *rep;
 
-	rep= &re_state;
-
-	if (rep->re_mode != REM_ENABLED)
-		return;
-	if (!rep->re_got_int)
-		return;
-	rep->re_got_int= 0;
-	assert(rep->re_flags & REF_ENABLED);
-	rl_check_ints(rep);
+	for (i= 0, rep= &re_table[0]; i<RE_PORT_NR; i++, rep++)
+	{
+		if (rep->re_mode != REM_ENABLED)
+			continue;
+		rl_outb(rep->re_base_port, RL_CR, 0);
+	}
+	sys_exit(0);
 }
 
 /*===========================================================================*
@@ -303,63 +437,66 @@ static void rtl8139_dump(m)
 message *m;			/* pointer to request message */
 {
 	re_t *rep;
-
-	rep= &re_state;
+	int i;
 
 	printf("\n");
-	if (rep->re_mode == REM_DISABLED)
-		printf("Realtek RTL 8139 instance %d is disabled\n",
-			re_instance);
+	for (i= 0, rep = &re_table[0]; i<RE_PORT_NR; i++, rep++)
+	{
+		if (rep->re_mode == REM_DISABLED)
+			printf("Realtek RTL 8139 port %d is disabled\n", i);
 
-	if (rep->re_mode != REM_ENABLED)
-		return;
+		if (rep->re_mode != REM_ENABLED)
+			continue;
 
-	printf("Realtek RTL 8139 statistics of instance %d:\n", re_instance);
+		printf("Realtek RTL 8139 statistics of port %d:\n", i);
 
-	printf("recvErr    :%8ld\t", rep->re_stat.ets_recvErr);
-	printf("sendErr    :%8ld\t", rep->re_stat.ets_sendErr);
-	printf("OVW        :%8ld\n", rep->re_stat.ets_OVW);
+		printf("recvErr    :%8ld\t", rep->re_stat.ets_recvErr);
+		printf("sendErr    :%8ld\t", rep->re_stat.ets_sendErr);
+		printf("OVW        :%8ld\n", rep->re_stat.ets_OVW);
 
-	printf("CRCerr     :%8ld\t", rep->re_stat.ets_CRCerr);
-	printf("frameAll   :%8ld\t", rep->re_stat.ets_frameAll);
-	printf("missedP    :%8ld\n", rep->re_stat.ets_missedP);
+		printf("CRCerr     :%8ld\t", rep->re_stat.ets_CRCerr);
+		printf("frameAll   :%8ld\t", rep->re_stat.ets_frameAll);
+		printf("missedP    :%8ld\n", rep->re_stat.ets_missedP);
 
-	printf("packetR    :%8ld\t", rep->re_stat.ets_packetR);
-	printf("packetT    :%8ld\t", rep->re_stat.ets_packetT);
-	printf("transDef   :%8ld\n", rep->re_stat.ets_transDef);
+		printf("packetR    :%8ld\t", rep->re_stat.ets_packetR);
+		printf("packetT    :%8ld\t", rep->re_stat.ets_packetT);
+		printf("transDef   :%8ld\n", rep->re_stat.ets_transDef);
 
-	printf("collision  :%8ld\t", rep->re_stat.ets_collision);
-	printf("transAb    :%8ld\t", rep->re_stat.ets_transAb);
-	printf("carrSense  :%8ld\n", rep->re_stat.ets_carrSense);
+		printf("collision  :%8ld\t", rep->re_stat.ets_collision);
+		printf("transAb    :%8ld\t", rep->re_stat.ets_transAb);
+		printf("carrSense  :%8ld\n", rep->re_stat.ets_carrSense);
 
-	printf("fifoUnder  :%8ld\t", rep->re_stat.ets_fifoUnder);
-	printf("fifoOver   :%8ld\t", rep->re_stat.ets_fifoOver);
-	printf("CDheartbeat:%8ld\n", rep->re_stat.ets_CDheartbeat);
+		printf("fifoUnder  :%8ld\t", rep->re_stat.ets_fifoUnder);
+		printf("fifoOver   :%8ld\t", rep->re_stat.ets_fifoOver);
+		printf("CDheartbeat:%8ld\n", rep->re_stat.ets_CDheartbeat);
 
-	printf("OWC        :%8ld\t", rep->re_stat.ets_OWC);
+		printf("OWC        :%8ld\t", rep->re_stat.ets_OWC);
 
-	printf("re_flags = 0x%x\n", rep->re_flags);
+		printf("re_flags = 0x%x\n", rep->re_flags);
 
-	printf("TSAD: 0x%04x, TSD: 0x%08x, 0x%08x, 0x%08x, 0x%08x\n",
-		rl_inw(rep->re_base_port, RL_TSAD),
-		rl_inl(rep->re_base_port, RL_TSD0+0*4),
-		rl_inl(rep->re_base_port, RL_TSD0+1*4),
-		rl_inl(rep->re_base_port, RL_TSD0+2*4),
-		rl_inl(rep->re_base_port, RL_TSD0+3*4));
-	printf("tx_head %d, tx_tail %d, busy: %d %d %d %d\n",
-		rep->re_tx_head, rep->re_tx_tail,
-		rep->re_tx[0].ret_busy, rep->re_tx[1].ret_busy,
-		rep->re_tx[2].ret_busy, rep->re_tx[3].ret_busy);
+		printf(
+	"TSAD: 0x%04x, TSD: 0x%08x, 0x%08x, 0x%08x, 0x%08x\n",
+			rl_inw(rep->re_base_port, RL_TSAD),
+			rl_inl(rep->re_base_port, RL_TSD0+0*4),
+			rl_inl(rep->re_base_port, RL_TSD0+1*4),
+			rl_inl(rep->re_base_port, RL_TSD0+2*4),
+			rl_inl(rep->re_base_port, RL_TSD0+3*4));
+		printf("tx_head %d, tx_tail %d, busy: %d %d %d %d\n",
+			rep->re_tx_head, rep->re_tx_tail,
+			rep->re_tx[0].ret_busy, rep->re_tx[1].ret_busy,
+			rep->re_tx[2].ret_busy, rep->re_tx[3].ret_busy);
+	}
 }
 
 /*===========================================================================*
- *				rl_init					     *
+ *				do_init					     *
  *===========================================================================*/
 static void rl_init(mp)
 message *mp;
 {
 	static int first_time= 1;
 
+	int port;
 	re_t *rep;
 	message reply_mess;
 
@@ -368,11 +505,20 @@ message *mp;
 		first_time= 0;
 		rl_pci_conf(); /* Configure PCI devices. */
 
+		tmra_inittimer(&rl_watchdog);
 		/* Use a synchronous alarm instead of a watchdog timer. */
-		sys_setalarm(system_hz, 0);
+		sys_setalarm(HZ, 0);
 	}
 
-	rep= &re_state;
+	port = mp->DL_PORT;
+	if (port < 0 || port >= RE_PORT_NR)
+	{
+		reply_mess.m_type= DL_CONF_REPLY;
+		reply_mess.m3_i1= ENXIO;
+		mess_reply(mp, &reply_mess);
+		return;
+	}
+	rep= &re_table[port];
 	if (rep->re_mode == REM_DISABLED)
 	{
 		/* This is the default, try to (re)locate the device. */
@@ -381,7 +527,7 @@ message *mp;
 		{
 			/* Probe failed, or the device is configured off. */
 			reply_mess.m_type= DL_CONF_REPLY;
-			reply_mess.DL_STAT= ENXIO;
+			reply_mess.m3_i1= ENXIO;
 			mess_reply(mp, &reply_mess);
 			return;
 		}
@@ -404,11 +550,13 @@ message *mp;
 	if (mp->DL_MODE & DL_BROAD_REQ)
 		rep->re_flags |= REF_BROAD;
 
+	rep->re_client = mp->m_source;
 	rl_rec_mode(rep);
 
 	reply_mess.m_type = DL_CONF_REPLY;
-	reply_mess.DL_STAT = OK;
-	*(ether_addr_t *) reply_mess.DL_HWADDR = rep->re_address;
+	reply_mess.m3_i1 = mp->DL_PORT;
+	reply_mess.m3_i2 = RE_PORT_NR;
+	*(ether_addr_t *) reply_mess.m3_ca1 = rep->re_address;
 
 	mess_reply(mp, &reply_mess);
 }
@@ -418,44 +566,55 @@ message *mp;
  *===========================================================================*/
 static void rl_pci_conf()
 {
+	int i, h;
 	re_t *rep;
 	static char envvar[] = RL_ENVVAR "#";
 	static char envfmt[] = "*:d.d.d";
 	static char val[128];
 	long v;
 
-	rep= &re_state;
-
-	strcpy(rep->re_name, "rtl8139#0");
-	rep->re_name[8] += re_instance;
-	rep->re_seen= FALSE;
-	envvar[sizeof(RL_ENVVAR)-1]= '0'+re_instance;
-	if (0 == env_get_param(envvar, val, sizeof(val)) && 
-			! env_prefix(envvar, "pci")) {
-		env_panic(envvar);
+	for (i= 0, rep= re_table; i<RE_PORT_NR; i++, rep++)
+	{
+		strcpy(rep->re_name, "rtl8139#0");
+		rep->re_name[8] += i;
+		rep->re_seen= FALSE;
+		envvar[sizeof(RL_ENVVAR)-1]= '0'+i;
+		if (0 == env_get_param(envvar, val, sizeof(val)) && 
+				! env_prefix(envvar, "pci")) {
+			env_panic(envvar);
+		}
+		v= 0;
+		(void) env_parse(envvar, envfmt, 1, &v, 0, 255);
+		rep->re_pcibus= v;
+		v= 0;
+		(void) env_parse(envvar, envfmt, 2, &v, 0, 255);
+		rep->re_pcidev= v;
+		v= 0;
+		(void) env_parse(envvar, envfmt, 3, &v, 0, 255);
+		rep->re_pcifunc= v;
 	}
-	v= 0;
-	(void) env_parse(envvar, envfmt, 1, &v, 0, 255);
-	rep->re_pcibus= v;
-	v= 0;
-	(void) env_parse(envvar, envfmt, 2, &v, 0, 255);
-	rep->re_pcidev= v;
-	v= 0;
-	(void) env_parse(envvar, envfmt, 3, &v, 0, 255);
-	rep->re_pcifunc= v;
 
 	pci_init();
 
-	if (rl_probe(rep, re_instance))
-		rep->re_seen= TRUE;
+	for (h= 1; h >= 0; h--) {
+		for (i= 0, rep= re_table; i<RE_PORT_NR; i++, rep++)
+		{
+			if (((rep->re_pcibus | rep->re_pcidev |
+				rep->re_pcifunc) != 0) != h)
+			{
+				continue;
+			}
+			if (rl_probe(rep))
+				rep->re_seen= TRUE;
+		}
+	}
 }
 
 /*===========================================================================*
  *				rl_probe				     *
  *===========================================================================*/
-static int rl_probe(rep, skip)
+static int rl_probe(rep)
 re_t *rep;
-int skip;
 {
 	int i, r, devind, just_one;
 	u16_t vid, did;
@@ -494,17 +653,15 @@ int skip;
 				continue;
 			if (pcitab[i].did != did)
 				continue;
-			if (pcitab[i].checkclass) {
-				panic("class check not implemented");
+			if (pcitab[i].checkclass)
+			{
+			  panic("rtl_probe",
+			    "class check not implemented", NO_NUM);
 			}
 			break;
 		}
 		if (pcitab[i].vid != 0)
-		{
-			if (just_one || !skip)
-				break;
-			skip--;
-		}
+			break;
 
 		if (just_one)
 		{
@@ -531,8 +688,10 @@ int skip;
 	pci_reserve(devind);
 	/* printf("cr = 0x%x\n", pci_attr_r16(devind, PCI_CR)); */
 	bar= pci_attr_r32(devind, PCI_BAR) & 0xffffffe0;
-	if (bar < 0x400) {
-		panic("base address is not properly configured");
+	if (bar < 0x400)
+	{
+		panic("rtl_probe",
+			"base address is not properly configured", NO_NUM);
 	}
 	rep->re_base_port= bar;
 
@@ -589,7 +748,8 @@ re_t *rep;
 	size_t rx_bufsize, tx_bufsize, tot_bufsize;
 	phys_bytes buf;
 	char *mallocbuf;
-	int i, off;
+	static struct memory chunk;
+	int fd, s, i, off;
 
 	/* Allocate receive and transmit buffers */
 	tx_bufsize= ETH_MAX_PACK_SIZE_TAGGED;
@@ -598,13 +758,17 @@ re_t *rep;
 	rx_bufsize= RX_BUFSIZE;
 	tot_bufsize= N_TX_BUF*tx_bufsize + rx_bufsize;
 
-	if (tot_bufsize % 4096)
-		tot_bufsize += 4096-(tot_bufsize % 4096);
+	/* Now try to allocate a kernel memory buffer. */
+	chunk.size = tot_bufsize;
 
 #define BUF_ALIGNMENT (64*1024)
 
-	if(!(mallocbuf = alloc_contig(BUF_ALIGNMENT + tot_bufsize, 0, &buf))) {
-	    panic("Couldn't allocate kernel buffer");
+	if(!(mallocbuf = malloc(BUF_ALIGNMENT + tot_bufsize))) {
+	    panic("RTL8139","Couldn't allocate kernel buffer",i);
+	}
+
+	if(OK != (i = sys_umap(SELF, D, (vir_bytes) mallocbuf, tot_bufsize, &buf))) {
+	    panic("RTL8139","Couldn't re-map malloced buffer",i);
 	}
 
 	/* click-align mallocced buffer. this is what we used to get
@@ -614,9 +778,6 @@ re_t *rep;
 		mallocbuf += BUF_ALIGNMENT - off;
 		buf += BUF_ALIGNMENT - off;
 	}
-
-	tell_dev((vir_bytes)mallocbuf, tot_bufsize, rep->re_pcibus, 
-		rep->re_pcidev, rep->re_pcifunc);
 
 	for (i= 0; i<N_TX_BUF; i++)
 	{
@@ -687,28 +848,33 @@ re_t *rep;
 	u32_t t;
 	phys_bytes bus_buf;
 	int i;
+	clock_t t0,t1;
 
 	port= rep->re_base_port;
 
 #if 0
 	/* Reset the PHY */
 	rl_outb(port, RL_BMCR, MII_CTRL_RST);
-	SPIN_UNTIL(!(rl_inb(port, RL_BMCR) & MII_CTRL_RST), 1000000);
+	getuptime(&t0);
+	do {
+		if (!(rl_inb(port, RL_BMCR) & MII_CTRL_RST))
+			break;
+	} while (getuptime(&t1)==OK && (t1-t0) < HZ);
 	if (rl_inb(port, RL_BMCR) & MII_CTRL_RST)
-		panic("reset PHY failed to complete");
+		panic("rtl8139","reset PHY failed to complete", NO_NUM);
 #endif
 
 	/* Reset the device */
-#if VERBOSE
 	printf("rl_reset_hw: (before reset) port = 0x%x, RL_CR = 0x%x\n",
 		port, rl_inb(port, RL_CR));
-#endif
 	rl_outb(port, RL_CR, RL_CR_RST);
-	SPIN_UNTIL(!(rl_inb(port, RL_CR) & RL_CR_RST), 1000000);
-#if VERBOSE
+	getuptime(&t0);
+	do {
+		if (!(rl_inb(port, RL_CR) & RL_CR_RST))
+			break;
+	} while (getuptime(&t1)==OK && (t1-t0) < HZ);
 	printf("rl_reset_hw: (after reset) port = 0x%x, RL_CR = 0x%x\n",
 		port, rl_inb(port, RL_CR));
-#endif
 	if (rl_inb(port, RL_CR) & RL_CR_RST)
 		printf("rtl8139: reset failed to complete");
 
@@ -799,7 +965,7 @@ re_t *rep;
 	long v;
 
 	/* User defined ethernet address? */
-	eakey[sizeof(RL_ENVVAR)-1]= '0' + re_instance;
+	eakey[sizeof(RL_ENVVAR)-1]= '0' + (rep-re_table);
 
 	port= rep->re_base_port;
 
@@ -857,25 +1023,30 @@ re_t *rep;
 }
 
 /*===========================================================================*
- *				rl_readv_s				     *
+ *				rl_readv				     *
  *===========================================================================*/
-static void rl_readv_s(const message *mp, int from_int)
+static void rl_readv(mp, from_int, vectored)
+message *mp;
+int from_int;
+int vectored;
 {
-	int i, j, n, o, s, s1, count, size;
+	int i, j, n, o, s, s1, dl_port, re_client, count, size;
 	port_t port;
 	unsigned amount, totlen, packlen;
-	phys_bytes dst_phys;
+	phys_bytes src_phys, dst_phys, iov_src;
 	u16_t d_start, d_end;
 	u32_t l, rxstat = 0x12345678;
 	re_t *rep;
-	iovec_s_t *iovp;
+	iovec_t *iovp;
 	int cps;
-	int iov_offset = 0;
 
-	rep= &re_state;
-
-	rep->re_client= mp->m_source;
+	dl_port = mp->DL_PORT;
 	count = mp->DL_COUNT;
+	if (dl_port < 0 || dl_port >= RE_PORT_NR)
+		panic("rtl8139"," illegal port", dl_port);
+	rep= &re_table[dl_port];
+	re_client= mp->DL_PROC;
+	rep->re_client= re_client;
 
 	if (rep->re_clear_rx)
 		goto suspend;	/* Buffer overflow */
@@ -925,7 +1096,7 @@ static void rl_readv_s(const message *mp, int from_int)
 		printf("rxstat = 0x%08lx\n", rxstat);
 		printf("d_start: 0x%x, d_end: 0x%x, rxstat: 0x%lx\n",
 			d_start, d_end, rxstat);
-		panic("received packet not OK");
+		panic("rtl8139","received packet not OK", NO_NUM);
 	}
 	totlen= (rxstat >> RL_RXS_LEN_S);
 	if (totlen < 8 || totlen > 2*ETH_MAX_PACK_SIZE)
@@ -937,7 +1108,259 @@ static void rl_readv_s(const message *mp, int from_int)
 		printf(
 		"d_start: 0x%x, d_end: 0x%x, totlen: %d, rxstat: 0x%lx\n",
 			d_start, d_end, totlen, rxstat);
-		panic(NULL);
+		panic(NULL, NULL, NO_NUM);
+	}
+
+#if 0
+	printf("d_start: 0x%x, d_end: 0x%x, totlen: %d, rxstat: 0x%x\n",
+		d_start, d_end, totlen, rxstat);
+#endif
+
+	if (totlen+4 > amount)
+	{
+		printf("rl_readv: packet not yet ready\n");
+		goto suspend;
+	}
+
+	/* Should subtract the CRC */
+	packlen= totlen - ETH_CRC_SIZE;
+
+	if (vectored)
+	{
+		int iov_offset = 0;
+
+		size= 0;
+		o= d_start+4;
+		src_phys= rep->re_rx_buf;
+		for (i= 0; i<count; i += IOVEC_NR,
+			iov_src += IOVEC_NR * sizeof(rep->re_iovec[0]),
+			iov_offset += IOVEC_NR * sizeof(rep->re_iovec[0]))
+		{
+			n= IOVEC_NR;
+			if (i+n > count)
+				n= count-i;
+
+			cps = sys_vircopy(re_client, D,
+				(vir_bytes) mp->DL_ADDR + iov_offset,
+				SELF, D, (vir_bytes) rep->re_iovec,
+				n * sizeof(rep->re_iovec[0]));
+			if (cps != OK)
+				printf(
+			"RTL8139: warning, sys_vircopy failed: %d (%d)\n",
+					cps, __LINE__);
+
+			for (j= 0, iovp= rep->re_iovec; j<n; j++, iovp++)
+			{
+				s= iovp->iov_size;
+				if (size + s > packlen)
+				{
+					assert(packlen > size);
+					s= packlen-size;
+				}
+
+				if (o >= RX_BUFSIZE)
+				{
+					o -= RX_BUFSIZE;
+					assert(o < RX_BUFSIZE);
+				}
+
+				if (o+s > RX_BUFSIZE)
+				{
+					assert(o<RX_BUFSIZE);
+					s1= RX_BUFSIZE-o;
+
+					cps = sys_vircopy(SELF, D,
+						(vir_bytes) rep->v_re_rx_buf+o,
+						re_client, D, iovp->iov_addr,
+						s1);
+					if (cps != OK)
+						printf(
+			"RTL8139: warning, sys_vircopy failed: %d (%d)\n",
+							cps, __LINE__);
+					cps = sys_vircopy(SELF, D,
+						(vir_bytes) rep->v_re_rx_buf,
+						re_client, D,
+						iovp->iov_addr+s1, s-s1);
+					if (cps != OK)
+						printf(
+			"RTL8139: warning, sys_vircopy failed: %d (%d)\n",
+							cps, __LINE__);
+				}
+				else
+				{
+					cps = sys_vircopy(SELF, D,
+						(vir_bytes) rep->v_re_rx_buf+o,
+						re_client, D, iovp->iov_addr,
+						s);
+					if (cps != OK)
+						printf(
+			"RTL8139: warning, sys_vircopy failed: %d (%d)\n",
+							cps, __LINE__);
+				}
+
+				size += s;
+				if (size == packlen)
+					break;
+				o += s;
+			}
+			if (size == packlen)
+				break;
+		}
+		if (size < packlen)
+		{
+			assert(0);
+		}
+	}
+	else
+	{  
+		assert(0);
+#if 0
+		size= mp->DL_COUNT;
+		if (size < ETH_MIN_PACK_SIZE || size > ETH_MAX_PACK_SIZE_TAGGED)
+			panic("rtl8139","invalid packet size", size);
+		if (OK != sys_umap(re_client, D, (vir_bytes)mp->DL_ADDR, size, &phys_user))
+			panic("rtl8139","umap_local failed", NO_NUM);
+
+		p= rep->re_tx[tx_head].ret_buf;
+		cps = sys_abscopy(phys_user, p, size);
+		if (cps != OK) printf("RTL8139: warning, sys_abscopy failed: %d\n", cps);
+#endif
+	}
+
+	if (rep->re_clear_rx)
+	{
+		/* For some reason the receiver FIFO is not stopped when
+		 * the buffer is full.
+		 */
+#if 0
+		printf("rl_readv: later buffer overflow\n");
+#endif
+		goto suspend;	/* Buffer overflow */
+	}
+
+	rep->re_stat.ets_packetR++;
+	rep->re_read_s= packlen;
+	rep->re_flags= (rep->re_flags & ~REF_READING) | REF_PACK_RECV;
+
+	/* Avoid overflow in 16-bit computations */
+	l= d_start;
+	l += totlen+4;
+	l= (l+3) & ~3;	/* align */
+	if (l >= RX_BUFSIZE)
+	{
+		l -= RX_BUFSIZE;
+		assert(l < RX_BUFSIZE);
+	}
+	rl_outw(port, RL_CAPR, l-RL_CAPR_DATA_OFF);
+
+	if (!from_int)
+		reply(rep, OK, FALSE);
+
+	return;
+
+suspend:
+	if (from_int)
+	{
+		assert(rep->re_flags & REF_READING);
+
+		/* No need to store any state */
+		return;
+	}
+
+	rep->re_rx_mess= *mp;
+	assert(!(rep->re_flags & REF_READING));
+	rep->re_flags |= REF_READING;
+
+	reply(rep, OK, FALSE);
+}
+
+/*===========================================================================*
+ *				rl_readv_s				     *
+ *===========================================================================*/
+static void rl_readv_s(mp, from_int)
+message *mp;
+int from_int;
+{
+	int i, j, n, o, s, s1, dl_port, re_client, count, size;
+	port_t port;
+	unsigned amount, totlen, packlen;
+	phys_bytes src_phys, dst_phys, iov_src;
+	u16_t d_start, d_end;
+	u32_t l, rxstat = 0x12345678;
+	re_t *rep;
+	iovec_s_t *iovp;
+	int cps;
+	int iov_offset = 0;
+
+	dl_port = mp->DL_PORT;
+	count = mp->DL_COUNT;
+	if (dl_port < 0 || dl_port >= RE_PORT_NR)
+		panic("rtl8139"," illegal port", dl_port);
+	rep= &re_table[dl_port];
+	re_client= mp->DL_PROC;
+	rep->re_client= re_client;
+
+	if (rep->re_clear_rx)
+		goto suspend;	/* Buffer overflow */
+
+	assert(rep->re_mode == REM_ENABLED);
+	assert(rep->re_flags & REF_ENABLED);
+
+	port= rep->re_base_port;
+
+	/* Assume that the RL_CR_BUFE check was been done by rl_checks_ints
+	 */
+	if (!from_int && (rl_inb(port, RL_CR) & RL_CR_BUFE))
+	{
+		/* Receive buffer is empty, suspend */
+		goto suspend;
+	}
+
+	d_start= rl_inw(port, RL_CAPR) + RL_CAPR_DATA_OFF;
+	d_end= rl_inw(port, RL_CBR) % RX_BUFSIZE;
+
+	if (d_start >= RX_BUFSIZE)
+	{
+		printf("rl_readv: strange value in RL_CAPR: 0x%x\n",
+			rl_inw(port, RL_CAPR));
+		d_start %= RX_BUFSIZE;
+	}
+
+	if (d_end > d_start)
+		amount= d_end-d_start;
+	else
+		amount= d_end+RX_BUFSIZE - d_start;
+
+	rxstat = *(u32_t *) (rep->v_re_rx_buf + d_start);
+
+	if (rep->re_clear_rx)
+	{
+#if 0
+		printf("rl_readv: late buffer overflow\n");
+#endif
+		goto suspend;	/* Buffer overflow */
+	}
+
+	/* Should convert from little endian to host byte order */
+
+	if (!(rxstat & RL_RXS_ROK))
+	{
+		printf("rxstat = 0x%08lx\n", rxstat);
+		printf("d_start: 0x%x, d_end: 0x%x, rxstat: 0x%lx\n",
+			d_start, d_end, rxstat);
+		panic("rtl8139","received packet not OK", NO_NUM);
+	}
+	totlen= (rxstat >> RL_RXS_LEN_S);
+	if (totlen < 8 || totlen > 2*ETH_MAX_PACK_SIZE)
+	{
+		/* Someting went wrong */
+		printf(
+		"rl_readv: bad length (%u) in status 0x%08lx at offset 0x%x\n",
+			totlen, rxstat, d_start);
+		printf(
+		"d_start: 0x%x, d_end: 0x%x, totlen: %d, rxstat: 0x%lx\n",
+			d_start, d_end, totlen, rxstat);
+		panic(NULL, NULL, NO_NUM);
 	}
 
 #if 0
@@ -956,18 +1379,21 @@ static void rl_readv_s(const message *mp, int from_int)
 
 	size= 0;
 	o= d_start+4;
+	src_phys= rep->re_rx_buf;
 	for (i= 0; i<count; i += IOVEC_NR,
+		iov_src += IOVEC_NR * sizeof(rep->re_iovec_s[0]),
 		iov_offset += IOVEC_NR * sizeof(rep->re_iovec_s[0]))
 	{
 		n= IOVEC_NR;
 		if (i+n > count)
 			n= count-i;
 
-		cps = sys_safecopyfrom(mp->DL_ENDPT, mp->DL_GRANT, iov_offset,
+		cps = sys_safecopyfrom(re_client, mp->DL_GRANT, iov_offset,
 			(vir_bytes) rep->re_iovec_s,
 			n * sizeof(rep->re_iovec_s[0]), D);
-		if (cps != OK) {
-			panic("rl_readv_s: sys_safecopyfrom failed: %d",
+		if (cps != OK)
+		{
+			panic(__FILE__, "rl_readv_s: sys_safecopyfrom failed",
 				cps);
 		}
 
@@ -981,8 +1407,8 @@ static void rl_readv_s(const message *mp, int from_int)
 			}
 
 #if 0
-			if (sys_umap(mp->DL_ENDPT, D, iovp->iov_addr, s, &dst_phys) != OK)
-			  panic("umap_local failed");
+			if (sys_umap(re_client, D, iovp->iov_addr, s, &dst_phys) != OK)
+			  panic("rtl8139","umap_local failed\n", NO_NUM);
 #endif
 
 			if (o >= RX_BUFSIZE)
@@ -996,27 +1422,34 @@ static void rl_readv_s(const message *mp, int from_int)
 				assert(o<RX_BUFSIZE);
 				s1= RX_BUFSIZE-o;
 
-				cps = sys_safecopyto(mp->DL_ENDPT,
+				cps = sys_safecopyto(re_client,
 					iovp->iov_grant, 0, 
 					(vir_bytes) rep->v_re_rx_buf+o, s1, D);
-				if (cps != OK) { 
-					panic("rl_readv_s: sys_safecopyto failed: %d",
-					cps);
+				if (cps != OK)
+				{
+					panic(__FILE__,
+					"rl_readv_s: sys_safecopyto failed",
+						cps);
 				}
-				cps = sys_safecopyto(mp->DL_ENDPT,
+				cps = sys_safecopyto(re_client,
 					iovp->iov_grant, s1, 
 					(vir_bytes) rep->v_re_rx_buf, s-s1, S);
-				if (cps != OK) {
-					panic("rl_readv_s: sys_safecopyto failed: %d", cps);
+				if (cps != OK)
+				{
+					panic(__FILE__,
+					"rl_readv_s: sys_safecopyto failed",
+						cps);
 				}
 			}
 			else
 			{
-				cps = sys_safecopyto(mp->DL_ENDPT,
+				cps = sys_safecopyto(re_client,
 					iovp->iov_grant, 0,
 					(vir_bytes) rep->v_re_rx_buf+o, s, D);
 				if (cps != OK)
-					panic("rl_readv_s: sys_safecopyto failed: %d", cps);
+					panic(__FILE__,
+					"rl_readv_s: sys_vircopy failed",
+						cps);
 			}
 
 			size += s;
@@ -1059,7 +1492,7 @@ static void rl_readv_s(const message *mp, int from_int)
 	rl_outw(port, RL_CAPR, l-RL_CAPR_DATA_OFF);
 
 	if (!from_int)
-		reply(rep);
+		reply(rep, OK, FALSE);
 
 	return;
 
@@ -1076,26 +1509,32 @@ suspend:
 	assert(!(rep->re_flags & REF_READING));
 	rep->re_flags |= REF_READING;
 
-	reply(rep);
+	reply(rep, OK, FALSE);
 }
 
 /*===========================================================================*
- *				rl_writev_s				     *
+ *				rl_writev				     *
  *===========================================================================*/
-static void rl_writev_s(const message *mp, int from_int)
+static void rl_writev(mp, from_int, vectored)
+message *mp;
+int from_int;
+int vectored;
 {
-	int i, j, n, s, count, size;
-	int tx_head;
+	phys_bytes iov_src, phys_user;
+	int i, j, n, s, port, count, size;
+	int tx_head, re_client;
 	re_t *rep;
-	iovec_s_t *iovp;
+	iovec_t *iovp;
 	char *ret;
 	int cps;
-	int iov_offset = 0;
 
-	rep= &re_state;
-
-	rep->re_client= mp->m_source;
+	port = mp->DL_PORT;
 	count = mp->DL_COUNT;
+	if (port < 0 || port >= RE_PORT_NR)
+		panic("rtl8139","illegal port", port);
+	rep= &re_table[port];
+	re_client= mp->DL_PROC;
+	rep->re_client= re_client;
 
 	assert(rep->re_mode == REM_ENABLED);
 	assert(rep->re_flags & REF_ENABLED);
@@ -1113,44 +1552,73 @@ static void rl_writev_s(const message *mp, int from_int)
 	{
 		assert(!(rep->re_flags & REF_SEND_AVAIL));
 		rep->re_flags |= REF_SEND_AVAIL;
-		goto suspend;
+		if (rep->re_tx[tx_head].ret_busy)
+			goto suspend;
+
+		/* Race condition, the interrupt handler may clear re_busy
+		 * before we got a chance to set REF_SEND_AVAIL. Checking
+		 * ret_busy twice should be sufficient.
+		 */
+#if 0
+		printf("rl_writev: race detected\n");
+#endif
+		rep->re_flags &= ~REF_SEND_AVAIL;
+		rep->re_send_int= FALSE;
 	}
 
 	assert(!(rep->re_flags & REF_SEND_AVAIL));
 	assert(!(rep->re_flags & REF_PACK_SENT));
 
-	size= 0;
-	ret = rep->re_tx[tx_head].v_ret_buf;
-	for (i= 0; i<count; i += IOVEC_NR,
-		iov_offset += IOVEC_NR * sizeof(rep->re_iovec_s[0]))
+	if (vectored)
 	{
-		n= IOVEC_NR;
-		if (i+n > count)
-			n= count-i;
-		cps = sys_safecopyfrom(mp->DL_ENDPT, mp->DL_GRANT, iov_offset,
-			(vir_bytes) rep->re_iovec_s,
-			n * sizeof(rep->re_iovec_s[0]), D);
-		if (cps != OK) {
-			panic("rl_writev_s: sys_safecopyfrom failed: %d", cps);
-		}
+		int iov_offset = 0;
 
-		for (j= 0, iovp= rep->re_iovec_s; j<n; j++, iovp++)
+		size= 0;
+		ret = rep->re_tx[tx_head].v_ret_buf;
+		for (i= 0; i<count; i += IOVEC_NR,
+			iov_src += IOVEC_NR * sizeof(rep->re_iovec[0]),
+			iov_offset += IOVEC_NR * sizeof(rep->re_iovec[0]))
 		{
-			s= iovp->iov_size;
-			if (size + s > ETH_MAX_PACK_SIZE_TAGGED) {
-				panic("invalid packet size");
+			n= IOVEC_NR;
+			if (i+n > count)
+				n= count-i;
+			cps = sys_vircopy(re_client, D, ((vir_bytes) mp->DL_ADDR) + iov_offset,
+				SELF, D, (vir_bytes) rep->re_iovec, 
+				n * sizeof(rep->re_iovec[0]));
+if (cps != OK) printf("RTL8139: warning, sys_vircopy failed: %d\n", cps);
+
+			for (j= 0, iovp= rep->re_iovec; j<n; j++, iovp++)
+			{
+				s= iovp->iov_size;
+				if (size + s > ETH_MAX_PACK_SIZE_TAGGED)
+				{
+				  panic("rtl8139","invalid packet size",
+			  	    NO_NUM);
+				}
+
+				if (OK != sys_umap(re_client, D, iovp->iov_addr, s, &phys_user))
+				  panic("rtl8139","umap_local failed\n", NO_NUM);
+
+				cps = sys_vircopy(re_client, D, iovp->iov_addr,
+					SELF, D, (vir_bytes) ret, s);
+		if (cps != OK) printf("RTL8139: warning, sys_vircopy failed: %d\n", cps);
+				size += s;
+				ret += s;
 			}
-			cps = sys_safecopyfrom(mp->DL_ENDPT, iovp->iov_grant,
-				0, (vir_bytes) ret, s, D);
-			if (cps != OK) { 
-				panic("rl_writev_s: sys_safecopyfrom failed: %d",	cps);
-			}
-			size += s;
-			ret += s;
 		}
+		if (size < ETH_MIN_PACK_SIZE)
+			panic("rtl8139","invalid packet size", size);
 	}
-	if (size < ETH_MIN_PACK_SIZE)
-		panic("invalid packet size: %d", size);
+	else
+	{  
+		size= mp->DL_COUNT;
+		if (size < ETH_MIN_PACK_SIZE || size > ETH_MAX_PACK_SIZE_TAGGED)
+			panic("rtl8139","invalid packet size", size);
+		ret = rep->re_tx[tx_head].v_ret_buf;
+		cps = sys_vircopy(re_client, D, (vir_bytes)mp->DL_ADDR, 
+			SELF, D, (vir_bytes) ret, size);
+	if (cps != OK) printf("RTL8139: warning, sys_abscopy failed: %d\n", cps);
+	}
 
 	rl_outl(rep->re_base_port, RL_TSD0+tx_head*4, 
 		rep->re_ertxth | size);
@@ -1168,7 +1636,7 @@ static void rl_writev_s(const message *mp, int from_int)
 	 */
 	if (from_int)
 		return;
-	reply(rep);
+	reply(rep, OK, FALSE);
 	return;
 
 suspend:
@@ -1185,10 +1653,147 @@ suspend:
 #endif
 
 	if (from_int)
-		panic("should not be sending");
+		panic("rtl8139","should not be sending\n", NO_NUM);
 
 	rep->re_tx_mess= *mp;
-	reply(rep);
+	reply(rep, OK, FALSE);
+}
+
+/*===========================================================================*
+ *				rl_writev_s				     *
+ *===========================================================================*/
+static void rl_writev_s(mp, from_int)
+message *mp;
+int from_int;
+{
+	phys_bytes iov_src;
+	int i, j, n, s, port, count, size;
+	int tx_head, re_client;
+	re_t *rep;
+	iovec_s_t *iovp;
+	char *ret;
+	int cps;
+	int iov_offset = 0;
+
+	port = mp->DL_PORT;
+	count = mp->DL_COUNT;
+	if (port < 0 || port >= RE_PORT_NR)
+		panic("rtl8139","illegal port", port);
+	rep= &re_table[port];
+	re_client= mp->DL_PROC;
+	rep->re_client= re_client;
+
+	assert(rep->re_mode == REM_ENABLED);
+	assert(rep->re_flags & REF_ENABLED);
+
+	if (from_int)
+	{
+		assert(rep->re_flags & REF_SEND_AVAIL);
+		rep->re_flags &= ~REF_SEND_AVAIL;
+		rep->re_send_int= FALSE;
+		rep->re_tx_alive= TRUE;
+	}
+
+	tx_head= rep->re_tx_head;
+	if (rep->re_tx[tx_head].ret_busy)
+	{
+		assert(!(rep->re_flags & REF_SEND_AVAIL));
+		rep->re_flags |= REF_SEND_AVAIL;
+		if (rep->re_tx[tx_head].ret_busy)
+			goto suspend;
+
+		/* Race condition, the interrupt handler may clear re_busy
+		 * before we got a chance to set REF_SEND_AVAIL. Checking
+		 * ret_busy twice should be sufficient.
+		 */
+#if 0
+		printf("rl_writev: race detected\n");
+#endif
+		rep->re_flags &= ~REF_SEND_AVAIL;
+		rep->re_send_int= FALSE;
+	}
+
+	assert(!(rep->re_flags & REF_SEND_AVAIL));
+	assert(!(rep->re_flags & REF_PACK_SENT));
+
+	size= 0;
+	ret = rep->re_tx[tx_head].v_ret_buf;
+	for (i= 0; i<count; i += IOVEC_NR,
+		iov_src += IOVEC_NR * sizeof(rep->re_iovec_s[0]),
+		iov_offset += IOVEC_NR * sizeof(rep->re_iovec_s[0]))
+	{
+		n= IOVEC_NR;
+		if (i+n > count)
+			n= count-i;
+		cps = sys_safecopyfrom(re_client, mp->DL_GRANT, iov_offset,
+			(vir_bytes) rep->re_iovec_s,
+			n * sizeof(rep->re_iovec_s[0]), D);
+		if (cps != OK)
+		{
+			panic(__FILE__, "rl_writev_s: sys_safecopyfrom failed",
+				cps);
+		}
+
+		for (j= 0, iovp= rep->re_iovec_s; j<n; j++, iovp++)
+		{
+			s= iovp->iov_size;
+			if (size + s > ETH_MAX_PACK_SIZE_TAGGED)
+			{
+			  panic("rtl8139","invalid packet size",
+			    NO_NUM);
+			}
+			cps = sys_safecopyfrom(re_client, iovp->iov_grant, 0,
+				(vir_bytes) ret, s, D);
+			if (cps != OK)
+			{
+				panic(__FILE__,
+					"rl_writev_s: sys_safecopyfrom failed",
+					cps);
+			}
+			size += s;
+			ret += s;
+		}
+	}
+	if (size < ETH_MIN_PACK_SIZE)
+		panic("rtl8139","invalid packet size", size);
+
+	rl_outl(rep->re_base_port, RL_TSD0+tx_head*4, 
+		rep->re_ertxth | size);
+	rep->re_tx[tx_head].ret_busy= TRUE;
+
+	if (++tx_head == N_TX_BUF)
+		tx_head= 0;
+	assert(tx_head < RL_N_TX);
+	rep->re_tx_head= tx_head;
+
+	rep->re_flags |= REF_PACK_SENT;
+
+	/* If the interrupt handler called, don't send a reply. The reply
+	 * will be sent after all interrupts are handled. 
+	 */
+	if (from_int)
+		return;
+	reply(rep, OK, FALSE);
+	return;
+
+suspend:
+#if 0
+		printf("rl_writev: head %d, tail %d, busy: %d %d %d %d\n",
+			tx_head, rep->re_tx_tail,
+			rep->re_tx[0].ret_busy, rep->re_tx[1].ret_busy,
+			rep->re_tx[2].ret_busy, rep->re_tx[3].ret_busy);
+		printf("rl_writev: TSD: 0x%x, 0x%x, 0x%x, 0x%x\n",
+			rl_inl(rep->re_base_port, RL_TSD0+0*4),
+			rl_inl(rep->re_base_port, RL_TSD0+1*4),
+			rl_inl(rep->re_base_port, RL_TSD0+2*4),
+			rl_inl(rep->re_base_port, RL_TSD0+3*4));
+#endif
+
+	if (from_int)
+		panic("rtl8139","should not be sending\n", NO_NUM);
+
+	rep->re_tx_mess= *mp;
+	reply(rep, OK, FALSE);
 }
 
 /*===========================================================================*
@@ -1243,7 +1848,21 @@ re_t *rep;
 	if ((re_flags & REF_READING) &&
 		!(rl_inb(rep->re_base_port, RL_CR) & RL_CR_BUFE))
 	{
-		rl_readv_s(&rep->re_rx_mess, TRUE /* from int */);
+		if (rep->re_rx_mess.m_type == DL_READV)
+		{
+			rl_readv(&rep->re_rx_mess, TRUE /* from int */,
+				TRUE /* vectored */);
+		}
+		else if (rep->re_rx_mess.m_type == DL_READV_S)
+		{
+			rl_readv_s(&rep->re_rx_mess, TRUE /* from int */);
+		}
+		else
+		{
+			assert(rep->re_rx_mess.m_type == DL_READ);
+			rl_readv(&rep->re_rx_mess, TRUE /* from int */,
+				FALSE /* !vectored */);
+		}
 	}
 	if (rep->re_clear_rx)
 		rl_clear_rx(rep);
@@ -1253,14 +1872,24 @@ re_t *rep;
 
 	if (rep->re_send_int)
 	{
-		rl_writev_s(&rep->re_tx_mess, TRUE /* from int */);
+		if (rep->re_tx_mess.m_type == DL_WRITEV)
+		{
+			rl_writev(&rep->re_tx_mess, TRUE /* from int */,
+				TRUE /* vectored */);
+		}
+		else
+		{
+			assert(rep->re_tx_mess.m_type == DL_WRITE);
+			rl_writev(&rep->re_tx_mess, TRUE /* from int */,
+				FALSE /* !vectored */);
+		}
 	}
 
 	if (rep->re_report_link)
 		rl_report_link(rep);
 
 	if (rep->re_flags & (REF_PACK_SENT | REF_PACK_RECV))
-		reply(rep);
+		reply(rep, OK, TRUE);
 }
 
 /*===========================================================================*
@@ -1385,7 +2014,8 @@ resspeed:
 
 }
 
-static void mii_print_techab(u16_t techab)
+static void mii_print_techab(techab)
+u16_t techab;
 {
 	int fs, ft;
 	if ((techab & MII_ANA_SEL_M) != MII_ANA_SEL_802_3)
@@ -1457,7 +2087,9 @@ static void mii_print_techab(u16_t techab)
 	}
 }
 
-static void mii_print_stat_speed(u16_t stat, u16_t extstat)
+static void mii_print_stat_speed(stat, extstat)
+u16_t stat;
+u16_t extstat;
 {
 	int fs, ft;
 	fs= 1;
@@ -1557,10 +2189,13 @@ static void mii_print_stat_speed(u16_t stat, u16_t extstat)
 /*===========================================================================*
  *				rl_clear_rx				     *
  *===========================================================================*/
-static void rl_clear_rx(re_t *rep)
+static void rl_clear_rx(rep)
+re_t *rep;
 {
 	port_t port;
 	u8_t cr;
+	int i;
+	clock_t t0,t1;
 
 	rep->re_clear_rx= FALSE;
 	port= rep->re_base_port;
@@ -1569,9 +2204,13 @@ static void rl_clear_rx(re_t *rep)
 	cr= rl_inb(port, RL_CR);
 	cr &= ~RL_CR_RE;
 	rl_outb(port, RL_CR, cr);
-	SPIN_UNTIL(!(rl_inb(port, RL_CR) & RL_CR_RE), 1000000);
+	getuptime(&t0);
+	do {
+		if (!(rl_inb(port, RL_CR) & RL_CR_RE))
+			break;
+	} while (getuptime(&t1)==OK && (t1-t0) < HZ);
 	if (rl_inb(port, RL_CR) & RL_CR_RE)
-		panic("cannot disable receiver");
+		panic("rtl8139","cannot disable receiver", NO_NUM);
 
 #if 0
 	printf("RBSTART = 0x%08x\n", rl_inl(port, RL_RBSTART));
@@ -1608,59 +2247,120 @@ re_t *rep;
 }
 
 /*===========================================================================*
- *				rl_getstat_s				     *
+ *				rl_getstat				     *
  *===========================================================================*/
-static void rl_getstat_s(mp)
+static void rl_getstat(mp)
 message *mp;
 {
-	int r;
+	int r, port;
 	eth_stat_t stats;
 	re_t *rep;
 
-	rep= &re_state;
+	port = mp->DL_PORT;
+	if (port < 0 || port >= RE_PORT_NR)
+		panic("rtl8139","illegal port", port);
+	rep= &re_table[port];
+	rep->re_client= mp->DL_PROC;
 
 	assert(rep->re_mode == REM_ENABLED);
 	assert(rep->re_flags & REF_ENABLED);
 
 	stats= rep->re_stat;
 
-	r = sys_safecopyto(mp->DL_ENDPT, mp->DL_GRANT, 0,
+	r = sys_datacopy(SELF, (vir_bytes) &stats, mp->DL_PROC,
+		(vir_bytes) mp->DL_ADDR, sizeof(stats));
+	if (r != OK)
+		panic(__FILE__, "rl_getstat: sys_datacopy failed", r);
+	reply(rep, OK, FALSE);
+}
+
+/*===========================================================================*
+ *				rl_getstat_s				     *
+ *===========================================================================*/
+static void rl_getstat_s(mp)
+message *mp;
+{
+	int r, port;
+	eth_stat_t stats;
+	re_t *rep;
+
+	port = mp->DL_PORT;
+	if (port < 0 || port >= RE_PORT_NR)
+		panic("rtl8139","illegal port", port);
+	rep= &re_table[port];
+	rep->re_client= mp->DL_PROC;
+
+	assert(rep->re_mode == REM_ENABLED);
+	assert(rep->re_flags & REF_ENABLED);
+
+	stats= rep->re_stat;
+
+	r = sys_safecopyto(mp->DL_PROC, mp->DL_GRANT, 0,
 		(vir_bytes) &stats, sizeof(stats), D);
 	if (r != OK)
-		panic("rl_getstat_s: sys_safecopyto failed: %d", r);
+		panic(__FILE__, "rl_getstat_s: sys_safecopyto failed", r);
+	reply(rep, OK, FALSE);
+}
 
-	mp->m_type= DL_STAT_REPLY;
+
+/*===========================================================================*
+ *				rl_getname				     *
+ *===========================================================================*/
+static void rl_getname(mp)
+message *mp;
+{
+	int r;
+
+	strncpy(mp->DL_NAME, progname, sizeof(mp->DL_NAME));
+	mp->DL_NAME[sizeof(mp->DL_NAME)-1]= '\0';
+	mp->m_type= DL_NAME_REPLY;
 	r= send(mp->m_source, mp);
 	if (r != OK)
-		panic("rl_getstat_s: send failed: %d", r);
+		panic("RTL8139", "rl_getname: send failed: %d\n", r);
 }
+
 
 /*===========================================================================*
  *				reply					     *
  *===========================================================================*/
-static void reply(rep)
+static void reply(rep, err, may_block)
 re_t *rep;
+int err;
+int may_block;
 {
 	message reply;
-	int flags;
+	int status;
 	int r;
+	clock_t now;
 
-	flags = DL_NOFLAGS;
+	status = 0;
 	if (rep->re_flags & REF_PACK_SENT)
-		flags |= DL_PACK_SEND;
+		status |= DL_PACK_SEND;
 	if (rep->re_flags & REF_PACK_RECV)
-		flags |= DL_PACK_RECV;
+		status |= DL_PACK_RECV;
 
 	reply.m_type = DL_TASK_REPLY;
-	reply.DL_FLAGS = flags;
+	reply.DL_PORT = rep - re_table;
+	reply.DL_PROC = rep->re_client;
+	reply.DL_STAT = status | ((u32_t) err << 16);
 	reply.DL_COUNT = rep->re_read_s;
+	if (OK != (r = getuptime(&now)))
+		panic("rtl8139","getuptime() failed:", r);
+	reply.DL_CLCK = now;
 
 	r= send(rep->re_client, &reply);
 
+	if (r == ELOCKED && may_block)
+	{
+#if 0
+		printW(); printf("send locked\n");
+#endif
+		return;
+	}
+
 	if (r < 0) {
-		printf("RTL8139 tried sending to %d, type %d\n",
-			rep->re_client, reply.m_type);
-		panic("send failed: %d", r);
+		printf("RTL8139 tried sending to %d, type %d\n", rep->re_client, reply.m_type);
+		panic("rtl8139","send failed:", r);
 	}
 	
 	rep->re_read_s = 0;
@@ -1675,13 +2375,10 @@ message *req;
 message *reply_mess;
 {
 	if (send(req->m_source, reply_mess) != OK)
-		panic("unable to mess_reply");
+		panic("rtl8139","unable to mess_reply", NO_NUM);
 }
 
 #if 0
-/*===========================================================================*
- *				dump_phy				     *
- *===========================================================================*/
 static void dump_phy(rep)
 re_t *rep;
 {
@@ -1777,25 +2474,26 @@ re_t *rep;
 }
 #endif
 
-/*===========================================================================*
- *				do_hard_int				     *
- *===========================================================================*/
-static void do_hard_int(void)
+static int do_hard_int(void)
 {
-	int s;
+	int i,s;
 
-	/* Run interrupt handler at driver level. */
-	rl_handler(&re_state);
+	for (i=0; i < RE_PORT_NR; i ++) {
 
-	/* Reenable interrupts for this hook. */
-	if ((s=sys_irqenable(&re_state.re_hook_id)) != OK)
+		/* Run interrupt handler at driver level. */
+		rl_handler( &re_table[i]);
+
+		/* Reenable interrupts for this hook. */
+	if ((s=sys_irqenable(&re_table[i].re_hook_id)) != OK)
 		printf("RTL8139: error, couldn't enable interrupts: %d\n", s);
+	}
 }
 
 /*===========================================================================*
  *				rl_handler				     *
  *===========================================================================*/
-static int rl_handler(re_t *rep)
+static int rl_handler(rep)
+re_t *rep;
 {
 	int i, port, tx_head, tx_tail, link_up;
 	u16_t isr, tsad;
@@ -1803,6 +2501,7 @@ static int rl_handler(re_t *rep)
 #if 0
 	u8_t cr;
 #endif
+	clock_t t0,t1;
 	int_event_check = FALSE;	/* disable check by default */
 
 	port= rep->re_base_port;
@@ -1895,9 +2594,15 @@ static int rl_handler(re_t *rep)
 			cr= rl_inb(port, RL_CR);
 			cr &= ~RL_CR_TE;
 			rl_outb(port, RL_CR, cr);
-			SPIN_UNTIL(!(rl_inb(port, RL_CR) & RL_CR_TE), 1000000);
-			if (rl_inb(port, RL_CR) & RL_CR_TE) {
-				panic("cannot disable transmitter");
+			getuptime(&t0);
+			do {
+				if (!(rl_inb(port, RL_CR) & RL_CR_TE))
+					break;
+			} while (getuptime(&t1)==OK && (t1-t0) < HZ);
+			if (rl_inb(port, RL_CR) & RL_CR_TE)
+			{
+			  panic("rtl8139","cannot disable transmitter",
+					NO_NUM);
 			}
 			rl_outb(port, RL_CR, cr | RL_CR_TE);
 
@@ -2065,40 +2770,43 @@ static int rl_handler(re_t *rep)
 static void rl_watchdog_f(tp)
 timer_t *tp;
 {
+	int i;
 	re_t *rep;
 	/* Use a synchronous alarm instead of a watchdog timer. */
-	sys_setalarm(system_hz, 0);
+	sys_setalarm(HZ, 0);
 
-	rep= &re_state;
-
-	if (rep->re_mode != REM_ENABLED)
-		return;
-	if (!(rep->re_flags & REF_SEND_AVAIL))
+	for (i= 0, rep = &re_table[0]; i<RE_PORT_NR; i++, rep++)
 	{
-		/* Assume that an idle system is alive */
-		rep->re_tx_alive= TRUE;
-		return;
-	}
-	if (rep->re_tx_alive)
-	{
-		rep->re_tx_alive= FALSE;
-		return;
-	}
-	printf("rl_watchdog_f: resetting instance %d\n", re_instance);
-	printf("TSAD: 0x%04x, TSD: 0x%08x, 0x%08x, 0x%08x, 0x%08x\n",
-		rl_inw(rep->re_base_port, RL_TSAD),
-		rl_inl(rep->re_base_port, RL_TSD0+0*4),
-		rl_inl(rep->re_base_port, RL_TSD0+1*4),
-		rl_inl(rep->re_base_port, RL_TSD0+2*4),
-		rl_inl(rep->re_base_port, RL_TSD0+3*4));
-	printf("tx_head %d, tx_tail %d, busy: %d %d %d %d\n",
-		rep->re_tx_head, rep->re_tx_tail,
-		rep->re_tx[0].ret_busy, rep->re_tx[1].ret_busy,
-		rep->re_tx[2].ret_busy, rep->re_tx[3].ret_busy);
-	rep->re_need_reset= TRUE;
-	rep->re_got_int= TRUE;
+		if (rep->re_mode != REM_ENABLED)
+			continue;
+		if (!(rep->re_flags & REF_SEND_AVAIL))
+		{
+			/* Assume that an idle system is alive */
+			rep->re_tx_alive= TRUE;
+			continue;
+		}
+		if (rep->re_tx_alive)
+		{
+			rep->re_tx_alive= FALSE;
+			continue;
+		}
+		printf("rl_watchdog_f: resetting port %d\n", i);
+		printf(
+	"TSAD: 0x%04x, TSD: 0x%08x, 0x%08x, 0x%08x, 0x%08x\n",
+			rl_inw(rep->re_base_port, RL_TSAD),
+			rl_inl(rep->re_base_port, RL_TSD0+0*4),
+			rl_inl(rep->re_base_port, RL_TSD0+1*4),
+			rl_inl(rep->re_base_port, RL_TSD0+2*4),
+			rl_inl(rep->re_base_port, RL_TSD0+3*4));
+		printf("tx_head %d, tx_tail %d, busy: %d %d %d %d\n",
+			rep->re_tx_head, rep->re_tx_tail,
+			rep->re_tx[0].ret_busy, rep->re_tx[1].ret_busy,
+			rep->re_tx[2].ret_busy, rep->re_tx[3].ret_busy);
+		rep->re_need_reset= TRUE;
+		rep->re_got_int= TRUE;
 			
-	check_int_events();
+		check_int_events();
+	}
 }
 
 #if 0
@@ -2106,7 +2814,7 @@ timer_t *tp;
 _PROTOTYPE( static void rtl_init, (struct dpeth *dep)			);
 _PROTOTYPE( static u16_t get_ee_word, (dpeth_t *dep, int a)		);
 _PROTOTYPE( static void ee_wen, (dpeth_t *dep)				);
-_PROTOTYPE( static void set_ee_word, (dpeth_t *dep, int a, u16_t w)	);
+_PROTOTYPE( static void set_ee_word, (dpeth_t *dep, int a, U16_t w)	);
 _PROTOTYPE( static void ee_wds, (dpeth_t *dep)				);
 
 static void rtl_init(dep)
@@ -2262,12 +2970,13 @@ dpeth_t *dep;
 	/* micro_delay(1); */			/* Is this required? */
 }
 
-static void set_ee_word(dpeth_t *dep, int a, u16_t w)
+static void set_ee_word(dep, a, w)
 dpeth_t *dep;
 int a;
 u16_t w;
 {
 	int b, i, cmd;
+	clock_t t0, t1;
 
 	outb_reg3(dep, 1, 0x80 | 0x8);		/* Set CS */
 
@@ -2294,9 +3003,13 @@ u16_t w;
 	outb_reg3(dep, 1, 0x80);	/* Drop CS */
 	/* micro_delay(1); */			/* Is this required? */
 	outb_reg3(dep, 1, 0x80 | 0x8);		/* Set CS */
-	SPIN_UNTIL(inb_reg3(dep, 1) & 1, 10000);
+	getuptime(&t0);
+	do {
+		if (inb_reg3(dep, 1) & 1)
+			break;
+	} while (getuptime(&t1) == OK && (t1 == t0));
 	if (!(inb_reg3(dep, 1) & 1))
-		panic("device remains busy");
+		panic("set_ee_word","device remains busy", NO_NUM);
 }
 
 static void ee_wds(dep)
@@ -2326,50 +3039,6 @@ dpeth_t *dep;
 	outb_reg0(dep, DP_CR, CR_PS_P0);	/* back to bank 0 */
 }
 #endif
-
-PRIVATE void tell_dev(buf, size, pci_bus, pci_dev, pci_func)
-vir_bytes buf;
-size_t size;
-int pci_bus;
-int pci_dev;
-int pci_func;
-{
-	int r;
-	endpoint_t dev_e;
-	message m;
-
-	r= ds_retrieve_label_endpt("amddev", &dev_e);
-	if (r != OK)
-	{
-#if 0
-		printf(
-		"rtl8139`tell_dev: ds_retrieve_label_endpt failed for 'amddev': %d\n",
-			r);
-#endif
-		return;
-	}
-
-	m.m_type= IOMMU_MAP;
-	m.m2_i1= pci_bus;
-	m.m2_i2= pci_dev;
-	m.m2_i3= pci_func;
-	m.m2_l1= buf;
-	m.m2_l2= size;
-
-	r= sendrec(dev_e, &m);
-	if (r != OK)
-	{
-		printf("rtl8139`tell_dev: sendrec to %d failed: %d\n",
-			dev_e, r);
-		return;
-	}
-	if (m.m_type != OK)
-	{
-		printf("rtl8139`tell_dev: dma map request failed: %d\n",
-			m.m_type);
-		return;
-	}
-}
 
 /*
  * $PchId: rtl8139.c,v 1.3 2003/09/11 14:15:15 philip Exp $

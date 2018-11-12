@@ -1,34 +1,63 @@
 # Makefile for advent
 
-PROG=	advent
-SRCS=	advent.c database.c english.c initial.c itverb.c score.c \
-	travel.c turn.c utility.c verb.c vocab.c
+# Where to put the adventure text files, and the binary executable.
+# Need the trailing "/"s.
+TEXTDIR	= /usr/lib/advent/
+BINDIR	= /usr/bin
 
-# Where to put the adventure text files
-# Need the trailing "/" on TEXTDIR
-TEXTDIR=	/usr/lib/advent/
-FILESDIR=	${TEXTDIR}
-DATFILES=	advent1.dat advent2.dat advent3.dat advent4.dat
-FILES=		${DATFILES}
-MAN=
+# Flags you may want to add to CFLAGS:
+# -DHAS_STDC=0 or 1	We have Standard C.  Default=1 iff __STDC__ is nonzero.
 
-database.o: advtext.h
+CC	= exec cc
+CFLAGS	= -D_POSIX_SOURCE
+LDFLAGS	=  -i
+
+OBJS	= advent.o database.o english.o initial.o itverb.o score.o\
+	travel.o turn.o utility.o verb.o vocab.o
+
+DAT	= advent1.dat advent2.dat advent3.dat advent4.dat
+INSTDAT	= $(TEXTDIR)advent1.dat $(TEXTDIR)advent2.dat \
+	  $(TEXTDIR)advent3.dat $(TEXTDIR)advent4.dat
+
+all:	$(DAT) advent
+
+install:	$(TEXTDIR) $(INSTDAT) $(BINDIR)/advent
+
+$(TEXTDIR):
+	install -d -o bin $(TEXTDIR)
+
+$(TEXTDIR)advent1.dat:	advent1.dat
+	install -c -o bin $? $@
+
+$(TEXTDIR)advent2.dat:	advent2.dat
+	install -c -o bin $? $@
+
+$(TEXTDIR)advent3.dat:	advent3.dat
+	install -c -o bin $? $@
+
+$(TEXTDIR)advent4.dat:	advent4.dat
+	install -c -o bin $? $@
+
+$(BINDIR)/advent:	advent
+	install -cs -o bin $? $@
+
+advent:	$(OBJS)
+	$(CC) $(LDFLAGS) -o advent $(OBJS)
 
 setup: setup.c advent.h
-	${CC} ${CPPFLAGS} ${LDFLAGS} -o $@ ${.CURDIR}/setup.c
-
+	$(CC) $(CFLAGS) $(LDFLAGS) -o setup setup.c
+ 
 advtext.h advent1.dat advent2.dat advent3.dat advent4.dat: \
 		setup advent1.txt advent2.txt advent3.txt advent4.txt
-	./setup ${.CURDIR}
+	./setup
 
-database.d: touch-genfiles
+advent.o: advent.h advdec.h advent.c
+	$(CC) -c $(CFLAGS) -DTEXTDIR='"$(TEXTDIR)"' advent.c
 
-touch-genfiles:
-	[ -e advtext.h ] || touch -t 197001010000.00 advtext.h
+database.o: advent.h advdec.h advtext.h
+travel.o: advent.h advdec.h advcave.h
+initial.o english.o itverb.o score.o turn.o utility.o\
+	verb.o vocab.o: advent.h advdec.h
 
-CPPFLAGS.advent.c= -DTEXTDIR='"${TEXTDIR}"'
-
-CLEANFILES+=	${DATFILES} advtext.h setup
-
-.include <bsd.prog.mk>
-
+clean:	
+	@rm -f *.o *.BAK *.dat advtext.h core advent setup

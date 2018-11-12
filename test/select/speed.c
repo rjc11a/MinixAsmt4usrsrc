@@ -24,8 +24,7 @@
 
 #define NUMBER 12
 
-int main(int argc, char *argv[])
-{
+void main(void) {
 	char *udp_device;
 	int fd[NUMBER];
 	fd_set fds_write;
@@ -57,5 +56,4 @@ int main(int argc, char *argv[])
 	for (i = 0; i < NUMBER; i++) {
 		close(fd[i]);
 	}
-	return 0;
 }

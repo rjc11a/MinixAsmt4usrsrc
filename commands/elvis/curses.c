@@ -442,7 +442,6 @@ static void pair(T, U, sT, sU)
 }
 
 
-void getsize(int signo);
 
 /* Read everything from termcap */
 static void starttcap(term)
@@ -637,7 +636,7 @@ static void starttcap(term)
  * This function is called once during initialization, and thereafter it is
  * called whenever the SIGWINCH signal is sent to this process.
  */
-void getsize(signo)
+int getsize(signo)
 	int	signo;
 {
 	int	lines;
@@ -720,6 +719,8 @@ void getsize(signo)
 		*o_columns = COLS;
 	}
 #endif
+
+	return 0;
 }
 
 

@@ -5,9 +5,11 @@
 **
 **  This file contains specific implementation of buffering
 **  for network packets.
+**
+**  $Id$
 */
 
-#include <minix/drivers.h>
+#include "drivers.h"
 #include <net/gen/ether.h>
 #include <net/gen/eth_io.h>
 #include "dp.h"
@@ -107,6 +109,7 @@ PUBLIC void init_buff(dpeth_t *dep, buff_t **tx_buff)
 */
 PUBLIC void mem2user(dpeth_t *dep, buff_t *rxbuff)
 {
+  phys_bytes phys_user;
   int bytes, ix = 0;
   iovec_dat_s_t *iovp = &dep->de_read_iovec;
   int r, pktsize = rxbuff->size;
@@ -121,7 +124,7 @@ PUBLIC void mem2user(dpeth_t *dep, buff_t *rxbuff)
 	r= sys_safecopyto(iovp->iod_proc_nr, iovp->iod_iovec[ix].iov_grant, 0,
 		(vir_bytes)buffer, bytes, D);
 	if (r != OK)
-		panic("mem2user: sys_safecopyto failed: %d", r);
+		panic(__FILE__, "mem2user: sys_safecopyto failed", r);
 	buffer += bytes;
 
 	if (++ix >= IOVEC_NR) {	/* Next buffer of IO vector */
@@ -139,6 +142,7 @@ PUBLIC void mem2user(dpeth_t *dep, buff_t *rxbuff)
 */
 PUBLIC void user2mem(dpeth_t *dep, buff_t *txbuff)
 {
+  phys_bytes phys_user;
   int bytes, ix = 0;
   iovec_dat_s_t *iovp = &dep->de_write_iovec;
   int r, pktsize = txbuff->size;
@@ -151,7 +155,7 @@ PUBLIC void user2mem(dpeth_t *dep, buff_t *txbuff)
 	r= sys_safecopyfrom(iovp->iod_proc_nr, iovp->iod_iovec[ix].iov_grant,
 		0, (vir_bytes)buffer, bytes, D);
 	if (r != OK)
-		panic("user2mem: sys_safecopyfrom failed: %d", r);
+		panic(__FILE__, "user2mem: sys_safecopyfrom failed", r);
 	buffer += bytes;
 
 	if (++ix >= IOVEC_NR) {	/* Next buffer of IO vector */

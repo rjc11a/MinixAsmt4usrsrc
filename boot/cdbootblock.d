@@ -1,2 +1,0 @@
-
-cdbootblock.o:	cdbootblock.s

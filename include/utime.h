@@ -4,7 +4,7 @@
 #define _UTIME_H
 
 #ifndef _TYPES_H
-#include <minix/types.h>
+#include <sys/types.h>
 #endif
 
 struct utimbuf {

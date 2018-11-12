@@ -5,9 +5,11 @@
 **
 **  This file contains the routines for readind/writing
 **  from/to the device registers.
+**
+**  $Id$
 */
 
-#include <minix/drivers.h>
+#include "drivers.h"
 #include <net/gen/ether.h>
 #include <net/gen/eth_io.h>
 #include "dp.h"
@@ -51,8 +53,7 @@ PUBLIC unsigned int inw(unsigned short port)
 **  Name:	unsigned int insb(unsigned short int port, int proc_nr, void *buffer, int count);
 **  Function:	Reads a sequence of bytes from specified i/o port to user space buffer.
 */
-PUBLIC void insb(unsigned short int port, endpoint_t proc_nr,
-   void *buffer, int count)
+PUBLIC void insb(unsigned short int port, int proc_nr, void *buffer, int count)
 {
   int rc;
 
@@ -61,6 +62,18 @@ PUBLIC void insb(unsigned short int port, endpoint_t proc_nr,
   return;
 }
 
+/*
+**  Name:	unsigned int insw(unsigned short int port, int proc_nr, void *buffer, int count);
+**  Function:	Reads a sequence of words from specified i/o port to user space buffer.
+*/
+PUBLIC void insw(unsigned short int port, int proc_nr, void *buffer, int count)
+{
+  int rc;
+
+  if ((rc = sys_insw(port, proc_nr, buffer, count)) != OK)
+	warning("insw", rc);
+  return;
+}
 
 /*
 **  Name:	void outb(unsigned short int port, unsigned long value);
@@ -90,12 +103,25 @@ PUBLIC void outw(unsigned short port, unsigned long value)
 **  Name:	void outsb(unsigned short int port, int proc_nr, void *buffer, int count);
 **  Function:	Writes a sequence of bytes from user space to specified i/o port.
 */
-PUBLIC void outsb(unsigned short port, endpoint_t proc_nr, void *buffer, int count)
+PUBLIC void outsb(unsigned short port, int proc_nr, void *buffer, int count)
 {
   int rc;
 
   if ((rc = sys_outsb(port, proc_nr, buffer, count)) != OK)
 	warning("outsb", rc);
+  return;
+}
+
+/*
+**  Name:	void outsw(unsigned short int port, int proc_nr, void *buffer, int count);
+**  Function:	Writes a sequence of bytes from user space to specified i/o port.
+*/
+PUBLIC void outsw(unsigned short port, int proc_nr, void *buffer, int count)
+{
+  int rc;
+
+  if ((rc = sys_outsw(port, proc_nr, buffer, count)) != OK)
+	warning("outsw", rc);
   return;
 }
 

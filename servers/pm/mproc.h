@@ -4,14 +4,10 @@
  * systems have tables that are also indexed by process, with the contents
  * of corresponding slots referring to the same process in all three.
  */
-#include <limits.h>
 #include <timers.h>
-#include <signal.h>
-
-/* Needs to be included here, for 'ps' etc */
-#include "const.h"
 
 EXTERN struct mproc {
+  struct mem_map mp_seg[NR_LOCAL_SEGS]; /* points to text, data, stack */
   char mp_exitstatus;		/* storage for status when process exits */
   char mp_sigstatus;		/* storage for signal # for killed procs */
   pid_t mp_pid;			/* process id */
@@ -19,7 +15,6 @@ EXTERN struct mproc {
   pid_t mp_procgrp;		/* pid of process group (used for signals) */
   pid_t mp_wpid;		/* pid this process is waiting for */
   int mp_parent;		/* index of parent process */
-  int mp_tracer;		/* index of tracer process, or NO_TRACER */
 
   /* Child user and system times. Accounting done on child exit. */
   clock_t mp_child_utime;	/* cumulative user time of children */
@@ -31,56 +26,65 @@ EXTERN struct mproc {
   gid_t mp_realgid;		/* process' real gid */
   gid_t mp_effgid;		/* process' effective gid */
 
-  /* Supplemental groups. */
-  int mp_ngroups;		/* number of supplemental groups */
-  gid_t mp_sgroups[NGROUPS_MAX];/* process' supplemental groups */
+  /* File identification for sharing. */
+  ino_t mp_ino;			/* inode number of file */
+  dev_t mp_dev;			/* device number of file system */
+  time_t mp_ctime;		/* inode changed time */
 
   /* Signal handling information. */
   sigset_t mp_ignore;		/* 1 means ignore the signal, 0 means don't */
   sigset_t mp_catch;		/* 1 means catch the signal, 0 means don't */
+  sigset_t mp_sig2mess;		/* 1 means transform into notify message */
   sigset_t mp_sigmask;		/* signals to be blocked */
   sigset_t mp_sigmask2;		/* saved copy of mp_sigmask */
   sigset_t mp_sigpending;	/* pending signals to be handled */
-  sigset_t mp_ksigpending;	/* bitmap for pending signals from the kernel */
-  sigset_t mp_sigtrace;		/* signals to hand to tracer first */
-  struct sigaction mp_sigact[_NSIG]; /* as in sigaction(2) */
+  struct sigaction mp_sigact[_NSIG + 1]; /* as in sigaction(2) */
   vir_bytes mp_sigreturn; 	/* address of C library __sigreturn function */
-  struct timer mp_timer;	/* watchdog timer for alarm(2), setitimer(2) */
-  clock_t mp_interval[NR_ITIMERS];	/* setitimer(2) repetition intervals */
+  struct sigmsg mp_sigmsg;	/* Save the details of the signal until the
+				 * PM_UNPAUSE request is delivered.
+				 */
+  struct timer mp_timer;	/* watchdog timer for alarm(2) */
+
+  /* Backwards compatibility for signals. */
+  sighandler_t mp_func;		/* all sigs vectored to a single user fcn */
 
   unsigned mp_flags;		/* flag bits */
-  unsigned mp_trace_flags;	/* trace options */
   vir_bytes mp_procargs;        /* ptr to proc's initial stack arguments */
+  struct mproc *mp_swapq;	/* queue of procs waiting to be swapped in */
   message mp_reply;		/* reply message to be sent to one */
+
+  /* Communication with FS */
+  int mp_fs_call;		/* Record the call for normal system calls */
+  int mp_fs_call2;		/* Record the call for signals */
+  char *mp_exec_path;		/* Path of executable */
+  vir_bytes mp_exec_path_len;	/* Length of path (including nul) */
+  char *mp_exec_frame;		/* Arguments */
+  vir_bytes mp_exec_frame_len;	/* Length of arguments */
 
   /* Scheduling priority. */
   signed int mp_nice;		/* nice is PRIO_MIN..PRIO_MAX, standard 0. */
-
-  /* User space scheduling */
-  endpoint_t mp_scheduler;	/* scheduler endpoint id */
 
   char mp_name[PROC_NAME_LEN];	/* process name */
 } mproc[NR_PROCS];
 
 /* Flag values */
-#define IN_USE		0x00001	/* set when 'mproc' slot in use */
-#define WAITING		0x00002	/* set by WAIT system call */
-#define ZOMBIE		0x00004	/* waiting for parent to issue WAIT call */
-#define PAUSED		0x00008	/* set by PAUSE system call */
-#define ALARM_ON	0x00010	/* set when SIGALRM timer started */
-#define EXITING		0x00020	/* set by EXIT, process is now exiting */
-#define TOLD_PARENT	0x00040	/* parent wait() completed, ZOMBIE off */
-#define STOPPED		0x00080	/* set if process stopped for tracing */
-#define SIGSUSPENDED	0x00100	/* set by SIGSUSPEND system call */
-#define REPLY		0x00200	/* set if a reply message is pending */
-#define VFS_CALL       	0x00400	/* set if waiting for VFS (normal calls) */
-#define PM_SIG_PENDING	0x00800	/* process got a signal while waiting for VFS */
-#define UNPAUSED	0x01000	/* process is not in a blocking call */
-#define PRIV_PROC	0x02000	/* system process, special privileges */
-#define PARTIAL_EXEC	0x04000	/* process got a new map but no content */
-#define TRACE_EXIT	0x08000	/* tracer is forcing this process to exit */
-#define TRACE_ZOMBIE	0x10000	/* waiting for tracer to issue WAIT call */
-#define DELAY_CALL	0x20000	/* waiting for call before sending signal */
-#define PM_SCHEDULED	0x40000 /* this process is scheduled by PM */
+#define IN_USE          0x001	/* set when 'mproc' slot in use */
+#define WAITING         0x002	/* set by WAIT system call */
+#define ZOMBIE          0x004	/* set by EXIT, cleared by WAIT */
+#define PAUSED          0x008	/* set by PAUSE system call */
+#define ALARM_ON        0x010	/* set when SIGALRM timer started */
+#define SEPARATE	0x020	/* set if file is separate I & D space */
+#define	TRACED		0x040	/* set if process is to be traced */
+#define STOPPED		0x080	/* set if process stopped for tracing */
+#define SIGSUSPENDED 	0x100	/* set by SIGSUSPEND system call */
+#define REPLY	 	0x200	/* set if a reply message is pending */
+#define ONSWAP	 	0x400	/* set if data segment is swapped out */
+#define SWAPIN	 	0x800	/* set if on the "swap this in" queue */
+#define DONT_SWAP      0x1000   /* never swap out this process */
+#define PRIV_PROC      0x2000   /* system process, special privileges */
+#define PM_SIG_PENDING 0x4000	/* process got a signal while waiting for FS */
+#define PARTIAL_EXEC   0x8000	/* Process got a new map but no content */
+#define TOLD_PARENT   0x10000	/* Parent wait() completed, ZOMBIE off */
 
+#define NIL_MPROC ((struct mproc *) 0)
 

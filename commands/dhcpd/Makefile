@@ -1,7 +1,25 @@
 # Makefile for dhcpd.
 
-PROG=	dhcpd
-SRCS=	dhcpd.c tags.c devices.c ether.c
-MAN=
+CFLAGS	= $(OPT) -D_MINIX
+LDFLAGS	=
+CC = exec cc
 
-.include <bsd.prog.mk>
+all:	dhcpd
+
+OBJ=	dhcpd.o tags.o devices.o ether.o
+
+dhcpd:	$(OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(OBJ)
+	install -S 12kw $@
+
+install:	/usr/bin/dhcpd
+
+/usr/bin/dhcpd:	dhcpd
+	install -c $? $@
+
+clean:
+	rm -f *.o dhcpd core a.out
+
+# Dependencies.
+$(OBJ):			dhcpd.h
+dhcpd.o ether.o:	arp.h

@@ -1,6 +1,3 @@
-#ifndef _INCLUDE_TOOLS_H
-#define _INCLUDE_TOOLS_H 1
-
 /* Constants describing the disk */
 #define SECTOR_SIZE	512
 #define SECTOR_SHIFT	9
@@ -76,14 +73,12 @@ EXTERN environment *env;	/* Lists the environment */
 EXTERN int fsok;		/* True if the boot device contains an FS */
 EXTERN u32_t lowsec;		/* Offset to the file system on the boot dev */
 
-#if defined(_MINIX) || defined(__minix) || defined(__ACK__)
 /* Prototypes */
 _PROTOTYPE( off_t r_super, (void));
 _PROTOTYPE( void r_stat, (Ino_t _inum, struct stat *_stp ));
 _PROTOTYPE( ino_t r_readdir, (char *_name ));
 _PROTOTYPE( off_t r_vir2abs, (off_t _virblk ));
 _PROTOTYPE( ino_t r_lookup, (Ino_t _cwd, char *_path ));
-#endif
 
 #ifdef _MONHEAD
 _PROTOTYPE( void readerr, (off_t _sec, int _err ));
@@ -126,4 +121,3 @@ _PROTOTYPE( void relocate, (void));
 _PROTOTYPE( int writesectors, (int _off, int _seg, off_t _adr, int _ct));
 #endif
 
-#endif

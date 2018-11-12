@@ -30,7 +30,16 @@ from FS:
 |_______________|___________|_________|_______|__________|_________|
 
 from DL_ETH:
-  (not documented here)
+ _______________________________________________________________________
+|		|           |         |          |            |         |
+| m_type	|  DL_PORT  | DL_PROC |	DL_COUNT |  DL_STAT   | DL_TIME |
+|_______________|___________|_________|__________|____________|_________|
+|		|           |         |          |            |         |
+| DL_INIT_REPLY	| minor dev | proc nr | rd_count |  0  | stat |  time   |
+|_______________|___________|_________|__________|____________|_________|
+|		|           |         |          |            |         |
+| DL_TASK_REPLY	| minor dev | proc nr | rd_count | err | stat |  time   |
+|_______________|___________|_________|__________|____________|_________|
 */
 
 #include "inet.h"
@@ -38,11 +47,9 @@ from DL_ETH:
 #define _MINIX_SOURCE 1
 
 #include <fcntl.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/svrctl.h>
-#include <minix/ds.h>
-#include <minix/endpoint.h>
-#include <minix/driver.h>
 
 #include "mq.h"
 #include "qp.h"
@@ -66,7 +73,11 @@ THIS_FILE
 
 #define RANDOM_DEV_NAME	"/dev/random"
 
-endpoint_t this_proc;		/* Process number of this server. */
+int this_proc;		/* Process number of this server. */
+
+#ifdef __minix_vmd
+static int synal_tasknr= ANY;
+#endif
 
 /* Killing Solaris */
 int killer_inet= 0;
@@ -75,29 +86,113 @@ int killer_inet= 0;
 extern int inet_buf_debug;
 #endif
 
-#if HZ_DYNAMIC
-u32_t system_hz;
-#endif
+_PROTOTYPE( void main, (void) );
 
 FORWARD _PROTOTYPE( void nw_conf, (void) );
 FORWARD _PROTOTYPE( void nw_init, (void) );
-FORWARD _PROTOTYPE( void ds_event, (void) );
 
-/* SEF functions and variables. */
-FORWARD _PROTOTYPE( void sef_local_startup, (void) );
-FORWARD _PROTOTYPE( int sef_cb_init_fresh, (int type, sef_init_info_t *info) );
-
-PUBLIC int main(int argc, char *argv[])
+PUBLIC void main()
 {
 	mq_t *mq;
-	int ipc_status;
 	int r;
-	endpoint_t source;
-	int m_type;
+	int source, timerand, fd;
+	struct fssignon device;
+#ifdef __minix_vmd
+	struct systaskinfo info;
+#endif
+	u8_t randbits[32];
+	struct timeval tv;
 
-	/* SEF local startup. */
-	sef_local_startup();
+#if DEBUG
+	printf("Starting inet...\n");
+	printf("%s\n", version);
+#endif
 
+	/* Read configuration. */
+	nw_conf();
+
+	/* Get a random number */
+	timerand= 1;
+	fd= open(RANDOM_DEV_NAME, O_RDONLY | O_NONBLOCK);
+	if (fd != -1)
+	{
+		r= read(fd, randbits, sizeof(randbits));
+		if (r == sizeof(randbits))
+			timerand= 0;
+		else
+		{
+			printf("unable to read random data from %s: %s\n",
+				RANDOM_DEV_NAME, r == -1 ? strerror(errno) :
+				r == 0 ? "EOF" : "not enough data");
+		}
+		close(fd);
+	}
+	else
+	{
+		printf("unable to open random device %s: %s\n",
+			RANDOM_DEV_NAME, strerror(errno));
+	}
+	if (timerand)
+	{
+		printf("using current time for random-number seed\n");
+#ifdef __minix_vmd
+		r= sysutime(UTIME_TIMEOFDAY, &tv);
+#else /* Minix 3 */
+		r= gettimeofday(&tv, NULL);
+#endif
+		if (r == -1)
+		{
+			printf("sysutime failed: %s\n", strerror(errno));
+			exit(1);
+		}
+		memcpy(randbits, &tv, sizeof(tv));
+	}
+	init_rand256(randbits);
+
+#ifdef __minix_vmd
+	if (svrctl(SYSSIGNON, (void *) &info) == -1) pause();
+
+	/* Our new identity as a server. */
+	this_proc = info.proc_nr;
+#else /* Minix 3 */
+
+	/* Our new identity as a server. */
+	if ((this_proc = getprocnr()) < 0)
+		ip_panic(( "unable to get own process nr\n"));
+#endif
+
+	/* Register the device group. */
+	device.dev= ip_dev;
+	device.style= STYLE_CLONE;
+	if (svrctl(FSSIGNON, (void *) &device) == -1) {
+		printf("inet: error %d on registering ethernet devices\n",
+			errno);
+		pause();
+	}
+
+#ifdef BUF_CONSISTENCY_CHECK
+	inet_buf_debug= (getenv("inetbufdebug") && 
+		(strcmp(getenv("inetbufdebug"), "on") == 0));
+	inet_buf_debug= 100;
+	if (inet_buf_debug)
+	{
+		ip_warning(( "buffer consistency check enabled" ));
+	}
+#endif
+
+	if (getenv("killerinet"))
+	{
+		ip_warning(( "killer inet active" ));
+		killer_inet= 1;
+	}
+
+#ifdef __minix_vmd
+	r= sys_findproc(SYN_AL_NAME, &synal_tasknr, 0);
+	if (r != OK)
+		ip_panic(( "unable to find synchronous alarm task: %d\n", r ));
+#endif
+
+	nw_init();
 	while (TRUE)
 	{
 #ifdef BUF_CONSISTENCY_CHECK
@@ -127,46 +222,43 @@ PUBLIC int main(int argc, char *argv[])
 		if (!mq)
 			ip_panic(("out of messages"));
 
-		r= sef_receive_status(ANY, &mq->mq_mess, &ipc_status);
+		r= receive (ANY, &mq->mq_mess);
 		if (r<0)
 		{
 			ip_panic(("unable to receive: %d", r));
 		}
 		reset_time();
 		source= mq->mq_mess.m_source;
-		m_type= mq->mq_mess.m_type;
-		if (source == VFS_PROC_NR)
+		if (source == FS_PROC_NR)
 		{
 			sr_rec(mq);
 		}
-		else if (is_ipc_notify(ipc_status))
+#ifdef __minix_vmd
+		else if (source == synal_tasknr)
 		{
-			if (source == CLOCK)
-			{
-				clck_tick(&mq->mq_mess);
-				mq_free(mq);
-			} 
-			else if (source == PM_PROC_NR)
-			{
-				/* signaled */ 
-				/* probably SIGTERM */
-				mq_free(mq);
-			} 
-			else if (source == DS_PROC_NR)
-			{
-				/* DS notifies us of an event. */
-				ds_event();
-				mq_free(mq);
-			}
-			else
-			{
-				printf("inet: got unexpected notify from %d\n",
-					mq->mq_mess.m_source);
-				mq_free(mq);
-			}
+			clck_tick (&mq->mq_mess);
+			mq_free(mq);
 		}
-		else if (m_type == DL_CONF_REPLY || m_type == DL_TASK_REPLY ||
-			m_type == DL_STAT_REPLY)
+#else /* Minix 3 */
+		else if (mq->mq_mess.m_type == SYN_ALARM)
+		{
+			clck_tick(&mq->mq_mess);
+			mq_free(mq);
+		} 
+		else if (mq->mq_mess.m_type == PROC_EVENT)
+		{
+			/* signaled */ 
+			/* probably SIGTERM */
+			mq_free(mq);
+		} 
+		else if (mq->mq_mess.m_type & NOTIFY_MESSAGE)
+		{
+			/* A driver is (re)started. */
+			eth_check_drivers(&mq->mq_mess);
+			mq_free(mq);
+		}
+#endif
+		else if (mq->mq_mess.m_type == DL_TASK_REPLY)
 		{
 			eth_rec(&mq->mq_mess);
 			mq_free(mq);
@@ -179,114 +271,6 @@ PUBLIC int main(int argc, char *argv[])
 		}
 	}
 	ip_panic(("task is not allowed to terminate"));
-	return 1;
-}
-
-/*===========================================================================*
- *			       sef_local_startup			     *
- *===========================================================================*/
-PRIVATE void sef_local_startup()
-{
-  /* Register init callbacks. */
-  sef_setcb_init_fresh(sef_cb_init_fresh);
-  sef_setcb_init_restart(sef_cb_init_fresh);
-
-  /* No live update support for now. */
-
-  /* Let SEF perform startup. */
-  sef_startup();
-}
-
-/*===========================================================================*
- *		            sef_cb_init_fresh                                *
- *===========================================================================*/
-PRIVATE int sef_cb_init_fresh(int type, sef_init_info_t *info)
-{
-/* Initialize the inet server. */
-	int r;
-	int timerand, fd;
-	u8_t randbits[32];
-	struct timeval tv;
-
-#if DEBUG
-	printf("Starting inet...\n");
-	printf("%s\n", version);
-#endif
-
-#if HZ_DYNAMIC
-	system_hz = sys_hz();
-#endif
-
-	/* Read configuration. */
-	nw_conf();
-
-	/* Get a random number */
-	timerand= 1;
-	fd= open(RANDOM_DEV_NAME, O_RDONLY | O_NONBLOCK);
-	if (fd != -1)
-	{
-		r= read(fd, randbits, sizeof(randbits));
-		if (r == sizeof(randbits))
-			timerand= 0;
-		else
-		{
-			printf("inet: unable to read random data from %s: %s\n",
-				RANDOM_DEV_NAME, r == -1 ? strerror(errno) :
-				r == 0 ? "EOF" : "not enough data");
-		}
-		close(fd);
-	}
-	else
-	{
-		printf("inet: unable to open random device %s: %s\n",
-			RANDOM_DEV_NAME, strerror(errno));
-	}
-	if (timerand)
-	{
-		printf("inet: using current time for random-number seed\n");
-		r= gettimeofday(&tv, NULL);
-		if (r == -1)
-		{
-			printf("sysutime failed: %s\n", strerror(errno));
-			exit(1);
-		}
-		memcpy(randbits, &tv, sizeof(tv));
-	}
-	init_rand256(randbits);
-
-	/* Our new identity as a server. */
-	this_proc= info->endpoint;
-
-#ifdef BUF_CONSISTENCY_CHECK
-	inet_buf_debug= (getenv("inetbufdebug") && 
-		(strcmp(getenv("inetbufdebug"), "on") == 0));
-	inet_buf_debug= 100;
-	if (inet_buf_debug)
-	{
-		ip_warning(( "buffer consistency check enabled" ));
-	}
-#endif
-
-	if (getenv("killerinet"))
-	{
-		ip_warning(( "killer inet active" ));
-		killer_inet= 1;
-	}
-
-	nw_init();
-
-	/* Subscribe to driver events for network drivers. */
-	r = ds_subscribe("drv\\.net\\..*", DSF_INITIAL | DSF_OVERWRITE);
-	if(r != OK) {
-		ip_panic(("inet: can't subscribe to driver events"));
-	}
-
-	/* Announce we are up. INET announces its presence to VFS just like
-	 * any other driver.
-	 */
-	driver_announce();
-
-	return(OK);
 }
 
 PRIVATE void nw_conf()
@@ -315,46 +299,6 @@ PRIVATE void nw_init()
 	udp_init();
 }
 
-/*===========================================================================*
- *				 ds_event				     *
- *===========================================================================*/
-PRIVATE void ds_event()
-{
-	char key[DS_MAX_KEYLEN];
-	char *driver_prefix = "drv.net.";
-	char *label;
-	u32_t value;
-	int type;
-	endpoint_t owner_endpoint;
-	int r;
-
-	/* We may get one notification for multiple updates from DS. Get events
-	 * and owners from DS, until DS tells us that there are no more.
-	 */
-	while ((r = ds_check(key, &type, &owner_endpoint)) == OK) {
-		r = ds_retrieve_u32(key, &value);
-		if(r != OK) {
-			printf("inet: ds_event: ds_retrieve_u32 failed\n");
-			return;
-		}
-
-		/* Only check for network driver up events. */
-		if(strncmp(key, driver_prefix, sizeof(driver_prefix))
-		   || value != DS_DRIVER_UP) {
-			return;
-		}
-
-		/* The driver label comes after the prefix. */
-		label = key + strlen(driver_prefix);
-
-		/* A driver is (re)started. */
-		eth_check_driver(label, owner_endpoint);
-	}
-
-	if(r != ENOENT)
-		printf("inet: ds_event: ds_check failed: %d\n", r);
-}
-
 PUBLIC void panic0(file, line)
 char *file;
 int line;
@@ -365,8 +309,12 @@ int line;
 PUBLIC void inet_panic()
 {
 	printf("\ninet stacktrace: ");
-	util_stacktrace();
-	(panic)("aborted due to a panic");
+	stacktrace();
+#ifdef __minix_vmd
+	sys_abort(RBT_PANIC);
+#else /* Minix 3 */
+	(panic)("INET","aborted due to a panic",NO_NUM);
+#endif
 	for(;;);
 }
 

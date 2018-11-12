@@ -1,2 +1,0 @@
-
-disrel.o:	disrel.c

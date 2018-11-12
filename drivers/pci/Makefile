@@ -1,12 +1,40 @@
 # Makefile for PCI support
-PROG=	pci
-SRCS=	main.c pci.c pci_table.c
+DRIVER = pci
 
-DPADD+=	${LIBDRIVER} ${LIBSYS} ${LIBTIMERS}
-LDADD+=	-ldriver -lsys -ltimers
+# directories
+u = /usr
+i = $u/include
+s = $i/sys
+m = $i/minix
+b = $i/ibm
+d = ..
 
-MAN=
+# programs, flags, etc.
+CC =	cc
+CFLAGS = -I$i $(CPROFILE)
+LDFLAGS = -i 
+LIBS = -lsysutil  -lsys -ltimers
 
-BINDIR?= /usr/sbin
+OBJ = main.o pci.o pci_table.o
 
-.include <bsd.prog.mk>
+# build local binary
+all build:	$(DRIVER)
+$(DRIVER):	$(OBJ) 
+	$(CC) -o $@ $(LDFLAGS) $(OBJ) $(LIBS)
+	install -S 32k $(DRIVER)
+
+# install with other drivers
+install:	/usr/sbin/$(DRIVER)
+/usr/sbin/$(DRIVER):	$(DRIVER)
+	install -o root -cs $? $@
+
+# clean up local files
+clean:
+	rm -f *.o *.bak $(DRIVER)
+
+depend: 
+	mkdep "$(CC) -E $(CPPFLAGS)" *.c > .depend
+
+# Include generated dependencies.
+include .depend
+

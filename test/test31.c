@@ -15,12 +15,11 @@
 #define MAX_ERROR	4
 #define ITERATIONS     10
 
-#include "common.c"
-
 #define System(cmd)	if (system(cmd) != 0) printf("``%s'' failed\n", cmd)
 #define Chdir(dir)	if (chdir(dir) != 0) printf("Can't goto %s\n", dir)
 #define Stat(a,b)	if (stat(a,b) != 0) printf("Can't stat %s\n", a)
 
+int errct = 0;
 int subtest = 1;
 int superuser;
 char MaxName[NAME_MAX + 1];	/* Name of maximum length */
@@ -28,22 +27,30 @@ char MaxPath[PATH_MAX];		/* Same for path */
 char ToLongName[NAME_MAX + 2];	/* Name of maximum +1 length */
 char ToLongPath[PATH_MAX + 1];	/* Same for path, both too long */
 
+_PROTOTYPE(void main, (int argc, char *argv[]));
 _PROTOTYPE(void test31a, (void));
 _PROTOTYPE(void test31b, (void));
 _PROTOTYPE(void test31c, (void));
 _PROTOTYPE(void makelongnames, (void));
+_PROTOTYPE(void e, (int number));
+_PROTOTYPE(void quit, (void));
 
-int main(int argc, char *argv[])
+void main(argc, argv)
+int argc;
+char *argv[];
 {
   int i, m = 0xFFFF;
 
   sync();
   if (argc == 2) m = atoi(argv[1]);
-  umask(0000);
-  start(31);
+  printf("Test 31 ");
+  fflush(stdout);
+  System("rm -rf DIR_31; mkdir DIR_31");
+  Chdir("DIR_31");
   makelongnames();
   superuser = (geteuid() == 0);
 
+  umask(0000);
 
   for (i = 0; i < ITERATIONS; i++) {
 	if (m & 0001) test31a();
@@ -51,7 +58,6 @@ int main(int argc, char *argv[])
 	if (m & 0004) test31c();
   }
   quit();
-  return 1;
 }
 
 void test31a()
@@ -70,6 +76,7 @@ void test31a()
   System("rm -rf ../DIR_31/*");
 
   /* Check if the file status information is updated correctly */
+  System("rm -rf fifo");
   cnt = 0;
   Stat(".", &dirst);
   time(&time1);
@@ -77,7 +84,6 @@ void test31a()
 	;
 
   do {
-  	unlink("fifo");
 	time(&time1);
 	if (mkfifo("fifo", 0644) != 0) e(1);
 	Stat("fifo", &st);
@@ -90,7 +96,7 @@ void test31a()
   if (st.st_gid != getegid()) e(4);
 #endif /* defined(NGROUPS_MAX) && NGROUPS_MAX == 0 */
   if (!S_ISFIFO(st.st_mode)) e(5);
-  if ((st.st_mode & 0777) != 0644) e(6);
+  if (st.st_mode & 0777 != 0644) e(6);
   if (st.st_nlink != 1) e(7);
   if (st.st_ctime != time1) e(8);
   if (st.st_atime != time1) e(9);
@@ -148,7 +154,6 @@ void test31b()
 
 void test31c()
 {
-  int does_truncate;
   subtest = 3;
 
   System("rm -rf ../DIR_31/*");
@@ -196,14 +201,16 @@ void test31c()
   System("rm -rf bar");
 
   /* Test ToLongName and ToLongPath */
-  does_truncate = does_fs_truncate();
-  if (does_truncate) {
-	if (mkfifo(ToLongName, 0777) != 0) e(19);
-  } else {
-	if (mkfifo(ToLongName, 0777) != -1) e(20);
-	if (errno != ENAMETOOLONG) e(21);
-  }
-
+#ifdef _POSIX_NO_TRUNC
+# if _POSIX_NO_TRUNC - 0 != -1
+  if (mkfifo(ToLongName, 0777) != -1) e(19);
+  if (errno != ENAMETOOLONG) e(20);
+# else
+  if (mkfifo(ToLongName, 0777) != 0) e(21);
+# endif
+#else
+# include "error, this case requires dynamic checks and is not handled"
+#endif
   ToLongPath[PATH_MAX - 2] = '/';
   ToLongPath[PATH_MAX - 1] = 'a';
   if (mkfifo(ToLongPath, 0777) != -1) e(22);
@@ -232,3 +239,33 @@ void makelongnames()
   ToLongPath[PATH_MAX] = '\0';	/* inc ToLongPath by one */
 }
 
+void e(n)
+int n;
+{
+  int err_num = errno;		/* Save in case printf clobbers it. */
+
+  printf("Subtest %d,  error %d  errno=%d: ", subtest, n, errno);
+  errno = err_num;
+  perror("");
+  if (errct++ > MAX_ERROR) {
+	printf("Too many errors; test aborted\n");
+	chdir("..");
+	system("rm -rf DIR*");
+	exit(1);
+  }
+  errno = 0;
+}
+
+void quit()
+{
+  Chdir("..");
+  System("rm -rf DIR_31");
+
+  if (errct == 0) {
+	printf("ok\n");
+	exit(0);
+  } else {
+	printf("%d errors\n", errct);
+	exit(1);
+  }
+}

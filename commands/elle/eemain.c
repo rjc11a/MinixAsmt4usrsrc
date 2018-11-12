@@ -437,8 +437,6 @@ f_pshinf()
 	redp(RD_SCREEN|RD_MODE);	/* Done, redisplay */
 }
 
-
-#if 0
 /* Miscellaneous utility routines - memory alloc/free and string hacking.
  * If this page becomes overly large, it can be split off into a separate
  * file called E_MISC.
@@ -449,7 +447,6 @@ char *s;	/* Note that STRCPY's return val must be its 1st arg */
 {	char *strcpy();
 	return(strcpy(memalloc((SBMO)(strlen(s)+1)), s));
 }
-#endif
 
 char *
 memalloc(size)

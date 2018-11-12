@@ -43,7 +43,7 @@ ioreq_t req;
 	int ent_no, r;
 	nwio_ipconf_t ipconf_var;
 
-	assert (fd>=0 && fd<IP_FD_NR);
+	assert (fd>=0 && fd<=IP_FD_NR);
 	ip_fd= &ip_fd_table[fd];
 
 	assert (ip_fd->if_flags & IFF_INUSE);
@@ -299,7 +299,7 @@ ioreq_t req;
 		{
 			/* Interface is down, no changes allowed */
 			return (*ip_fd->if_put_userdata)(ip_fd->if_srfd,
-				ENETDOWN, NULL, TRUE);
+				EINVAL, NULL, TRUE);
 		}
 
 		data= bf_packIffLess (data, sizeof(nwio_route_t) );
@@ -375,7 +375,7 @@ ioreq_t req;
 		{
 			/* Interface is down, no changes allowed */
 			return (*ip_fd->if_put_userdata)(ip_fd->if_srfd,
-				ENETDOWN, NULL, TRUE);
+				EINVAL, NULL, TRUE);
 		}
 
 		data= bf_packIffLess (data, sizeof(nwio_route_t) );
@@ -426,15 +426,6 @@ ioreq_t req;
 			return (*ip_fd->if_put_userdata)(ip_fd->if_srfd, 
 				EBADIOCTL, (acc_t *)0, TRUE);
 		}
-
-		if (!(ip_port->ip_flags & IPF_IPADDRSET))
-		{
-			ip_fd->if_ioctl= req;
-			ip_fd->if_flags |= IFF_IOCTL_IP;
-			printf("ip_ioctl: suspending ARP request\n");
-			return NW_SUSPEND;
-		}
-
 		result= arp_ioctl(ip_port->ip_dl.dl_eth.de_port,
 			ip_fd->if_srfd, req, ip_fd->if_get_userdata,
 			ip_fd->if_put_userdata);
@@ -504,13 +495,15 @@ PUBLIC int ip_setconf(ip_port_nr, ipconf)
 int ip_port_nr;
 nwio_ipconf_t *ipconf;
 {
-	int i, do_report;
+	int i, old_ip_flags, do_report;
 	ip_port_t *ip_port;
 	ip_fd_t *ip_fd;
 	ipaddr_t ipaddr;
 	u32_t mtu;
 
 	ip_port= &ip_port_table[ip_port_nr];
+
+	old_ip_flags= ip_port->ip_flags;
 
 	if (ipconf->nwic_flags & ~NWIC_FLAGS)
 		return EBADMODE;

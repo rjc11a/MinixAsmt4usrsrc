@@ -4,18 +4,7 @@
  */
 /* ar - archiver		Author: Michiel Huisjes */
 /* Made into arch/aal by Ceriel Jacobs
-*/
-
-#include <sys/types.h>
-#include <fcntl.h>
-
-#include "rd.h"
-#include "wr_bytes.h"
-#include "wr_long.h"
-#include "wr_int2.h"
-#include "arch.h"
-#include "archiver.h"
-#include "print.h"
+ */
 
 static char RcsId[] = "$Header$";
 
@@ -36,10 +25,6 @@ static char RcsId[] = "$Header$";
 #endif
  */
 
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #ifndef	S_IREAD
@@ -62,6 +47,7 @@ struct ranlib *tab;
 unsigned int	tnum = 0;
 char	*tstrtab;
 unsigned int	tssiz = 0;
+char	*malloc(), *realloc(), *strcpy(), *strncpy();
 long	time();
 unsigned int tabsz, strtabsz;
 #else
@@ -81,6 +67,10 @@ typedef char BOOL;
 #define CREATE		1
 
 #define MEMBER		struct ar_hdr
+
+#define NIL_PTR		((char *) 0)
+#define NIL_MEM		((MEMBER *) 0)
+#define NIL_LONG	((long *) 0)
 
 #define IO_SIZE		(10 * 1024)
 
@@ -115,49 +105,9 @@ char *temp_arch = &temp_buf[0];
 extern char *mktemp();
 extern char *ctime();
 
-/* Forward declarations. */
-static void enter_name(struct outname *namep);
-static void do_names(struct outhead *headp);
-static void do_object(int f, long size);
-static void show(char *s, char *name);
-static void write_symdef(void);
-static void mwrite(int fd, char *address, int bytes);
-static void extract(register MEMBER *member);
-static void copy_member(MEMBER *member, int from, int to, int extracting);
-static void add(char *name, int fd, char *mess);
-static void get(int argc, char *argv[]);
-
-/*VARARGS2*/
-void error1(BOOL quit, char *str1)
+usage()
 {
-	fputs(str1,stderr);
-  	if (quit) {
-		unlink(temp_arch);
-		_exit(1);
-  	}
-}
-
-void error2(BOOL quit, char *str1, char *str2)
-{
-	fprintf(stderr,str1,str2);
-  	if (quit) {
-		unlink(temp_arch);
-		_exit(1);
-  	}
-}
-
-void error3(BOOL quit, char *str1, char *str2, char *str3)
-{
-	fprintf(stderr,str1,str2,str3);
-  	if (quit) {
-		unlink(temp_arch);
-		_exit(1);
-  	}
-}
-
-void usage()
-{
-	error3(TRUE, "usage: %s %s archive [file] ...\n",
+	error(TRUE, "usage: %s %s archive [file] ...\n",
 		progname,
 #ifdef AAL
 		"[acdrtxvlu]"
@@ -167,17 +117,33 @@ void usage()
 		);
 }
 
-char *basename(char *path)
+/*VARARGS2*/
+error(quit, str1, str2, str3, str4)
+BOOL quit;
+char *str1, *str2, *str3, *str4;
+{
+	char errbuf[256];
+
+	sprint(errbuf, str1, str2, str3, str4);
+	write(2, errbuf, strlen(errbuf));
+  	if (quit) {
+		unlink(temp_arch);
+		_exit(1);
+  	}
+}
+
+char *basename(path)
+char *path;
 {
   register char *ptr = path;
-  register char *last = NULL;
+  register char *last = NIL_PTR;
 
   while (*ptr != '\0') {
 	if (*ptr == '/')
 		last = ptr;
 	ptr++;
   }
-  if (last == NULL)
+  if (last == NIL_PTR)
 	return path;
   if (*(last + 1) == '\0') {
 	*last = '\0';
@@ -188,14 +154,16 @@ char *basename(char *path)
 
 extern unsigned int rd_unsigned2();
 
-int open_archive(char *name, int mode)
+open_archive(name, mode)
+register char *name;
+register int mode;
 {
   unsigned short magic = 0;
   int fd;
 
   if (mode == CREATE) {
 	if ((fd = creat(name, 0666)) < 0)
-		error2(TRUE, "cannot creat %s\n", name);
+		error(TRUE, "cannot creat %s\n", name);
 	magic = MAGIC_NUMBER;
 	wr_int2(fd, magic);
 	return fd;
@@ -204,15 +172,15 @@ int open_archive(char *name, int mode)
   if ((fd = open(name, mode)) < 0) {
 	if (mode == APPEND) {
 		close(open_archive(name, CREATE));
-		if (!nocr_fl) error3(FALSE, "%s: creating %s\n", progname, name);
+		if (!nocr_fl) error(FALSE, "%s: creating %s\n", progname, name);
 		return open_archive(name, APPEND);
 	}
-	error2(TRUE, "cannot open %s\n", name);
+	error(TRUE, "cannot open %s\n", name);
   }
   lseek(fd, 0L, 0);
   magic = rd_unsigned2(fd);
   if (magic != AALMAG && magic != ARMAG)
-	error2(TRUE, "%s is not in ar format\n", name);
+	error(TRUE, "%s is not in ar format\n", name);
   
   return fd;
 }
@@ -227,7 +195,9 @@ catch()
 	_exit (2);
 }
 
-int main(int argc, char *argv[])
+main(argc, argv)
+int argc;
+char *argv[];
 {
   register char *ptr;
   int needs_arg = 0;
@@ -314,7 +284,7 @@ int main(int argc, char *argv[])
 #ifdef AAL
   tab = (struct ranlib *) malloc(512 * sizeof(struct ranlib));
   tstrtab = malloc(4096);
-  if (!tab || !tstrtab) error1(TRUE,"Out of core\n");
+  if (!tab || !tstrtab) error(TRUE,"Out of core\n");
   tabsz = 512;
   strtabsz = 4096;
 #endif
@@ -332,9 +302,9 @@ get_member()
 
 again:
   if (rd_arhdr(ar_fd, &member) == 0)
-	return NULL;
+	return NIL_MEM;
   if (member.ar_size < 0) {
-	error1(TRUE, "archive has member with negative size\n");
+	error(TRUE, "archive has member with negative size\n");
   }
 #ifdef AAL
   if (equal(SYMDEF, member.ar_name)) {
@@ -347,7 +317,9 @@ again:
 
 char *get_mode();
 
-static void get(int argc, char *argv[])
+get(argc, argv)
+int argc;
+register char *argv[];
 {
   register MEMBER *member;
   int i = 0;
@@ -360,7 +332,7 @@ static void get(int argc, char *argv[])
 #endif
   )
 	temp_fd = open_archive(temp_arch, CREATE);
-  while ((member = get_member()) != NULL) {
+  while ((member = get_member()) != NIL_MEM) {
 	if (argc > 3) {
 		for (i = 3; i < argc; i++) {
 			if (equal(basename(argv[i]), member->ar_name))
@@ -489,7 +461,10 @@ static void get(int argc, char *argv[])
   close(ar_fd);
 }
 
-static void add(char *name, int fd, char *mess)
+add(name, fd, mess)
+char *name;
+int fd;
+char *mess;
 {
   static MEMBER member;
   register int read_chars;
@@ -497,15 +472,15 @@ static void add(char *name, int fd, char *mess)
   int src_fd;
 
   if (stat(name, &status) < 0) {
-	error2(FALSE, "cannot find %s\n", name);
+	error(FALSE, "cannot find %s\n", name);
 	return;
   }
   else if (S_ISDIR(status.st_mode)) {
-	error2(FALSE, "%s is a directory (ignored)\n", name);
+	error(FALSE, "%s is a directory (ignored)\n", name);
 	return;
   }
   else if ((src_fd = open(name, 0)) < 0) {
-	error2(FALSE, "cannot open %s\n", name);
+	error(FALSE, "cannot open %s\n", name);
 	return;
   }
 
@@ -541,7 +516,7 @@ static void add(char *name, int fd, char *mess)
 	}
 	else	status.st_size -= x;
   	if (read(src_fd, io_buffer, read_chars) != read_chars) {
-		error2(FALSE,"%s seems to shrink\n", name);
+		error(FALSE,"%s seems to shrink\n", name);
 		break;
 	}
 	mwrite(fd, io_buffer, x);
@@ -552,7 +527,8 @@ static void add(char *name, int fd, char *mess)
   close(src_fd);
 }
 
-static void extract(register MEMBER *member)
+extract(member)
+register MEMBER *member;
 {
   int fd = 1;
   char buf[sizeof(member->ar_name) + 1];
@@ -560,7 +536,7 @@ static void extract(register MEMBER *member)
   strncpy(buf, member->ar_name, sizeof(member->ar_name));
   buf[sizeof(member->ar_name)] = 0;
   if (pr_fl == FALSE && (fd = creat(buf, 0666)) < 0) {
-	error2(FALSE, "cannot create %s\n", buf);
+	error(FALSE, "cannot create %s\n", buf);
 	fd = -1;
   }
 
@@ -576,7 +552,9 @@ static void extract(register MEMBER *member)
   if (pr_fl == FALSE) chmod(buf, member->ar_mode);
 }
 
-static void copy_member(MEMBER *member, int from, int to, int extracting)
+copy_member(member, from, to, extracting)
+register MEMBER *member;
+int from, to;
 {
   register int rest;
   long mem_size = member->ar_size;
@@ -598,7 +576,7 @@ static void copy_member(MEMBER *member, int from, int to, int extracting)
 
 		strncpy(buf, member->ar_name, sizeof(member->ar_name));
 		buf[sizeof(member->ar_name)] = 0;
-		error2(TRUE, "read error on %s\n", buf);
+		error(TRUE, "read error on %s\n", buf);
 	}
 	if (to >= 0) mwrite(to, io_buffer, rest);
 	mem_size -= (long) rest;
@@ -633,23 +611,27 @@ register int mode;
   return mode_buf;
 }
 
-void wr_fatal()
+wr_fatal()
 {
-	error1(TRUE, "write error\n");
+	error(TRUE, "write error\n");
 }
 
-void rd_fatal()
+rd_fatal()
 {
-	error1(TRUE, "read error\n");
+	error(TRUE, "read error\n");
 }
 
-static void mwrite(int fd, char *address, int bytes)
+mwrite(fd, address, bytes)
+int fd;
+register char *address;
+register int bytes;
 {
   if (write(fd, address, bytes) != bytes)
-	error1(TRUE, "write error\n");
+	error(TRUE, "write error\n");
 }
 
-static void show(char *s, char *name)
+show(s, name)
+char *s, *name;
 {
   MEMBER x;
   char buf[sizeof(x.ar_name)+1];
@@ -667,7 +649,7 @@ static void show(char *s, char *name)
  * then 4 bytes giving the size of the string table, followed by the string
  * table itself.
  */
-static void write_symdef(void)
+write_symdef()
 {
 	register struct ranlib	*ran;
 	register int	i;
@@ -712,12 +694,15 @@ static void write_symdef(void)
  * The header is put in `headp'.
  */
 int
-is_outhead(register struct outhead *headp)
+is_outhead(headp)
+	register struct outhead	*headp;
 {
+
 	return !BADMAGIC(*headp) && headp->oh_nname != 0;
 }
 
-static void do_object(int f, long size)
+do_object(f, size)
+	long size;
 {
 	struct outhead	headbuf;
 
@@ -743,7 +728,8 @@ static void do_object(int f, long size)
  * name table and read and write the names one by one. Update the ranlib table
  * accordingly.
  */
-static void do_names(struct outhead	*headp)
+do_names(headp)
+	struct outhead	*headp;
 {
 	register char	*strings;
 	register int	nnames = headp->oh_nname;
@@ -754,7 +740,7 @@ static void do_names(struct outhead	*headp)
 	if (	headp->oh_nchar != (unsigned int)headp->oh_nchar ||
 		(strings = malloc((unsigned int)headp->oh_nchar)) == (char *)0
 	   ) {
-		error1(TRUE, "string table too big\n");
+		error(TRUE, "string table too big\n");
 	}
 	rd_string(strings, headp->oh_nchar);
 	while (nnames) {
@@ -788,14 +774,15 @@ static void do_names(struct outhead	*headp)
 	free(strings);
 }
 
-static void enter_name(struct outname *namep)
+enter_name(namep)
+	struct outname *namep;
 {
 	register char	*cp;
 
 	if (tnum >= tabsz) {
 		tab = (struct ranlib *)
 			realloc((char *) tab, (tabsz += 512) * sizeof(struct ranlib));
-		if (! tab) error1(TRUE, "Out of core\n");
+		if (! tab) error(TRUE, "Out of core\n");
 	}
 	tab[tnum].ran_off = tssiz;
 	tab[tnum].ran_pos = offset;
@@ -803,11 +790,11 @@ static void enter_name(struct outname *namep)
 	for (cp = namep->on_mptr;; cp++) {
 		if (tssiz >= strtabsz) {
 			tstrtab = realloc(tstrtab, (strtabsz += 4096));
-			if (! tstrtab) error1(TRUE, "string table overflow\n");
+			if (! tstrtab) error(TRUE, "string table overflow\n");
 		}
 		tstrtab[tssiz++]  = *cp;
 		if (!*cp) break;
 	}
 	tnum++;
 }
-#endif /* AAL */
+#endif AAL

@@ -7,10 +7,13 @@
 **  device driver for 3Com Etherlink (3c501) boards.  This is a
 **  very old board and its performances are very poor for today
 **  network environments.
+**
+**  $Id$
 */
 
-#include <minix/drivers.h>
+#include "drivers.h"
 #include <minix/com.h>
+#include <net/hton.h>
 #include <net/gen/ether.h>
 #include <net/gen/eth_io.h>
 #include "dp.h"
@@ -68,7 +71,7 @@ static void el1_reset(dpeth_t * dep)
 **  Name:	void el1_dumpstats(dpeth_t *dep, int port, vir_bytes size)
 **  Function:	Dumps counter on screen (support for console display).
 */
-static void el1_dumpstats(dpeth_t * UNUSED(dep))
+static void el1_dumpstats(dpeth_t * dep)
 {
 
   return;
@@ -151,7 +154,7 @@ static void el1_send(dpeth_t * dep, int from_int, int pktsize)
 		txbuff->client = dep->de_client;
 		user2mem(dep, txbuff);
 	} else
-		panic("out of memory for Tx");
+		panic(dep->de_name, "out of memory for Tx", NO_NUM);
 
   } else if ((txbuff = dep->de_xmitq_head) != NULL) {
 
@@ -165,10 +168,10 @@ static void el1_send(dpeth_t * dep, int from_int, int pktsize)
 	pktsize = txbuff->size;
 
   } else
-	panic("should not be sending ");
+	panic(dep->de_name, "should not be sending ", NO_NUM);
 
   if ((dep->de_flags & DEF_XMIT_BUSY)) {
-	if (from_int) panic("should not be sending ");
+	if (from_int) panic(dep->de_name, "should not be sending ", NO_NUM);
 	getuptime(&now);
 	if ((now - dep->de_xmit_start) > 4) {
 		/* Transmitter timed out */

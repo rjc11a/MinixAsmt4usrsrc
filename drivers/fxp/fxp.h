@@ -7,9 +7,6 @@ and 82562 fast ethernet controllers.
 Created:	Nov 2004 by Philip Homburg <philip@f-mnx.phicoh.com>
 */
 
-#ifndef _FXP_FXP_H
-#define _FXP_FXP_H
-
 #define VERBOSE 	0	/* display output during intialization */
 
 /* Revisions in PCI_REV */
@@ -27,7 +24,6 @@ Created:	Nov 2004 by Philip Homburg <philip@f-mnx.phicoh.com>
 #define FXP_REV_82550_3		0x0E
 #define FXP_REV_82551_1		0x0F
 #define FXP_REV_82551_2		0x10
-#define FXP_REV_82801DB		0x81
 
 /* Control/Status Registers (CSR). The first 8 bytes are called
  * System Control Block (SCB)
@@ -578,5 +574,3 @@ struct rfd
 /*
  * $PchId: fxp.h,v 1.1 2004/11/23 14:34:03 philip Exp $
  */
-
-#endif

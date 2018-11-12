@@ -1,42 +1,39 @@
-#define ARITH_NUM 257
-#define ARITH_LPAREN 258
-#define ARITH_RPAREN 259
-#define ARITH_VAR 260
-#define ARITH_ASSIGN 261
-#define ARITH_ADDASSIGN 262
-#define ARITH_SUBASSIGN 263
-#define ARITH_MULASSIGN 264
-#define ARITH_DIVASSIGN 265
-#define ARITH_REMASSIGN 266
-#define ARITH_RSHASSIGN 267
-#define ARITH_LSHASSIGN 268
-#define ARITH_BANDASSIGN 269
-#define ARITH_BXORASSIGN 270
-#define ARITH_BORASSIGN 271
-#define ARITH_OR 272
-#define ARITH_AND 273
-#define ARITH_BOR 274
-#define ARITH_BXOR 275
-#define ARITH_BAND 276
-#define ARITH_EQ 277
-#define ARITH_NE 278
-#define ARITH_LT 279
-#define ARITH_GT 280
-#define ARITH_GE 281
-#define ARITH_LE 282
-#define ARITH_LSHIFT 283
-#define ARITH_RSHIFT 284
-#define ARITH_ADD 285
-#define ARITH_SUB 286
-#define ARITH_MUL 287
-#define ARITH_DIV 288
-#define ARITH_REM 289
-#define ARITH_UNARYMINUS 290
-#define ARITH_UNARYPLUS 291
-#define ARITH_NOT 292
-#define ARITH_BNOT 293
-typedef union {
-	arith_t l_value;
-	char* s_value;
-} YYSTYPE;
-extern YYSTYPE yylval;
+/*-
+ * Copyright (c) 1995
+ *      The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 4. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)arith.h	1.1 (Berkeley) 5/4/95
+ * $FreeBSD: src/bin/sh/arith.h,v 1.9 2004/04/06 20:06:51 markm Exp $
+ */
+
+int arith(char *);
+int arith_assign(char *, arith_t);
+int expcmd(int, char **);
+
+/*
+ * $PchId: arith.h,v 1.3 2006/03/31 11:25:25 philip Exp $
+ */

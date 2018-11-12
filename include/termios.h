@@ -146,7 +146,6 @@ _PROTOTYPE( int tcsetattr, \
 
 /* Extensions to the termios c_iflag bit map.  */
 #define IXANY		0x0800	/* allow any key to continue ouptut */
-#define SCANCODES	0x1000	/* send scancodes */
 
 /* Extensions to the termios c_oflag bit map. They are only active iff
  * OPOST is enabled. */
@@ -194,7 +193,6 @@ _PROTOTYPE( int tcsetattr, \
  * The ioctls TIOCGWINSZ and TIOCSWINSZ can be used to get and set this 
  * information.
  */
-#endif /* _MINIX */
 
 struct winsize
 {
@@ -203,5 +201,6 @@ struct winsize
 	unsigned short	ws_xpixel;	/* horizontal size, pixels */
 	unsigned short	ws_ypixel;	/* vertical size, pixels */
 };
+#endif /* _MINIX */
 
 #endif /* _TERMIOS_H */

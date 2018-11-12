@@ -1,20 +1,17 @@
-.include <bsd.own.mk>
 
-SUBDIR=	man1 man1x man2 man3 man4 man5 man6 man7 man8 man9
+MAN=/usr/man
 
-#WHATISDBDIR?=	/usr/man
+all::
 
-makedb:
+clean::
 
-#	makewhatis ${WHATISDBDIR}
-#	${TOOL_MAKEWHATIS} ${DESTDIR}${WHATISDBDIR}
-# .if ${MKUNPRIVED} != "no"
-# 	echo ".${WHATISDBDIR}/whatis.db type=file mode=0444 uname=${BINOWN} gname=${BINGRP}" \
-# 	    | ${METALOG.add}
-# .endif
-# .else
-# makedb:
-# .endif
-
-.include <bsd.subdir.mk>
-.include <bsd.sys.mk>
+install::
+	-rm -rf $(MAN)
+	-mkdir $(MAN)
+	cpdir . $(MAN)
+	chown -R bin $(MAN)
+	chgrp -R operator $(MAN)
+	@rm -f $(MAN)/Makefile
+	find /usr/man -type f | xargs -n 20 chmod 644
+	find /usr/man -type d | xargs -n 20 chmod 755
+	makewhatis $(MAN)

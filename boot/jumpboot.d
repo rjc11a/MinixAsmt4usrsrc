@@ -1,2 +1,0 @@
-
-jumpboot.o:	jumpboot.s

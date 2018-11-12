@@ -21,7 +21,7 @@ int printf(const char *fmt, ...);
 #define SEEK_END	2
 
 /* Kernel printf requires a putk() function. */
-void putk(int c)
+int putk(int c)
 {
 	char ch = c;
 
@@ -72,6 +72,7 @@ char *strerror(int err)
 
 int main(int argc, char **argv)
 {
+	int i;
 	static char buf[512];
 	unsigned long size, mul;
 	off_t offset;

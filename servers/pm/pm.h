@@ -16,11 +16,9 @@
 #include <unistd.h>
 #include <minix/syslib.h>
 #include <minix/sysutil.h>
-#include <minix/timers.h>
 
 #include <limits.h>
 #include <errno.h>
-#include <sys/param.h>
 
 #include "const.h"
 #include "type.h"

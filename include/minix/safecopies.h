@@ -3,9 +3,10 @@
 #define _MINIX_SAFECOPIES_H 1
 
 #include <minix/sys_config.h>
-#include <minix/types.h>
-#include <minix/vm.h>
+#include <sys/types.h>
 #include <stdint.h>
+
+typedef int32_t cp_grant_id_t;
 
 typedef struct {
 	int cp_flags;	/* CPF_* below */
@@ -49,13 +50,12 @@ struct vscp_vec {
 };
 
 /* Invalid grant number. */
-#define GRANT_INVALID	((cp_grant_id_t) -1)
+#define GRANT_INVALID	-1
 #define GRANT_VALID(g)	((g) > GRANT_INVALID)
 
 /* Operations: any combination is ok. */
 #define CPF_READ	0x000001 /* Granted process may read. */
 #define CPF_WRITE	0x000002 /* Granted process may write. */
-#define CPF_MAP		0x000004 /* Granted process may map. */
 
 /* Internal flags. */
 #define CPF_USED	0x000100 /* Grant slot in use. */
@@ -79,7 +79,6 @@ _PROTOTYPE( int cpf_setgrant_indirect, (cp_grant_id_t g, endpoint_t who_to,
 _PROTOTYPE( int cpf_setgrant_magic, (cp_grant_id_t g, endpoint_t who_to,
 	endpoint_t who_from, vir_bytes addr, size_t bytes, int access));
 _PROTOTYPE( int cpf_setgrant_disable, (cp_grant_id_t grant_id));
-_PROTOTYPE( void cpf_reload, (void));
 
 /* Set a process' grant table location and size (in-kernel only). */
 #define _K_SET_GRANT_TABLE(rp, ptr, entries)	\

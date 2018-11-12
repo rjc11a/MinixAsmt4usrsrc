@@ -14,6 +14,7 @@ Copyright 1995 Philip Homburg
 #include "event.h"
 #include "eth.h"
 #include "io.h"
+#include "sr.h"
 
 THIS_FILE
 
@@ -919,7 +920,7 @@ ether_addr_t *ethaddr;
 			return NW_OK;
 		}
 		if (ce->ac_state == ACS_UNREACHABLE)
-			return EHOSTUNREACH;
+			return EDSTNOTRCH;
 		assert(ce->ac_state == ACS_INCOMPLETE);
 
 		return NW_SUSPEND;

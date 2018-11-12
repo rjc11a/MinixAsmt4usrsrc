@@ -23,7 +23,7 @@ _PROTOTYPE( int ne_probe, (struct dpeth *dep)				);
 _PROTOTYPE( void ne_init, (struct dpeth *dep)				);
 
 /* rtl8029.c */
-_PROTOTYPE( int rtl_probe, (struct dpeth *dep, int skip)		);
+_PROTOTYPE( int rtl_probe, (struct dpeth *dep)				);
 
 /* wdeth.c */
 _PROTOTYPE( int wdeth_probe, (struct dpeth* dep)				);

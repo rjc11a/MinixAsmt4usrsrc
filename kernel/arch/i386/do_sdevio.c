@@ -2,15 +2,15 @@
  *   m_type:	SYS_SDEVIO
  *
  * The parameters for this kernel call are:
- *    m2_i3:	DIO_REQUEST	(request input or output)
- *    m2_l1:	DIO_PORT	(port to read/ write)
- *    m2_p1:	DIO_VEC_ADDR	(virtual address of buffer, or grant ID)
- *    m2_l2:	DIO_VEC_SIZE	(number of elements)
- *    m2_i2:	DIO_VEC_PROC	(process where buffer is)
- *    m2_i1:	DIO_OFFSET	(offset into the grant)
+ *    m2_i3:	DIO_REQUEST	(request input or output)	
+ *    m2_i1:	DIO_TYPE	(flag indicating byte, word, or long)
+ *    m2_l1:	DIO_PORT	(port to read/ write)	
+ *    m2_p1:	DIO_VEC_ADDR	(virtual address of buffer)	
+ *    m2_l2:	DIO_VEC_SIZE	(number of elements)	
+ *    m2_i2:	DIO_VEC_PROC	(process where buffer is)	
  */
 
-#include "kernel/system.h"
+#include "../../system.h"
 #include <minix/devio.h>
 #include <minix/endpoint.h>
 
@@ -21,20 +21,17 @@
 /*===========================================================================*
  *			        do_sdevio                                    *
  *===========================================================================*/
-PUBLIC int do_sdevio(struct proc * caller, message *m_ptr)
+PUBLIC int do_sdevio(m_ptr)
+register message *m_ptr;	/* pointer to request message */
 {
-  vir_bytes newoffset;
-  endpoint_t newep;
-  int proc_nr;
-  endpoint_t proc_nr_e = m_ptr->DIO_VEC_ENDPT;
-  vir_bytes count = m_ptr->DIO_VEC_SIZE;
+  int proc_nr, proc_nr_e = m_ptr->DIO_VEC_ENDPT;
+  int count = m_ptr->DIO_VEC_SIZE;
   long port = m_ptr->DIO_PORT;
   phys_bytes phys_buf;
-  int i, req_type, req_dir, size, nr_io_range;
+  int i, req_type, req_dir, io_type, size, nr_io_range;
+  struct proc *rp;
   struct priv *privp;
   struct io_range *iorp;
-  struct proc *destproc;
-  int retval;
 
   /* Allow safe copies and accesses to SELF */
   if ((m_ptr->DIO_REQUEST & _DIO_SAFEMASK) != _DIO_SAFE &&
@@ -44,7 +41,7 @@ PUBLIC int do_sdevio(struct proc * caller, message *m_ptr)
 	if (first)
 	{
 		first= 0;
-		printf("do_sdevio: for %d, req %d\n",
+		kprintf("do_sdevio: for %d, req %d\n",
 			m_ptr->m_source, m_ptr->DIO_REQUEST);
 	}
   }
@@ -54,7 +51,7 @@ PUBLIC int do_sdevio(struct proc * caller, message *m_ptr)
    * that initiated the device I/O. Kernel processes, of course, are denied.
    */
   if (proc_nr_e == SELF)
-	proc_nr = _ENDPOINT_P(caller->p_endpoint);
+	proc_nr = who_p;
   else
 	if(!isokendpt(proc_nr_e, &proc_nr))
 		return(EINVAL);
@@ -67,51 +64,30 @@ PUBLIC int do_sdevio(struct proc * caller, message *m_ptr)
   /* Check for 'safe' variants. */
   if((m_ptr->DIO_REQUEST & _DIO_SAFEMASK) == _DIO_SAFE) {
      /* Map grant address to physical address. */
-     if(verify_grant(proc_nr_e, caller->p_endpoint,
-	(cp_grant_id_t) m_ptr->DIO_VEC_ADDR,
-	count,
-	req_dir == _DIO_INPUT ? CPF_WRITE : CPF_READ,
-	(vir_bytes) m_ptr->DIO_OFFSET, 
-	&newoffset, &newep) != OK) {
-	printf("do_sdevio: verify_grant failed\n");
-	return EPERM;
-    }
-	if(!isokendpt(newep, &proc_nr))
-		return(EINVAL);
-     destproc = proc_addr(proc_nr);
-     if ((phys_buf = umap_local(destproc, D,
-	 (vir_bytes) newoffset, count)) == 0) {
-	printf("do_sdevio: umap_local failed\n");
-         return(EFAULT);
-     }
+     if ((phys_buf = umap_verify_grant(proc_addr(proc_nr), who_e,
+	(vir_bytes) m_ptr->DIO_VEC_ADDR,
+	(vir_bytes) m_ptr->DIO_OFFSET, count,
+	req_dir == _DIO_INPUT ? CPF_WRITE : CPF_READ)) == 0)
+         return(EPERM);
   } else {
-     if(proc_nr != _ENDPOINT_P(caller->p_endpoint))
-     {
-	printf("do_sdevio: unsafe sdevio by %d in %d denied\n",
-		caller->p_endpoint, proc_nr_e);
-	return EPERM;
-     }
+     if(proc_nr != who_p)
+	kprintf("unsafe sdevio by %d in %d\n", who_e, proc_nr_e);
      /* Get and check physical address. */
-     if ((phys_buf = umap_local(proc_addr(proc_nr), D,
+     if ((phys_buf = numap_local(proc_nr,
 	 (vir_bytes) m_ptr->DIO_VEC_ADDR, count)) == 0)
          return(EFAULT);
-     destproc = proc_addr(proc_nr);
   }
-     /* current process must be target for phys_* to be OK */
 
-  switch_address_space(destproc);
-
-  switch (req_type)
+  rp= proc_addr(who_p);
+  if (privp && privp->s_flags & CHECK_IO_PORT)
   {
+	switch (io_type)
+	{
 	case _DIO_BYTE: size= 1; break;
 	case _DIO_WORD: size= 2; break;
 	case _DIO_LONG: size= 4; break;
 	default: size= 4; break;	/* Be conservative */
-  }
-
-  privp= priv(caller);
-  if (privp && privp->s_flags & CHECK_IO_PORT)
-  {
+	}
 	port= m_ptr->DIO_PORT;
 	nr_io_range= privp->s_nr_io_range;
 	for (i= 0, iorp= privp->s_io_tab; i<nr_io_range; i++, iorp++)
@@ -121,19 +97,11 @@ PUBLIC int do_sdevio(struct proc * caller, message *m_ptr)
 	}
 	if (i >= nr_io_range)
 	{
-		printf(
+		kprintf(
 		"do_sdevio: I/O port check failed for proc %d, port 0x%x\n",
 			m_ptr->m_source, port);
-		retval = EPERM;
-		goto return_error;
+		return EPERM;
 	}
-  }
-
-  if (port & (size-1))
-  {
-	printf("do_devio: unaligned port 0x%x (size %d)\n", port, size);
-	retval = EPERM;
-	goto return_error;
   }
 
   /* Perform device I/O for bytes and words. Longs are not supported. */
@@ -141,29 +109,20 @@ PUBLIC int do_sdevio(struct proc * caller, message *m_ptr)
       switch (req_type) {
       case _DIO_BYTE: phys_insb(port, phys_buf, count); break; 
       case _DIO_WORD: phys_insw(port, phys_buf, count); break; 
-      default:
-  		retval = EINVAL;
-		goto return_error;
+      default: return(EINVAL);
       } 
   } else if (req_dir == _DIO_OUTPUT) { 
       switch (req_type) {
       case _DIO_BYTE: phys_outsb(port, phys_buf, count); break; 
       case _DIO_WORD: phys_outsw(port, phys_buf, count); break; 
-      default:
-  		retval = EINVAL;
-		goto return_error;
+      default: return(EINVAL);
       } 
   }
   else {
-	  retval = EINVAL;
-	  goto return_error;
+      return(EINVAL);
   }
-  retval = OK;
-
-return_error:
-  /* switch back to the address of the process which made the call */
-  switch_address_space(caller);
-  return retval;
+  return(OK);
 }
 
 #endif /* USE_SDEVIO */
+

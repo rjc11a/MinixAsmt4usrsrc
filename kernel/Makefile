@@ -1,52 +1,57 @@
 # Makefile for kernel
-.include <bsd.own.mk>
 
-PROG=	kernel
+include /etc/make.conf
+
+# Directories
+u = /usr
+i = $u/include
+l = $u/lib
+s = system
+a = arch/$(ARCH)
+
+# Programs, flags, etc.
+CC =	exec cc
+CPP =	$l/cpp
+LD =	$(CC) -.o
+CPPFLAGS=-I$i -I$a/include
+CFLAGS=$(CPROFILE) $(CPPFLAGS) $(EXTRA_OPTS)
+LDFLAGS=-i 
 
 # first-stage, arch-dependent startup code
-SRCS=	mpx.S
-SRCS+=	start.c table.c main.c proc.c \
-	system.c clock.c utility.c debug.c profile.c interrupt.c \
-	watchdog.c
+HEAD =	head.o
+FULLHEAD = $a/$(HEAD)
 
-DPADD+=	${LIBTIMERS} ${LIBSYS}
-LDADD+=	-ltimers -lsys
+OBJS =	start.o table.o main.o proc.o \
+	system.o clock.o utility.o debug.o profile.o interrupt.o
+SYSTEM = system.a
+ARCHLIB = $a/$(ARCH).a
+LIBS = -ltimers -lsysutil
 
-.if ${COMPILER_TYPE} == "ack"
-LDFLAGS+= -.o
-.elif ${COMPILER_TYPE} == "gnu"
-CPPFLAGS+= -ffreestanding -fno-stack-protector
-LDFLAGS+= -T arch/${ARCH}/kernel.lds
-LDFLAGS+= -nostdlib -L/usr/gnu/lib
-CFLAGS+=-march=i386
-DPADD+=	${LIBC}
-LDADD+=	-lc
-.endif
-
-CPPFLAGS+=	-I${.CURDIR} -I${.CURDIR}/arch/${ARCH}/include -I${MINIXSRCDIR}
-AFLAGS+=	-I${.CURDIR} -I${.CURDIR}/arch/${ARCH}/include -I${MINIXSRCDIR}
-
-INSTALLFLAGS+=	-S 0
-BINDIR=	/usr/sbin
-MAN=
-
-.include "system/Makefile.inc"
-.include "arch/${ARCH}/Makefile.inc"
-.include <bsd.prog.mk>
-
-debug.d: extracted-errno.h extracted-mfield.h extracted-mtype.h
-
-extracted-errno.h: extract-errno.sh ../include/errno.h
-	${_MKTARGET_CREATE}
-	cd ${.CURDIR} ; sh extract-errno.sh > ${.OBJDIR}/extracted-errno.h
-
-extracted-mfield.h: extract-mfield.sh ../lib/libc/other/*.c ../lib/libc/posix/*.c ../lib/libsys/*.c
-	${_MKTARGET_CREATE}
-	cd ${.CURDIR} ; sh extract-mfield.sh > ${.OBJDIR}/extracted-mfield.h
-
-extracted-mtype.h: extract-mtype.sh ../include/minix/com.h
-	${_MKTARGET_CREATE}
-	cd ${.CURDIR} ; sh extract-mtype.sh > ${.OBJDIR}/extracted-mtype.h
+# What to make.
+all: build 
+kernel build install: $(HEAD) $(OBJS) 
+	cd system && $(MAKE) $@
+	cd $a && $(MAKE) $@
+	$(LD) $(CFLAGS) $(LDFLAGS) -o kernel $(FULLHEAD) $(OBJS) \
+		$(SYSTEM) $(ARCHLIB) $(LIBS)
+	install -S 0 kernel
 
 clean:
-	rm -f extracted-errno.h extracted-mfield.h extracted-mtype.h
+	cd system && $(MAKE) -$(MAKEFLAGS) $@
+	cd $a && $(MAKE) -$(MAKEFLAGS) $@
+	rm -f *.a *.o *~ *.bak kernel
+
+depend: 
+	cd system && $(MAKE) -$(MAKEFLAGS) $@
+	cd $a && $(MAKE) $@
+	mkdep "$(CC) -E $(CPPFLAGS)" *.c > .depend
+
+# How to build it
+.c.o:
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(HEAD): 
+	cd $a && make HEAD=$(HEAD) $(HEAD)
+
+# Include generated dependencies.
+include .depend

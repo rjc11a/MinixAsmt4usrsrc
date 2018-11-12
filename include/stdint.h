@@ -10,9 +10,8 @@
 #ifndef _STDINT_H
 #define _STDINT_H
 
-#include <sys/cdefs.h>
 #ifndef _MINIX__TYPES_H
-#include <minix/types.h>
+#include <sys/types.h>
 #endif
 #include <minix/sys_config.h>
 
@@ -25,18 +24,14 @@
 typedef i8_t	int8_t;
 typedef i16_t	int16_t;
 typedef i32_t	int32_t;
-#if defined(__LONG_LONG_SUPPORTED)
-typedef long long int64_t;
-#elif _WORD_SIZE > 2 && __L64
+#if _WORD_SIZE > 2 && __L64
 typedef i64_t	int64_t;
 #endif
 
 typedef u8_t	uint8_t;
 typedef u16_t	uint16_t;
 typedef u32_t	uint32_t;
-#if defined(__LONG_LONG_SUPPORTED)
-typedef unsigned long long uint64_t;
-#elif _WORD_SIZE > 2 && __L64
+#if _WORD_SIZE > 2 && __L64
 typedef u64_t	uint64_t;
 #endif
 
@@ -44,14 +39,14 @@ typedef u64_t	uint64_t;
 typedef int8_t		int_least8_t;
 typedef int16_t		int_least16_t;
 typedef int32_t		int_least32_t;
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 typedef int64_t		int_least64_t;
 #endif
 
 typedef uint8_t		uint_least8_t;
 typedef uint16_t	uint_least16_t;
 typedef uint32_t	uint_least32_t;
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 typedef uint64_t	uint_least64_t;
 #endif
 
@@ -64,7 +59,7 @@ typedef int32_t		int_fast8_t;
 typedef int32_t		int_fast16_t;
 #endif
 typedef int32_t		int_fast32_t;
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 typedef int64_t		int_fast64_t;
 #endif
 
@@ -76,7 +71,7 @@ typedef uint32_t	uint_fast8_t;
 typedef uint32_t	uint_fast16_t;
 #endif
 typedef uint32_t	uint_fast32_t;
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 typedef uint64_t	uint_fast64_t;
 #endif
 
@@ -88,14 +83,8 @@ typedef unsigned	uintptr_t;
 typedef long		intptr_t;
 typedef unsigned long	uintptr_t;
 #endif
-
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
-typedef int64_t		intmax_t;
-typedef uint64_t	uintmax_t;
-#else
 typedef long		intmax_t;
 typedef unsigned long	uintmax_t;
-#endif
 
 #if !__cplusplus || defined(__STDC_LIMIT_MACROS)
 #ifndef _LIMITS_H
@@ -106,49 +95,49 @@ typedef unsigned long	uintmax_t;
 #define INT8_MIN		(-INT8_MAX-1)
 #define INT16_MIN		(-INT16_MAX-1)
 #define INT32_MIN		(-INT32_MAX-1)
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 #define INT64_MIN		(-INT64_MAX-1)
 #endif
 
 #define INT8_MAX		127
 #define INT16_MAX		32767
 #define INT32_MAX		2147483647
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
-#define INT64_MAX		9223372036854775807LL
+#if _WORD_SIZE > 2 && __L64
+#define INT64_MAX		9223372036854775807
 #endif
 
 #define UINT8_MAX		255
 #define UINT16_MAX		65535
-#define UINT32_MAX		4294967295U
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
-#define UINT64_MAX		18446744073709551615ULL
+#define UINT32_MAX		4294967295
+#if _WORD_SIZE > 2 && __L64
+#define UINT64_MAX		18446744073709551615
 #endif
 
 #define INT_LEAST8_MIN		INT8_MIN
 #define INT_LEAST16_MIN		INT16_MIN
 #define INT_LEAST32_MIN		INT32_MIN
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 #define INT_LEAST64_MIN		INT64_MIN
 #endif
 
 #define INT_LEAST8_MAX		INT8_MAX
 #define INT_LEAST16_MAX		INT16_MAX
 #define INT_LEAST32_MAX		INT32_MAX
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 #define INT_LEAST64_MAX		INT64_MAX
 #endif
 
 #define UINT_LEAST8_MAX		UINT8_MAX
 #define UINT_LEAST16_MAX	UINT16_MAX
 #define UINT_LEAST32_MAX	UINT32_MAX
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 #define UINT_LEAST64_MAX	UINT64_MAX
 #endif
 
 #define INT_FAST8_MIN		(-INT_FAST8_MAX-1)
 #define INT_FAST16_MIN		(-INT_FAST16_MAX-1)
 #define INT_FAST32_MIN		INT32_MIN
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 #define INT_FAST64_MIN		INT64_MIN
 #endif
 
@@ -160,7 +149,7 @@ typedef unsigned long	uintmax_t;
 #define INT_FAST16_MAX		INT32_MAX
 #endif
 #define INT_FAST32_MAX		INT32_MAX
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 #define INT_FAST64_MAX		INT64_MAX
 #endif
 
@@ -172,7 +161,7 @@ typedef unsigned long	uintmax_t;
 #define UINT_FAST16_MAX		UINT32_MAX
 #endif
 #define UINT_FAST32_MAX		UINT32_MAX
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 #define UINT_FAST64_MAX		UINT64_MAX
 #endif
 
@@ -185,18 +174,15 @@ typedef unsigned long	uintmax_t;
 #define INTPTR_MAX		LONG_MAX
 #define UINTPTR_MAX		ULONG_MAX
 #endif
-
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
-#define INTMAX_MIN		INT64_MIN
-#define INTMAX_MAX		INT64_MAX
-#define UINTMAX_MAX		UINT64_MAX
-#else
 #define INTMAX_MIN		LONG_MIN
 #define INTMAX_MAX		LONG_MAX
 #define UINTMAX_MAX		ULONG_MAX
-#endif
 
 #endif /* !__cplusplus || __STDC_LIMIT_MACROS */
+
+#ifndef __CONCAT
+#define __CONCAT(x,y)	x ## y
+#endif
 
 /* Constants of the proper type. */
 #define INT8_C(c)	c
@@ -206,7 +192,7 @@ typedef unsigned long	uintmax_t;
 #else
 #define INT32_C(c)	c
 #endif
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 #define INT64_C(c)	__CONCAT(c,l)
 #endif
 
@@ -217,11 +203,11 @@ typedef unsigned long	uintmax_t;
 #else
 #define UINT32_C(c)	__CONCAT(c,u)
 #endif
-#if defined(__LONG_LONG_SUPPORTED) || (_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE > 2 && __L64
 #define UINT64_C(c)	__CONCAT(c,lu)
 #endif
 
-#if !defined(__LONG_LONG_SUPPORTED) && !(_WORD_SIZE > 2 && __L64)
+#if _WORD_SIZE == 2 || !__L64
 #define INTMAX_C(c)	INT32_C(c)
 #define UINTMAX_C(c)	UINT32_C(c)
 #else

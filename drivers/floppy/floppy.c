@@ -24,11 +24,9 @@
 
 #include "floppy.h"
 #include <timers.h>
-#include <machine/diskparm.h>
+#include <ibm/diskparm.h>
 #include <minix/sysutil.h>
 #include <minix/syslib.h>
-#include <minix/endpoint.h>
-#include <stdio.h>
 
 /* I/O Ports used by floppy disk task. */
 #define DOR            0x3F2	/* motor drive control bits */
@@ -103,8 +101,8 @@
 #define MAX_SECTORS	  18	/* largest # sectors per track */
 #define DTL             0xFF	/* determines data length (sector size) */
 #define SPEC2           0x02	/* second parameter to SPECIFY */
-#define MOTOR_OFF (3*system_hz)	/* how long to wait before stopping motor */
-#define WAKEUP	  (2*system_hz)	/* timeout on I/O, FDC won't quit. */
+#define MOTOR_OFF      (3*HZ)	/* how long to wait before stopping motor */
+#define WAKEUP	       (2*HZ)	/* timeout on I/O, FDC won't quit. */
 
 /* Error codes */
 #define ERR_SEEK         (-1)	/* bad seek */
@@ -130,7 +128,8 @@
 #define NR_DRIVES          2	/* maximum number of drives */
 #define DIVISOR          128	/* used for sector size encoding */
 #define SECTOR_SIZE_CODE   2	/* code to say "512" to the controller */
-#define TIMEOUT_MICROS   5000000L	/* microseconds waiting for FDC */
+#define TIMEOUT_MICROS   500000L	/* microseconds waiting for FDC */
+#define TIMEOUT_TICKS     30	/* ticks waiting for FDC */
 #define NT                 7	/* number of diskette/drive combinations */
 #define UNCALIBRATED       0	/* drive needs to be calibrated at next use */
 #define CALIBRATED         1	/* no calibration needed */
@@ -164,17 +163,17 @@ PRIVATE struct density {
 	u8_t	steps;		/* steps per cylinder (2 = double step) */
 	u8_t	test;		/* sector to try for density test */
 	u8_t	rate;		/* data rate (2=250, 1=300, 0=500 kbps) */
-	clock_t	start_ms;	/* motor start (milliseconds) */
+	clock_t	start;	/* motor start (clock ticks) */
 	u8_t	gap;		/* gap size */
 	u8_t	spec1;		/* first specify byte (SRT/HUT) */
 } fdensity[NT] = {
-	{  9, 40, 1, 4*9, 2, 500, 0x2A, 0xDF },	/*  360K / 360K  */
-	{ 15, 80, 1,  14, 0, 500, 0x1B, 0xDF },	/*  1.2M / 1.2M  */
-	{  9, 40, 2, 2*9, 2, 500, 0x2A, 0xDF },	/*  360K / 720K  */
-	{  9, 80, 1, 4*9, 2, 750, 0x2A, 0xDF },	/*  720K / 720K  */
-	{  9, 40, 2, 2*9, 1, 500, 0x23, 0xDF },	/*  360K / 1.2M  */
-	{  9, 80, 1, 4*9, 1, 500, 0x23, 0xDF },	/*  720K / 1.2M  */
-	{ 18, 80, 1,  17, 0, 750, 0x1B, 0xCF },	/* 1.44M / 1.44M */
+	{  9, 40, 1, 4*9, 2, 4*HZ/8, 0x2A, 0xDF },	/*  360K / 360K  */
+	{ 15, 80, 1,  14, 0, 4*HZ/8, 0x1B, 0xDF },	/*  1.2M / 1.2M  */
+	{  9, 40, 2, 2*9, 2, 4*HZ/8, 0x2A, 0xDF },	/*  360K / 720K  */
+	{  9, 80, 1, 4*9, 2, 6*HZ/8, 0x2A, 0xDF },	/*  720K / 720K  */
+	{  9, 40, 2, 2*9, 1, 4*HZ/8, 0x23, 0xDF },	/*  360K / 1.2M  */
+	{  9, 80, 1, 4*9, 1, 4*HZ/8, 0x23, 0xDF },	/*  720K / 1.2M  */
+	{ 18, 80, 1,  17, 0, 6*HZ/8, 0x1B, 0xCF },	/* 1.44M / 1.44M */
 };
 
 /* The following table is used with the test_sector array to recognize a
@@ -218,15 +217,15 @@ PRIVATE struct floppy {		/* main drive struct, one entry per drive */
 } floppy[NR_DRIVES];
 
 PRIVATE int irq_hook_id;	/* id of irq hook at the kernel */
-PUBLIC int motor_status;	/* bitmap of current motor status */
+PRIVATE int motor_status;	/* bitmap of current motor status */
 PRIVATE int need_reset;		/* set to 1 when controller must be reset */
-PUBLIC unsigned f_drive;	/* selected drive */
+PRIVATE unsigned f_drive;	/* selected drive */
 PRIVATE unsigned f_device;	/* selected minor device */
 PRIVATE struct floppy *f_fp;	/* current drive */
 PRIVATE struct density *f_dp;	/* current density parameters */
 PRIVATE struct density *prev_dp;/* previous density parameters */
 PRIVATE unsigned f_sectors;	/* equal to f_dp->secpt (needed a lot) */
-PUBLIC u16_t f_busy;		/* BSY_IDLE, BSY_IO, BSY_WAKEN */
+PRIVATE u16_t f_busy;		/* BSY_IDLE, BSY_IO, BSY_WAKEN */
 PRIVATE struct device *f_dv;	/* device's base and size */
 PRIVATE struct disk_parameter_s fmt_param; /* parameters for format */
 PRIVATE u8_t f_results[MAX_RESULTS];/* the controller can give lots of output */
@@ -237,8 +236,11 @@ PRIVATE u8_t f_results[MAX_RESULTS];/* the controller can give lots of output */
  * floppy disk drive contains a 'fl_tmr_stop' timer. 
  */
 PRIVATE timer_t f_tmr_timeout;		/* timer for various timeouts */
-PRIVATE u32_t system_hz;		/* system clock frequency */
+PRIVATE timer_t *f_timers;		/* queue of floppy timers */
+PRIVATE clock_t f_next_timeout; 	/* the next timeout time */
 FORWARD _PROTOTYPE( void f_expire_tmrs, (struct driver *dp, message *m_ptr) );
+FORWARD _PROTOTYPE( void f_set_timer, (timer_t *tp, clock_t delta,
+						 tmr_func_t watchdog) 	);
 FORWARD _PROTOTYPE( void stop_motor, (timer_t *tp) 			);
 FORWARD _PROTOTYPE( void f_timeout, (timer_t *tp) 			);
 
@@ -246,19 +248,20 @@ FORWARD _PROTOTYPE( struct device *f_prepare, (int device) 		);
 FORWARD _PROTOTYPE( char *f_name, (void) 				);
 FORWARD _PROTOTYPE( void f_cleanup, (void) 				);
 FORWARD _PROTOTYPE( int f_transfer, (int proc_nr, int opcode, u64_t position,
-					iovec_t *iov, unsigned nr_req) 	);
+					iovec_t *iov, unsigned nr_req, int) 	);
 FORWARD _PROTOTYPE( int dma_setup, (int opcode) 			);
 FORWARD _PROTOTYPE( void start_motor, (void) 				);
 FORWARD _PROTOTYPE( int seek, (void) 					);
 FORWARD _PROTOTYPE( int fdc_transfer, (int opcode) 			);
 FORWARD _PROTOTYPE( int fdc_results, (void) 				);
-FORWARD _PROTOTYPE( int fdc_command, (const u8_t *cmd, int len) 	);
+FORWARD _PROTOTYPE( int fdc_command, (u8_t *cmd, int len) 		);
 FORWARD _PROTOTYPE( void fdc_out, (int val) 				);
 FORWARD _PROTOTYPE( int recalibrate, (void) 				);
 FORWARD _PROTOTYPE( void f_reset, (void) 				);
 FORWARD _PROTOTYPE( int f_intr_wait, (void) 				);
 FORWARD _PROTOTYPE( int read_id, (void) 				);
 FORWARD _PROTOTYPE( int f_do_open, (struct driver *dp, message *m_ptr) 	);
+FORWARD _PROTOTYPE( void floppy_stop, (struct driver *dp, message *m_ptr));
 FORWARD _PROTOTYPE( int test_read, (int density)	 		);
 FORWARD _PROTOTYPE( void f_geometry, (struct partition *entry)		);
 
@@ -272,6 +275,7 @@ PRIVATE struct driver f_dtab = {
   f_transfer,	/* do the I/O */
   f_cleanup,	/* cleanup before sending reply to user process */
   f_geometry,	/* tell the geometry of the diskette */
+  floppy_stop,	/* floppy cleanup on shutdown */
   f_expire_tmrs,/* expire all alarm timers */
   nop_cancel,
   nop_select,
@@ -279,77 +283,24 @@ PRIVATE struct driver f_dtab = {
   NULL
 };
 
-static char *floppy_buf;
-static phys_bytes floppy_buf_phys;
-
-/* SEF functions and variables. */
-FORWARD _PROTOTYPE( void sef_local_startup, (void) );
-FORWARD _PROTOTYPE( int sef_cb_init_fresh, (int type, sef_init_info_t *info) );
-FORWARD _PROTOTYPE( void sef_cb_signal_handler, (int signo) );
-EXTERN _PROTOTYPE( int sef_cb_lu_prepare, (int state) );
-EXTERN _PROTOTYPE( int sef_cb_lu_state_isvalid, (int state) );
-EXTERN _PROTOTYPE( void sef_cb_lu_state_dump, (int state) );
-PUBLIC int last_transfer_opcode;
-
 /*===========================================================================*
  *				floppy_task				     *
  *===========================================================================*/
-PUBLIC int main(void)
+PUBLIC void main()
 {
-  /* SEF local startup. */
-  sef_local_startup();
+/* Initialize the floppy structure and the timers. */
 
-  /* Call the generic receive loop. */
-  driver_task(&f_dtab, DRIVER_STD);
-
-  return(OK);
-}
-
-/*===========================================================================*
- *			       sef_local_startup			     *
- *===========================================================================*/
-PRIVATE void sef_local_startup(void)
-{
-  /* Register init callbacks. */
-  sef_setcb_init_fresh(sef_cb_init_fresh);
-  sef_setcb_init_lu(sef_cb_init_fresh);
-  sef_setcb_init_restart(sef_cb_init_fresh);
-
-  /* Register live update callbacks. */
-  sef_setcb_lu_prepare(sef_cb_lu_prepare);
-  sef_setcb_lu_state_isvalid(sef_cb_lu_state_isvalid);
-  sef_setcb_lu_state_dump(sef_cb_lu_state_dump);
-
-  /* Register signal callbacks. */
-  sef_setcb_signal_handler(sef_cb_signal_handler);
-
-  /* Let SEF perform startup. */
-  sef_startup();
-}
-
-/*===========================================================================*
- *		            sef_cb_init_fresh                                *
- *===========================================================================*/
-PRIVATE int sef_cb_init_fresh(int type, sef_init_info_t *info)
-{
-/* Initialize the floppy driver. */
   struct floppy *fp;
   int s;
 
-  /* Initialize the floppy structure and the timers. */
-  system_hz = sys_hz();
-
-  if(!(floppy_buf = alloc_contig(2*DMA_BUF_SIZE,
-	AC_LOWER16M | AC_ALIGN4K, &floppy_buf_phys)))
-  	panic("couldn't allocate dma buffer");
-
-  init_timer(&f_tmr_timeout);
+  f_next_timeout = TMR_NEVER;
+  tmr_inittimer(&f_tmr_timeout);
 
   for (fp = &floppy[0]; fp < &floppy[NR_DRIVES]; fp++) {
 	fp->fl_curcyl = NO_CYL;
 	fp->fl_density = NO_DENS;
 	fp->fl_class = ~0;
-	init_timer(&fp->fl_tmr_stop);
+	tmr_inittimer(&fp->fl_tmr_stop);
   }
 
   /* Set IRQ policy, only request notifications, do not automatically 
@@ -357,30 +308,14 @@ PRIVATE int sef_cb_init_fresh(int type, sef_init_info_t *info)
    */
   irq_hook_id = FLOPPY_IRQ;
   if ((s=sys_irqsetpolicy(FLOPPY_IRQ, 0, &irq_hook_id )) != OK)
-  	panic("Couldn't set IRQ policy: %d", s);
+  	panic("FLOPPY", "Couldn't set IRQ policy", s);
   if ((s=sys_irqenable(&irq_hook_id)) != OK)
-  	panic("Couldn't enable IRQs: %d", s);
+  	panic("FLOPPY", "Couldn't enable IRQs", s);
 
-  /* Announce we are up! */
-  driver_announce();
+  /* Ignore signals */
+  signal(SIGHUP, SIG_IGN);
 
-  return(OK);
-}
-
-/*===========================================================================*
- *		           sef_cb_signal_handler                             *
- *===========================================================================*/
-PRIVATE void sef_cb_signal_handler(int signo)
-{
-  int s;
-
-  /* Only check for termination signal, ignore anything else. */
-  if (signo != SIGTERM) return;
-
-  /* Stop all activity and cleanly exit with the system. */
-  if ((s=sys_outb(DOR, ENABLE_INT)) != OK)
-      panic("Sys_outb failed: %d", s);
-  exit(0);
+  driver_task(&f_dtab);
 }
 
 /*===========================================================================*
@@ -388,23 +323,71 @@ PRIVATE void sef_cb_signal_handler(int signo)
  *===========================================================================*/
 PRIVATE void f_expire_tmrs(struct driver *dp, message *m_ptr)
 {
-/* A synchronous alarm message was received. Call the watchdog function for
- * each expired timer, if any.
+/* A synchronous alarm message was received. Check if there are any expired 
+ * timers. Possibly reschedule the next alarm.  
  */
+  clock_t now;				/* current time */
+  timer_t *tp;
+  int s;
 
-  expire_timers(m_ptr->NOTIFY_TIMESTAMP);
+  /* Get the current time to compare the timers against. */
+  if ((s=getuptime(&now)) != OK)
+ 	panic("FLOPPY","Couldn't get uptime from clock.", s);
+
+  /* Scan the timers queue for expired timers. Dispatch the watchdog function
+   * for each expired timers. FLOPPY watchdog functions are f_tmr_timeout() 
+   * and stop_motor(). Possibly a new alarm call must be scheduled.
+   */
+  tmrs_exptimers(&f_timers, now, NULL);
+  if (f_timers == NULL) {
+  	f_next_timeout = TMR_NEVER;
+  } else {  					  /* set new sync alarm */
+  	f_next_timeout = f_timers->tmr_exp_time;
+  	if ((s=sys_setalarm(f_next_timeout, 1)) != OK)
+ 		panic("FLOPPY","Couldn't set synchronous alarm.", s);
+  }
+}
+
+/*===========================================================================*
+ *				f_set_timer				     *
+ *===========================================================================*/
+PRIVATE void f_set_timer(tp, delta, watchdog)
+timer_t *tp;				/* timer to be set */
+clock_t delta;				/* in how many ticks */
+tmr_func_t watchdog;			/* watchdog function to be called */
+{
+  clock_t now;				/* current time */
+  int s;
+
+  /* Get the current time. */
+  if ((s=getuptime(&now)) != OK)
+ 	panic("FLOPPY","Couldn't get uptime from clock.", s);
+
+  /* Add the timer to the local timer queue. */
+  tmrs_settimer(&f_timers, tp, now + delta, watchdog, NULL);
+
+  /* Possibly reschedule an alarm call. This happens when the front of the 
+   * timers queue was reinserted at another position, i.e., when a timer was 
+   * reset, or when a new timer was added in front. 
+   */
+  if (f_timers->tmr_exp_time != f_next_timeout) {
+  	f_next_timeout = f_timers->tmr_exp_time; 
+  	if ((s=sys_setalarm(f_next_timeout, 1)) != OK)
+ 		panic("FLOPPY","Couldn't set synchronous alarm.", s);
+  }
 }
 
 /*===========================================================================*
  *				f_prepare				     *
  *===========================================================================*/
-PRIVATE struct device *f_prepare(int device)
+PRIVATE struct device *f_prepare(device)
+int device;
 {
 /* Prepare for I/O on a device. */
 
   f_device = device;
   f_drive = device & ~(DEV_TYPE_BITS | FORMAT_DEV_BIT);
-  if (f_drive < 0 || f_drive >= NR_DRIVES) return(NULL);
+  if (f_drive < 0 || f_drive >= NR_DRIVES) return(NIL_DEV);
 
   f_fp = &floppy[f_drive];
   f_dv = &f_fp->fl_geom;
@@ -425,7 +408,7 @@ PRIVATE struct device *f_prepare(int device)
 /*===========================================================================*
  *				f_name					     *
  *===========================================================================*/
-PRIVATE char *f_name(void)
+PRIVATE char *f_name()
 {
 /* Return a name for the current device. */
   static char name[] = "fd0";
@@ -437,10 +420,11 @@ PRIVATE char *f_name(void)
 /*===========================================================================*
  *				f_cleanup				     *
  *===========================================================================*/
-PRIVATE void f_cleanup(void)
+PRIVATE void f_cleanup()
 {
   /* Start a timer to turn the motor off in a few seconds. */
-  set_timer(&f_fp->fl_tmr_stop, MOTOR_OFF, stop_motor, f_drive);
+  tmr_arg(&f_fp->fl_tmr_stop)->ta_int = f_drive;
+  f_set_timer(&f_fp->fl_tmr_stop, MOTOR_OFF, stop_motor);
 
   /* Exiting the floppy driver, so forget where we are. */
   f_fp->fl_sector = NO_SECTOR;
@@ -449,12 +433,13 @@ PRIVATE void f_cleanup(void)
 /*===========================================================================*
  *				f_transfer				     *
  *===========================================================================*/
-PRIVATE int f_transfer(proc_nr, opcode, pos64, iov, nr_req)
+PRIVATE int f_transfer(proc_nr, opcode, pos64, iov, nr_req, safe)
 int proc_nr;			/* process doing the request */
 int opcode;			/* DEV_GATHER_S or DEV_SCATTER_S */
 u64_t pos64;			/* offset on device to read or write */
 iovec_t *iov;			/* pointer to read or write request vector */
 unsigned nr_req;		/* length of request vector */
+int safe;
 {
 #define NO_OFFSET -1
   struct floppy *fp = f_fp;
@@ -472,9 +457,6 @@ unsigned nr_req;		/* length of request vector */
   if (ex64hi(pos64) != 0)
 	return OK;	/* Way beyond EOF */
   position= cv64ul(pos64);
-
-  /* Record the opcode of the last transfer performed. */
-  last_transfer_opcode = opcode;
 
   /* Check disk address. */
   if ((position & SECTOR_MASK) != 0) return(EINVAL);
@@ -504,17 +486,19 @@ unsigned nr_req;		/* length of request vector */
 		if (iov->iov_size < SECTOR_SIZE + sizeof(fmt_param))
 			return(EINVAL);
 
-		if(proc_nr != SELF) {
+		if(safe) {
 		   s=sys_safecopyfrom(proc_nr, iov->iov_addr,
 			SECTOR_SIZE + iov_offset, (vir_bytes) &fmt_param,
 			(phys_bytes) sizeof(fmt_param), D);
-		   if(s != OK)
-			panic("sys_safecopyfrom failed: %d", s);
 		} else {
-			memcpy(&fmt_param, (void *) (iov->iov_addr +
-				SECTOR_SIZE + iov_offset),
-				(phys_bytes) sizeof(fmt_param));
+		   s=sys_datacopy(proc_nr, iov->iov_addr +
+			SECTOR_SIZE + iov_offset,
+			SELF, (vir_bytes) &fmt_param, 
+			(phys_bytes) sizeof(fmt_param));
 		}
+
+		if(s != OK)
+			panic("FLOPPY", "Sys_*copy failed", s);
 
 		/* Check that the number of sectors in the data is reasonable,
 		 * to avoid division by 0.  Leave checking of other data to
@@ -576,7 +560,7 @@ unsigned nr_req;		/* length of request vector */
 		cmd[2] = SPEC2;
 		(void) fdc_command(cmd, 3);
 		if ((s=sys_outb(FDC_RATE, f_dp->rate)) != OK)
-			panic("Sys_outb failed: %d", s);
+			panic("FLOPPY","Sys_outb failed", s);
 		prev_dp = f_dp;
 	}
 
@@ -606,19 +590,21 @@ unsigned nr_req;		/* length of request vector */
 				if (*up != NO_OFFSET) break;
 				fp->fl_sector++;
 			}
+		}
 
-			if (opcode == DEV_SCATTER_S) {
-				/* Copy the user bytes to the DMA buffer. */
-				if(proc_nr != SELF) {
-				   s=sys_safecopyfrom(proc_nr, *ug, *up,
-					(vir_bytes) floppy_buf,
-					 (phys_bytes) SECTOR_SIZE, D);
-				   if(s != OK)
-					panic("sys_safecopyfrom failed: %d", s);
-				} else {
-				   memcpy(floppy_buf, (void *) (*ug + *up), SECTOR_SIZE);
-				}
+		if (r == OK && opcode == DEV_SCATTER_S) {
+			/* Copy the user bytes to the DMA buffer. */
+			if(safe) {
+		   	   s=sys_safecopyfrom(proc_nr, *ug, *up,
+				(vir_bytes) tmp_buf,
+			  	 (phys_bytes) SECTOR_SIZE, D);
+			} else {
+			   s=sys_datacopy(proc_nr, *ug + *up,  SELF, 
+				(vir_bytes) tmp_buf,
+				(phys_bytes) SECTOR_SIZE);
 			}
+			if(s != OK)
+				panic("FLOPPY", "Sys_vircopy failed", s);
 		}
 
 		/* Set up the DMA chip and perform the transfer. */
@@ -635,15 +621,17 @@ unsigned nr_req;		/* length of request vector */
 
 		if (r == OK && opcode == DEV_GATHER_S) {
 			/* Copy the DMA buffer to user space. */
-			if(proc_nr != SELF) {
+			if(safe) {
 		   	   s=sys_safecopyto(proc_nr, *ug, *up,
-				(vir_bytes) floppy_buf,
+				(vir_bytes) tmp_buf,
 			  	 (phys_bytes) SECTOR_SIZE, D);
-			if(s != OK)
-				panic("sys_safecopyto failed: %d", s);
 			} else {
-			   memcpy((void *) (*ug + *up), floppy_buf, SECTOR_SIZE);
+			   s=sys_datacopy(SELF, (vir_bytes) tmp_buf, 
+				proc_nr, *ug + *up, 
+				(phys_bytes) SECTOR_SIZE);
 			}
+			if(s != OK)
+				panic("FLOPPY", "Sys_vircopy failed", s);
 		}
 
 		if (r != OK) {
@@ -689,9 +677,8 @@ unsigned nr_req;		/* length of request vector */
 /*===========================================================================*
  *				dma_setup				     *
  *===========================================================================*/
-PRIVATE int dma_setup(
-  int opcode			/* DEV_GATHER_S or DEV_SCATTER_S */
-)
+PRIVATE int dma_setup(opcode)
+int opcode;			/* DEV_GATHER_S or DEV_SCATTER_S */
 {
 /* The IBM PC can perform DMA operations by using the DMA chip.  To use it,
  * the DMA (Direct Memory Access) chip is loaded with the 20-bit memory address
@@ -709,8 +696,8 @@ PRIVATE int dma_setup(
   int s;
 
   /* First check the DMA memory address not to exceed maximum. */
-  if (floppy_buf_phys != (floppy_buf_phys & DMA_ADDR_MASK)) {
-	printf("floppy: DMA denied because address out of range\n");
+  if (tmp_phys != (tmp_phys & DMA_ADDR_MASK)) {
+	report("FLOPPY", "DMA denied because address out of range", NO_NUM);
 	return(EIO);
   }
 
@@ -720,22 +707,22 @@ PRIVATE int dma_setup(
   pv_set(byte_out[0], DMA_INIT, DMA_RESET_VAL);	/* reset the dma controller */
   pv_set(byte_out[1], DMA_FLIPFLOP, 0);		/* write anything to reset it */
   pv_set(byte_out[2], DMA_MODE, opcode == DEV_SCATTER_S ? DMA_WRITE : DMA_READ);
-  pv_set(byte_out[3], DMA_ADDR, (unsigned) (floppy_buf_phys >>  0) & 0xff);
-  pv_set(byte_out[4], DMA_ADDR, (unsigned) (floppy_buf_phys >>  8) & 0xff);
-  pv_set(byte_out[5], DMA_TOP,  (unsigned) (floppy_buf_phys >> 16) & 0xff);
+  pv_set(byte_out[3], DMA_ADDR, (unsigned) (tmp_phys >>  0) & 0xff);
+  pv_set(byte_out[4], DMA_ADDR, (unsigned) (tmp_phys >>  8) & 0xff);
+  pv_set(byte_out[5], DMA_TOP,  (unsigned) (tmp_phys >> 16) & 0xff);
   pv_set(byte_out[6], DMA_COUNT, (((SECTOR_SIZE - 1) >> 0)) & 0xff);
   pv_set(byte_out[7], DMA_COUNT, (SECTOR_SIZE - 1) >> 8);
   pv_set(byte_out[8], DMA_INIT, 2);		/* some sort of enable */
 
   if ((s=sys_voutb(byte_out, 9)) != OK)
-  	panic("Sys_voutb in dma_setup() failed: %d", s);
+  	panic("FLOPPY","Sys_voutb in dma_setup() failed", s);
   return(OK);
 }
 
 /*===========================================================================*
  *				start_motor				     *
  *===========================================================================*/
-PRIVATE void start_motor(void)
+PRIVATE void start_motor()
 {
 /* Control of the floppy disk motors is a big pain.  If a motor is off, you
  * have to turn it on first, which takes 1/2 second.  You can't leave it on
@@ -749,7 +736,6 @@ PRIVATE void start_motor(void)
 
   int s, motor_bit, running;
   message mess;
-  int ipc_status;
 
   motor_bit = 1 << f_drive;		/* bit mask for this drive */
   running = motor_status & motor_bit;	/* nonzero if this motor is running */
@@ -757,28 +743,22 @@ PRIVATE void start_motor(void)
 
   if ((s=sys_outb(DOR,
   		(motor_status << MOTOR_SHIFT) | ENABLE_INT | f_drive)) != OK)
-	panic("Sys_outb in start_motor() failed: %d", s);
+	panic("FLOPPY","Sys_outb in start_motor() failed", s);
 
   /* If the motor was already running, we don't have to wait for it. */
   if (running) return;			/* motor was already running */
 
   /* Set an alarm timer to force a timeout if the hardware does not interrupt
-   * in time. Expect an interrupt, but check for a timeout.
+   * in time. Expect HARD_INT message, but check for SYN_ALARM timeout.
    */ 
-  set_timer(&f_tmr_timeout, f_dp->start_ms * system_hz / 1000, f_timeout, 0);
+  f_set_timer(&f_tmr_timeout, f_dp->start, f_timeout);
   f_busy = BSY_IO;
   do {
-  	driver_receive(ANY, &mess, &ipc_status); 
-
-	if (is_ipc_notify(ipc_status)) {
-		switch (_ENDPOINT_P(mess.m_source)) {
-			case CLOCK:
-				f_expire_tmrs(NULL, &mess);
-				break;
-			default :
-				f_busy = BSY_IDLE;
-				break;
-		}
+  	receive(ANY, &mess); 
+  	if (mess.m_type == SYN_ALARM) { 
+  		f_expire_tmrs(NULL, NULL);
+	} else if(mess.m_type == DEV_PING) {
+		notify(mess.m_source);
   	} else {
   		f_busy = BSY_IDLE;
   	}
@@ -789,7 +769,8 @@ PRIVATE void start_motor(void)
 /*===========================================================================*
  *				stop_motor				     *
  *===========================================================================*/
-PRIVATE void stop_motor(timer_t *tp)
+PRIVATE void stop_motor(tp)
+timer_t *tp;
 {
 /* This routine is called from an alarm timer after several seconds have
  * elapsed with no floppy disk activity.  It turns the drive motor off.
@@ -797,13 +778,28 @@ PRIVATE void stop_motor(timer_t *tp)
   int s;
   motor_status &= ~(1 << tmr_arg(tp)->ta_int);
   if ((s=sys_outb(DOR, (motor_status << MOTOR_SHIFT) | ENABLE_INT)) != OK)
-	panic("Sys_outb in stop_motor() failed: %d", s);
+	panic("FLOPPY","Sys_outb in stop_motor() failed", s);
+}
+
+/*===========================================================================*
+ *				floppy_stop				     *
+ *===========================================================================*/
+PRIVATE void floppy_stop(struct driver *dp, message *m_ptr)
+{
+/* Stop all activity and cleanly exit with the system. */
+  int s;
+  sigset_t sigset = m_ptr->NOTIFY_ARG;
+  if (sigismember(&sigset, SIGTERM) || sigismember(&sigset, SIGKSTOP)) {
+      if ((s=sys_outb(DOR, ENABLE_INT)) != OK)
+		panic("FLOPPY","Sys_outb in floppy_stop() failed", s);
+      exit(0);	
+  }
 }
 
 /*===========================================================================*
  *				seek					     *
  *===========================================================================*/
-PRIVATE int seek(void)
+PRIVATE int seek()
 {
 /* Issue a SEEK command on the indicated drive unless the arm is already
  * positioned on the correct cylinder.
@@ -812,7 +808,6 @@ PRIVATE int seek(void)
   struct floppy *fp = f_fp;
   int r;
   message mess;
-  int ipc_status;
   u8_t cmd[3];
 
   /* Are we already on the correct cylinder? */
@@ -838,22 +833,16 @@ PRIVATE int seek(void)
   /* Give head time to settle on a format, no retrying here! */
   if (f_device & FORMAT_DEV_BIT) {
 	/* Set a synchronous alarm to force a timeout if the hardware does
-	 * not interrupt.
+	 * not interrupt. Expect HARD_INT, but check for SYN_ALARM timeout.
  	 */ 
- 	set_timer(&f_tmr_timeout, system_hz/30, f_timeout, 0);
+ 	f_set_timer(&f_tmr_timeout, HZ/30, f_timeout);
 	f_busy = BSY_IO;
   	do {
-  		driver_receive(ANY, &mess, &ipc_status); 
-	
-		if (is_ipc_notify(ipc_status)) {
-			switch (_ENDPOINT_P(mess.m_source)) {
-				case CLOCK:
-					f_expire_tmrs(NULL, &mess);
-					break;
-				default :
-					f_busy = BSY_IDLE;
-					break;
-			}
+  		receive(ANY, &mess); 
+  		if (mess.m_type == SYN_ALARM) { 
+  			f_expire_tmrs(NULL, NULL);
+		} else if(mess.m_type == DEV_PING) {
+			notify(mess.m_source);
   		} else {
   			f_busy = BSY_IDLE;
   		}
@@ -867,9 +856,8 @@ PRIVATE int seek(void)
 /*===========================================================================*
  *				fdc_transfer				     *
  *===========================================================================*/
-PRIVATE int fdc_transfer(
-  int opcode			/* DEV_GATHER_S or DEV_SCATTER_S */
-)
+PRIVATE int fdc_transfer(opcode)
+int opcode;			/* DEV_GATHER_S or DEV_SCATTER_S */
 {
 /* The drive is now on the proper cylinder.  Read, write or format 1 block. */
 
@@ -941,7 +929,7 @@ PRIVATE int fdc_transfer(
 /*===========================================================================*
  *				fdc_results				     *
  *===========================================================================*/
-PRIVATE int fdc_results(void)
+PRIVATE int fdc_results()
 {
 /* Extract results from the controller after an operation, then allow floppy
  * interrupts again.
@@ -949,60 +937,61 @@ PRIVATE int fdc_results(void)
 
   int s, result_nr;
   unsigned long status;
-  spin_t spin;
+  clock_t t0,t1;
 
   /* Extract bytes from FDC until it says it has no more.  The loop is
    * really an outer loop on result_nr and an inner loop on status. 
    * A timeout flag alarm is set.
    */
   result_nr = 0;
-  SPIN_FOR(&spin, TIMEOUT_MICROS) {
+  getuptime(&t0);
+  do {
 	/* Reading one byte is almost a mirror of fdc_out() - the DIRECTION
 	 * bit must be set instead of clear, but the CTL_BUSY bit destroys
 	 * the perfection of the mirror.
 	 */
 	if ((s=sys_inb(FDC_STATUS, &status)) != OK)
-		panic("Sys_inb in fdc_results() failed: %d", s);
+		panic("FLOPPY","Sys_inb in fdc_results() failed", s);
 	status &= (MASTER | DIRECTION | CTL_BUSY);
 	if (status == (MASTER | DIRECTION | CTL_BUSY)) {
 		unsigned long tmp_r;
 		if (result_nr >= MAX_RESULTS) break;	/* too many results */
 		if ((s=sys_inb(FDC_DATA, &tmp_r)) != OK)
-		   panic("Sys_inb in fdc_results() failed: %d", s);
+		   panic("FLOPPY","Sys_inb in fdc_results() failed", s);
 		f_results[result_nr] = tmp_r;
 		result_nr ++;
 		continue;
 	}
 	if (status == MASTER) {			/* all read */
 		if ((s=sys_irqenable(&irq_hook_id)) != OK)
-			panic("Couldn't enable IRQs: %d", s);
+			panic("FLOPPY", "Couldn't enable IRQs", s);
 
 		return(OK);			/* only good exit */
 	}
-  }
+  } while ( (s=getuptime(&t1))==OK && (t1-t0) < TIMEOUT_TICKS );
+  if (OK!=s) printf("FLOPPY: warning, getuptime failed: %d\n", s); 
   need_reset = TRUE;		/* controller chip must be reset */
 
   if ((s=sys_irqenable(&irq_hook_id)) != OK)
-	panic("Couldn't enable IRQs: %d", s);
+	panic("FLOPPY", "Couldn't enable IRQs", s);
   return(ERR_STATUS);
 }
 
 /*===========================================================================*
  *				fdc_command				     *
  *===========================================================================*/
-PRIVATE int fdc_command(
-  const u8_t *cmd,	/* command bytes */
-  int len		/* command length */
-)
+PRIVATE int fdc_command(cmd, len)
+u8_t *cmd;		/* command bytes */
+int len;		/* command length */
 {
 /* Output a command to the controller. */
 
   /* Set a synchronous alarm to force a timeout if the hardware does
-   * not interrupt.
+   * not interrupt. Expect HARD_INT, but check for SYN_ALARM timeout.
    * Note that the actual check is done by the code that issued the
    * fdc_command() call.
    */ 
-  set_timer(&f_tmr_timeout, WAKEUP, f_timeout, 0);
+  f_set_timer(&f_tmr_timeout, WAKEUP, f_timeout);
 
   f_busy = BSY_IO;
   while (len > 0) {
@@ -1015,40 +1004,40 @@ PRIVATE int fdc_command(
 /*===========================================================================*
  *				fdc_out					     *
  *===========================================================================*/
-PRIVATE void fdc_out(
-  int val		/* write this byte to floppy disk controller */
-)
+PRIVATE void fdc_out(val)
+int val;		/* write this byte to floppy disk controller */
 {
 /* Output a byte to the controller.  This is not entirely trivial, since you
  * can only write to it when it is listening, and it decides when to listen.
  * If the controller refuses to listen, the FDC chip is given a hard reset.
  */
-  spin_t spin;
+  clock_t t0, t1;
   int s;
   unsigned long status;
 
   if (need_reset) return;	/* if controller is not listening, return */
 
   /* It may take several tries to get the FDC to accept a command.  */
-  SPIN_FOR(&spin, TIMEOUT_MICROS) {
-  	if ((s=sys_inb(FDC_STATUS, &status)) != OK)
-  		panic("Sys_inb in fdc_out() failed: %d", s);
-
-  	if ((status & (MASTER | DIRECTION)) == (MASTER | 0)) {
-		if ((s=sys_outb(FDC_DATA, val)) != OK)
-			panic("Sys_outb in fdc_out() failed: %d", s);
-
+  getuptime(&t0);
+  do {
+  	if ( (s=getuptime(&t1))==OK && (t1-t0) > TIMEOUT_TICKS ) {
+  		if (OK!=s) printf("FLOPPY: warning, getuptime failed: %d\n", s); 
+		need_reset = TRUE;	/* hit it over the head */
 		return;
 	}
+  	if ((s=sys_inb(FDC_STATUS, &status)) != OK)
+  		panic("FLOPPY","Sys_inb in fdc_out() failed", s);
   }
-
-  need_reset = TRUE;	/* hit it over the head */
+  while ((status & (MASTER | DIRECTION)) != (MASTER | 0)); 
+  
+  if ((s=sys_outb(FDC_DATA, val)) != OK)
+	panic("FLOPPY","Sys_outb in fdc_out() failed", s);
 }
 
 /*===========================================================================*
  *				recalibrate				     *
  *===========================================================================*/
-PRIVATE int recalibrate(void)
+PRIVATE int recalibrate()
 {
 /* The floppy disk controller has no way of determining its absolute arm
  * position (cylinder).  Instead, it steps the arm a cylinder at a time and
@@ -1090,7 +1079,7 @@ PRIVATE int recalibrate(void)
 /*===========================================================================*
  *				f_reset					     *
  *===========================================================================*/
-PRIVATE void f_reset(void)
+PRIVATE void f_reset()
 {
 /* Issue a reset to the controller.  This is done after any catastrophe,
  * like the controller refusing to respond.
@@ -1098,7 +1087,6 @@ PRIVATE void f_reset(void)
   pvb_pair_t byte_out[2];
   int s,i;
   message mess;
-  int ipc_status;
 
   /* Disable interrupts and strobe reset bit low. */
   need_reset = FALSE;
@@ -1117,23 +1105,19 @@ PRIVATE void f_reset(void)
   pv_set(byte_out[0], DOR, 0);			/* strobe reset bit low */
   pv_set(byte_out[1], DOR, ENABLE_INT);		/* strobe it high again */
   if ((s=sys_voutb(byte_out, 2)) != OK)
-  	panic("Sys_voutb in f_reset() failed: %d", s); 
+  	panic("FLOPPY", "Sys_voutb in f_reset() failed", s); 
 
-  /* A synchronous alarm timer was set in fdc_command. Expect an interrupt,
-   * but be prepared to handle a timeout.
+  /* A synchronous alarm timer was set in fdc_command. Expect a HARD_INT
+   * message to collect the reset interrupt, but be prepared to handle the 
+   * SYN_ALARM message on a timeout.
    */
   do {
-  	driver_receive(ANY, &mess, &ipc_status); 
-	if (is_ipc_notify(ipc_status)) {
-		switch (_ENDPOINT_P(mess.m_source)) {
-			case CLOCK:
-				f_expire_tmrs(NULL, &mess);
-				break;
-			default :
-				f_busy = BSY_IDLE;
-				break;
-		}
-  	} else {			/* expect hw interrupt */
+  	receive(ANY, &mess); 
+  	if (mess.m_type == SYN_ALARM) { 
+  		f_expire_tmrs(NULL, NULL);
+	} else if(mess.m_type == DEV_PING) {
+		notify(mess.m_source);
+  	} else {			/* expect HARD_INT */
   		f_busy = BSY_IDLE;
   	}
   } while (f_busy == BSY_IO);
@@ -1163,26 +1147,23 @@ PRIVATE void f_reset(void)
 /*===========================================================================*
  *				f_intr_wait				     *
  *===========================================================================*/
-PRIVATE int f_intr_wait(void)
+PRIVATE int f_intr_wait()
 {
 /* Wait for an interrupt, but not forever.  The FDC may have all the time of
  * the world, but we humans do not.
  */
   message mess;
-  int ipc_status;
 
-  /* We expect an interrupt, but if a timeout, occurs, report an error. */
+  /* We expect a HARD_INT message from the interrupt handler, but if there is
+   * a timeout, a SYN_ALARM notification is received instead. If a timeout 
+   * occurs, report an error.
+   */
   do {
-  	driver_receive(ANY, &mess, &ipc_status); 
-	if (is_ipc_notify(ipc_status)) {
-		switch (_ENDPOINT_P(mess.m_source)) {
-			case CLOCK:
-				f_expire_tmrs(NULL, &mess);
-				break;
-			default :
-				f_busy = BSY_IDLE;
-				break;
-		}
+  	receive(ANY, &mess); 
+  	if (mess.m_type == SYN_ALARM) {
+  		f_expire_tmrs(NULL, NULL);
+	} else if(mess.m_type == DEV_PING) {
+		notify(mess.m_source);
   	} else { 
   		f_busy = BSY_IDLE;
   	}
@@ -1202,7 +1183,8 @@ PRIVATE int f_intr_wait(void)
 /*===========================================================================*
  *				f_timeout				     *
  *===========================================================================*/
-PRIVATE void f_timeout(timer_t *tp)
+PRIVATE void f_timeout(tp)
+timer_t *tp;
 {
 /* This routine is called when a timer expires.  Usually to tell that a
  * motor has spun up, but also to forge an interrupt when it takes too long
@@ -1217,7 +1199,7 @@ PRIVATE void f_timeout(timer_t *tp)
 /*===========================================================================*
  *				read_id					     *
  *===========================================================================*/
-PRIVATE int read_id(void)
+PRIVATE int read_id()
 {
 /* Determine current cylinder and sector. */
 
@@ -1260,7 +1242,7 @@ message *m_ptr;			/* pointer to open message */
   struct test_order *top;
 
   /* Decode the message parameters. */
-  if (f_prepare(m_ptr->DEVICE) == NULL) return(ENXIO);
+  if (f_prepare(m_ptr->DEVICE) == NIL_DEV) return(ENXIO);
 
   dtype = f_device & DEV_TYPE_BITS;	/* get density from minor dev */
   if (dtype >= MINOR_fd0p0) dtype = 0;
@@ -1311,7 +1293,8 @@ message *m_ptr;			/* pointer to open message */
 /*===========================================================================*
  *				test_read				     *
  *===========================================================================*/
-PRIVATE int test_read(int density)
+PRIVATE int test_read(density)
+int density;
 {
 /* Try to read the highest numbered sector on cylinder 2.  Not all floppy
  * types have as many sectors per track, and trying cylinder 2 finds the
@@ -1327,9 +1310,9 @@ PRIVATE int test_read(int density)
 
   (void) f_prepare(device);
   position = (off_t) f_dp->test << SECTOR_SHIFT;
-  iovec1.iov_addr = (vir_bytes) floppy_buf;
+  iovec1.iov_addr = (vir_bytes) tmp_buf;
   iovec1.iov_size = SECTOR_SIZE;
-  result = f_transfer(SELF, DEV_GATHER_S, cvul64(position), &iovec1, 1);
+  result = f_transfer(SELF, DEV_GATHER_S, cvul64(position), &iovec1, 1, 0);
 
   if (iovec1.iov_size != 0) return(EIO);
 
@@ -1340,11 +1323,11 @@ PRIVATE int test_read(int density)
 /*===========================================================================*
  *				f_geometry				     *
  *===========================================================================*/
-PRIVATE void f_geometry(struct partition *entry)
+PRIVATE void f_geometry(entry)
+struct partition *entry;
 {
   entry->cylinders = f_dp->cyls;
   entry->heads = NR_HEADS;
   entry->sectors = f_sectors;
 }
-
 

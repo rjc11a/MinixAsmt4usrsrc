@@ -7,9 +7,11 @@
 **  Programmed I/O could be used as well but would result in poor
 **  performances. This file contains only the board specific code,
 **  the rest is in 8390.c        Code specific for ISA bus only
+**
+**  $Id$
 */
 
-#include <minix/drivers.h>
+#include "drivers.h"
 #include <net/gen/ether.h>
 #include <net/gen/eth_io.h>
 #include "dp.h"
@@ -79,7 +81,7 @@ static void el2_init(dpeth_t * dep)
   /* Set interrupt level for 3c503 */
   irq = (dep->de_irq &= ~DEI_DEFAULT);	/* Strip the default flag. */
   if (irq == 9) irq = 2;
-  if (irq < 2 || irq > 5) panic("bad 3c503 irq configuration: %d", irq);
+  if (irq < 2 || irq > 5) panic(dep->de_name, "bad 3c503 irq configuration", irq);
   outb_el2(dep, EL2_IDCFG, (0x04 << irq));
 
   outb_el2(dep, EL2_DRQCNT, 0x08);	/* Set burst size to 8 */

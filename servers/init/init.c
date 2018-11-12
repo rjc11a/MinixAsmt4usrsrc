@@ -30,7 +30,7 @@
 #include <utmp.h>
 
 /* Command to execute as a response to the three finger salute. */
-char *REBOOT_CMD[] =	{ "shutdown", "-d", "now", "CTRL-ALT-DEL", NULL };
+char *REBOOT_CMD[] =	{ "shutdown", "now", "CTRL-ALT-DEL", NULL };
 
 /* Associated fake ttytab entry. */
 struct ttyent TT_REBOOT = { "console", "-", REBOOT_CMD, NULL };
@@ -69,28 +69,20 @@ int main(void)
   int fd;			/* generally useful */
   int linenr;			/* loop variable */
   int check;			/* check if a new process must be spawned */
-  int sn;			/* signal number */
   struct slotent *slotp;	/* slots[] pointer */
   struct ttyent *ttyp;		/* ttytab entry */
   struct sigaction sa;
   struct stat stb;
 
-#define OPENFDS						\
-  if (fstat(0, &stb) < 0) {				\
-	/* Open standard input, output & error. */	\
-	(void) open("/dev/null", O_RDONLY);		\
-	(void) open("/dev/log", O_WRONLY);		\
-	dup(1);						\
+  if (fstat(0, &stb) < 0) {
+	/* Open standard input, output & error. */
+	(void) open("/dev/null", O_RDONLY);
+	(void) open("/dev/log", O_WRONLY);
+	dup(1);
   }
 
   sigemptyset(&sa.sa_mask);
   sa.sa_flags = 0;
-
-  /* Default: Ignore every signal (except those that follow). */
-  sa.sa_handler = SIG_IGN;
-  for (sn = 1; sn < _NSIG; sn++) {
-      sigaction(sn, &sa, NULL);
-  }
 
   /* Hangup: Reexamine /etc/ttytab for newly enabled terminal lines. */
   sa.sa_handler = onhup;
@@ -123,15 +115,13 @@ int main(void)
 	sysgetenv.keylen = 8+1;
 	sysgetenv.val = bootopts;
 	sysgetenv.vallen = sizeof(bootopts);
-	if (svrctl(PMGETPARAM, &sysgetenv) == 0) *rcp++ = bootopts;
+	if (svrctl(MMGETPARAM, &sysgetenv) == 0) *rcp++ = bootopts;
 	*rcp = "start";
 
 	execute(rc_command);
 	report(2, "sh /etc/rc");
 	_exit(1);	/* impossible, we hope */
   }
-
-  OPENFDS;
 
   /* Clear /etc/utmp if it exists. */
   if ((fd = open(PATH_UTMP, O_WRONLY | O_TRUNC)) >= 0) close(fd);
@@ -209,7 +199,7 @@ void onterm(int sig)
 
 void onabrt(int sig)
 {
-  static int count = 0;
+  static int count;
 
   if (++count == 2) reboot(RBT_HALT);
   gotabrt = 1;

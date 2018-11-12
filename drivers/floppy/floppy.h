@@ -1,4 +1,6 @@
-#include <minix/drivers.h>
-#include <minix/driver.h>
-#include <minix/drvlib.h>
+#include "../drivers.h"
+#include "../libdriver/driver.h"
+#include "../libdriver/drvlib.h"
+
+_PROTOTYPE(void main, (void));
 

@@ -16,7 +16,7 @@
 #define _TIMERS_H
 
 #include <limits.h>
-#include <minix/types.h>
+#include <sys/types.h>
 
 struct timer;
 typedef void (*tmr_func_t)(struct timer *tp);

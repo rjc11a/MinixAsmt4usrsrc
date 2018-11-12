@@ -57,9 +57,9 @@ long addr;
   reg_ax = get_reg(curpid,reg_addr("AX"));
 
   switch (reg_ax) {
-  case 0:	Printf(" PM ");
+  case 0:	Printf(" MM ");
 		break;
-  case 1:	Printf(" VFS ");
+  case 1:	Printf(" FS ");
 		break;
   case 2:	Printf(" INET ");
 		break;

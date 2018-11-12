@@ -7,8 +7,8 @@
 #include <ansi.h>
 #endif
 
-#include <stddef.h>
-#include <sys/null.h>
+/* The macros are NULL, EXIT_FAILURE, EXIT_SUCCESS, RAND_MAX, and MB_CUR_MAX.*/
+#define NULL    ((void *)0)
 
 #define EXIT_FAILURE       1	/* standard error return using exit() */
 #define EXIT_SUCCESS       0	/* successful return using exit() */
@@ -18,7 +18,16 @@
 typedef struct { int quot, rem; } div_t;
 typedef struct { long quot, rem; } ldiv_t;
 
-/* The types are div_t, and ldiv_t. */
+/* The types are size_t, wchar_t, div_t, and ldiv_t. */
+#ifndef _SIZE_T
+#define _SIZE_T
+typedef unsigned int size_t;	/* type returned by sizeof */
+#endif
+
+#ifndef _WCHAR_T
+#define _WCHAR_T
+typedef char wchar_t;		/* type expanded character set */
+#endif
 
 /* Function Prototypes. */
 _PROTOTYPE( void abort, (void)						);
@@ -53,8 +62,6 @@ _PROTOTYPE( void qsort, (void *_base, size_t _nmemb, size_t _size,
 	int (*compar) (const void *, const void *))			);
 _PROTOTYPE( unsigned long int strtoul,
 			(const char *_nptr, char **_endptr, int _base)	);
-_PROTOTYPE( const char *getprogname, (void)				);
-_PROTOTYPE( void    setprogname, (const char *)				);
 
 #ifdef _POSIX_SOURCE
 /* Open Group Base Specifications Issue 6 */
@@ -62,23 +69,12 @@ _PROTOTYPE( int mkstemp, (char *_fmt)					);
 _PROTOTYPE( char *initstate, (unsigned _seed, char *_state,
 							size_t _size)	);
 _PROTOTYPE( long random, (void)						);
-_PROTOTYPE( char *realpath, (const char *file_name, 
-                                                 char *resolved_name)   );
 _PROTOTYPE( char *setstate, (const char *state)				);
 _PROTOTYPE( void srandom, (unsigned seed)				);
 _PROTOTYPE( int putenv, (char *string)					);
 _PROTOTYPE( int setenv, (const char *envname, const char *envval,
 							int overwrite)	);
 _PROTOTYPE( int unsetenv, (const char *name)				);
-_PROTOTYPE( int getsubopt, (char **optionp, char * const *keylistp, char **valuep));
-
-#ifdef __LONG_LONG_SUPPORTED
-_PROTOTYPE( long long strtoll, (const char *_nptr, char **_endptr,
-                                                            int _base)	);
-_PROTOTYPE( unsigned long long strtoull, (const char *_nptr, 
-                                            char **_endptr, int _base)	);
-#endif
-
 #endif
 
 #ifdef _MINIX
@@ -90,10 +86,6 @@ _PROTOTYPE( int getloadavg, (double *, int)				);
 _PROTOTYPE(int getopt, (int _argc, char * const _argv[], const char *_opts));
 extern char *optarg;
 extern int optind, opterr, optopt;
-
-_PROTOTYPE(size_t shquote, (const char *arg, char *buf, size_t bufsize));
-_PROTOTYPE(char *mkdtemp, (char *path));
-
 #endif /* _MINIX */
 
 #endif /* STDLIB_H */

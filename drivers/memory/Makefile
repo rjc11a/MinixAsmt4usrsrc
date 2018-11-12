@@ -1,23 +1,58 @@
 # Makefile for memory driver (MEMORY)
-.include <bsd.own.mk>
+DRIVER = memory
 
-PROG=	memory
-SRCS=	memory.c imgrd.c
+# directories
+u = /usr
+i = $u/include
+s = $i/sys
+m = $i/minix
+b = $i/ibm
+d = ..
 
-DPADD+=	${LIBDRIVER} ${LIBSYS}
-LDADD+=	-ldriver -lsys
+# programs, flags, etc.
+MAKE = exec make
+CC =	exec cc
+CFLAGS = -I$i
+LDFLAGS = -i -L../libdriver
+LIBS =  -lsysutil -ldriver -lsys
 
-MAN=
+# imgrd_s.s is the ACK assembler version of the ramdisk. For more portability,
+# use the C version imgrd.c. However, the C compiler takes too much memory
+# compiling imgrd.c.
+IMGRD=imgrd_s.o
+#IMGRD=imgrd.c
 
-BINDIR?= /usr/sbin
-INSTALLFLAGS+=	-S 8k
+OBJ = memory.o allocmem.o $(IMGRD)
 
-CPPFLAGS.memory.c+=	-I${MINIXSRCDIR}
-CPPFLAGS.imgrd.c+=	-I${.CURDIR}/../ramdisk -T /usr/tmp
+# build local binary
+all build:	$(DRIVER)
 
-imgrd.d: touch-genfiles
+$(DRIVER):	ramdisk_image $(OBJ)
+	$(CC) -o $@ $(LDFLAGS) $(OBJ) $(LIBS)
+	install -S 8k $(DRIVER)
 
-touch-genfiles:
-	[ -e ${.CURDIR}/../ramdisk/image.c ] || touch -t 197001010000.00 ${.CURDIR}/../ramdisk/image.c
+imgrd.o:        ramdisk/image.c
 
-.include <bsd.prog.mk>
+imgrd_s.o:      ramdisk/image.s
+	TMPDIR=/usr/tmp $(CC) -T /usr/tmp -c imgrd_s.s
+
+ramdisk_image:
+	cd ramdisk && make
+
+# install with other drivers
+install: /usr/sbin/$(DRIVER)
+/usr/sbin/$(DRIVER):	$(DRIVER)
+	install -o root -cs $? $@
+
+# clean up local files
+clean:
+	rm -f $(DRIVER) *.o *.bak 
+	cd ramdisk && make clean
+
+depend: 
+	mkdep "$(CC) -E $(CPPFLAGS)" memory.c ../libdriver/*.c > .depend
+	cd ramdisk && make depend
+
+# Include generated dependencies.
+include .depend
+

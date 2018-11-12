@@ -53,10 +53,20 @@ void va_end (va_list);          /* Defined in gnulib */
 
 #else	/* __GNUC__ >= 2 */
 
-#define va_start(ap, last) __builtin_va_start((ap), (last))
-#define va_arg(ap, type) __builtin_va_arg((ap), type)
-#define va_end(ap) __builtin_va_end(ap)
-#define va_copy(dest, src) __builtin_va_copy((dest), (src))
+#ifndef __sparc__
+#define va_start(AP, LASTARG) 						\
+ (AP = ((char *) __builtin_next_arg ()))
+#else
+#define va_start(AP, LASTARG)					\
+  (__builtin_saveregs (), AP = ((char *) __builtin_next_arg ()))
+#endif
+
+void va_end (va_list);		/* Defined in libgcc.a */
+#define va_end(AP)
+
+#define va_arg(AP, TYPE)						\
+ (AP = ((char *) (AP)) += __va_rounded_size (TYPE),			\
+  *((TYPE *) ((char *) (AP) - __va_rounded_size (TYPE))))
 
 #endif	/* __GNUC__ >= 2 */
 
@@ -70,7 +80,6 @@ typedef char *va_list;
 #define va_arg(ap, type)      \
   (*((type *)((va_list)((ap) = (void *)((va_list)(ap) + __vasz(type))) \
 						    - __vasz(type))))
-#define va_copy(ap2, ap) (ap2) = (ap)
 #define va_end(ap)
 
 #endif /* __GNUC__ */

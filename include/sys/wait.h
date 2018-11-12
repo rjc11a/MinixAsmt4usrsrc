@@ -17,7 +17,7 @@
 #define _WAIT_H
 
 #ifndef _TYPES_H
-#include <minix/types.h>
+#include <sys/types.h>
 #endif
 
 #define _LOW(v)		( (v) & 0377)
@@ -29,7 +29,7 @@
 #define WIFEXITED(s)	(_LOW(s) == 0)			    /* normal exit */
 #define WEXITSTATUS(s)	(_HIGH(s))			    /* exit status */
 #define WTERMSIG(s)	(_LOW(s) & 0177)		    /* sig value */
-#define WIFSIGNALED(s)	((((unsigned int)(s)-1) & 0xFFFFU) < 0xFFU) /* signaled */
+#define WIFSIGNALED(s)	(((unsigned int)(s)-1 & 0xFFFF) < 0xFF) /* signaled */
 #define WIFSTOPPED(s)	(_LOW(s) == 0177)		    /* stopped */
 #define WSTOPSIG(s)	(_HIGH(s) & 0377)		    /* stop signal */
 

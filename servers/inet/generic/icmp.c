@@ -371,11 +371,10 @@ int code;
 	enqueue_pack(icmp_port, pack);
 }
 
-PUBLIC void icmp_snd_mtu(
-  int port_nr,
-  acc_t *pack,
-  u16_t mtu
-)
+PUBLIC void icmp_snd_mtu(port_nr, pack, mtu)
+int port_nr;
+acc_t *pack;
+u16_t mtu;
 {
 	icmp_hdr_t *icmp_hdr;
 	icmp_port_t *icmp_port;
@@ -673,6 +672,7 @@ acc_t *reply_ip_hdr;
 		if (r == -1)
 		{
 			bf_afree(reply_ip_hdr);
+			reply_ip_hdr= NULL;
 			return;
 		}
 
@@ -998,9 +998,12 @@ icmp_hdr_t *icmp_hdr;
 {
 	int entries;
 	int entry_size;
+	u32_t addr;
+	i32_t pref;
 	u16_t lifetime;
 	int i;
 	char *bufp;
+	ip_port_t *ip_port;
 
 	if (icmp_len < 8)
 	{
@@ -1049,12 +1052,10 @@ icmp_hdr_t *icmp_hdr;
 			lifetime));
 		return;
 	}
+	ip_port= &ip_port_table[icmp_port->icp_ipport];
 	for (i= 0, bufp= (char *)&icmp_hdr->ih_dun.uhd_data[0]; i< entries; i++,
 		bufp += entry_size)
 	{
-		u32_t addr;
-		i32_t pref;
-
 		addr= *(ipaddr_t *)bufp;
 		pref= ntohl(*(u32_t *)(bufp+4));
 		ipr_add_oroute(icmp_port->icp_ipport, HTONL(0L), HTONL(0L), 
@@ -1117,7 +1118,7 @@ icmp_hdr_t **icmp_hdr_pp;
 	acc_t *ip_pack, *icmp_pack, *tmp_pack;
 	int ip_hdr_len, icmp_hdr_len, ih_type;
 	size_t size, pack_len;
-	ipaddr_t dest;
+	ipaddr_t dest, netmask;
 	nettype_t nettype;
 
 	pack= bf_packIffLess(pack, IP_MIN_HDR_SIZE);
@@ -1162,6 +1163,7 @@ icmp_hdr_t **icmp_hdr_pp;
 	}
 	dest= ip_hdr->ih_src;
 	nettype= ip_nettype(dest);
+	netmask= ip_netmask(nettype);
 	if (nettype != IPNT_CLASS_A && nettype != IPNT_LOCAL &&
 		nettype != IPNT_CLASS_B && nettype != IPNT_CLASS_C)
 	{

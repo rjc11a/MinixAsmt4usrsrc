@@ -16,7 +16,7 @@
  * end are to be read at the other end and vice-versa.
  */
 
-#include <minix/drivers.h>
+#include "../drivers.h"
 #include <assert.h>
 #include <termios.h>
 #include <signal.h>
@@ -82,11 +82,14 @@ FORWARD _PROTOTYPE( int pty_select, (tty_t *tp, message *m)		);
 /*===========================================================================*
  *				do_pty					     *
  *===========================================================================*/
-PUBLIC void do_pty(tty_t *tp, message *m_ptr)
+PUBLIC void do_pty(tp, m_ptr)
+tty_t *tp;
+message *m_ptr;
 {
 /* Perform an open/close/read/write call on a /dev/ptypX device. */
   pty_t *pp = tp->tty_priv;
   int r;
+  phys_bytes p;
   int safe = 0;
 
   switch (m_ptr->m_type) {
@@ -105,6 +108,15 @@ PUBLIC void do_pty(tty_t *tp, message *m_ptr)
 		r = EINVAL;
 		break;
 	}
+#if DEAD_CODE
+	if (numap_local(m_ptr->IO_ENDPT, (vir_bytes) m_ptr->ADDRESS,
+							m_ptr->COUNT) == 0) {
+#else
+	if ((r = sys_umap(m_ptr->IO_ENDPT, D, (vir_bytes) m_ptr->ADDRESS,
+		m_ptr->COUNT, &p)) != OK) {
+#endif
+		break;
+	}
 	pp->rdsendreply = TRUE;
 	pp->rdcaller = m_ptr->m_source;
 	pp->rdproc = m_ptr->IO_ENDPT;
@@ -118,6 +130,12 @@ PUBLIC void do_pty(tty_t *tp, message *m_ptr)
 		return;			/* already done */
 	}
 
+#if DEAD_CODE
+	if (m_ptr->TTY_FLAGS & O_NONBLOCK) {
+		r = EAGAIN;				/* don't suspend */
+		pp->rdleft = pp->rdcum = 0;
+	} else
+#endif
 	{
 		r = SUSPEND;				/* do suspend */
 		pp->rdsendreply = FALSE;
@@ -139,6 +157,16 @@ PUBLIC void do_pty(tty_t *tp, message *m_ptr)
 		r = EINVAL;
 		break;
 	}
+#if DEAD_CODE
+	if (numap_local(m_ptr->IO_ENDPT, (vir_bytes) m_ptr->ADDRESS,
+							m_ptr->COUNT) == 0) {
+		r = EFAULT;
+#else
+	if ((r = sys_umap(m_ptr->IO_ENDPT, D, (vir_bytes) m_ptr->ADDRESS,
+		m_ptr->COUNT, &p)) != OK) {
+#endif
+		break;
+	}
 	pp->wrsendreply = TRUE;
 	pp->wrcaller = m_ptr->m_source;
 	pp->wrproc = m_ptr->IO_ENDPT;
@@ -151,6 +179,12 @@ PUBLIC void do_pty(tty_t *tp, message *m_ptr)
 		return;			/* already done */
 	}
 
+#if DEAD_CODE
+	if (m_ptr->TTY_FLAGS & O_NONBLOCK) {		/* don't suspend */
+		r = pp->wrcum > 0 ? pp->wrcum : EAGAIN;
+		pp->wrleft = pp->wrcum = 0;
+	} else
+#endif
 	{
 		pp->wrsendreply = FALSE;			/* do suspend */
 		r = SUSPEND;
@@ -170,7 +204,7 @@ PUBLIC void do_pty(tty_t *tp, message *m_ptr)
 		pp->state = 0;
 	} else {
 		pp->state |= PTY_CLOSED;
-		sigchar(tp, SIGHUP, 1);
+		sigchar(tp, SIGHUP);
 	}
 	break;
 
@@ -201,14 +235,16 @@ PUBLIC void do_pty(tty_t *tp, message *m_ptr)
 /*===========================================================================*
  *				pty_write				     *
  *===========================================================================*/
-PRIVATE int pty_write(tty_t *tp, int try)
+PRIVATE int pty_write(tp, try)
+tty_t *tp;
+int try;
 {
 /* (*dev_write)() routine for PTYs.  Transfer bytes from the writer on
  * /dev/ttypX to the output buffer.
  */
   pty_t *pp = tp->tty_priv;
   int count, ocount, s;
-
+  phys_bytes user_phys;
 
   /* PTY closed down? */
   if (pp->state & PTY_CLOSED) {
@@ -223,7 +259,7 @@ PRIVATE int pty_write(tty_t *tp, int try)
 			tp->tty_outleft = tp->tty_outcum = 0;
 		}
 	}
-	return 0;
+	return;
   }
 
   /* While there is something to do. */
@@ -285,7 +321,9 @@ PRIVATE int pty_write(tty_t *tp, int try)
 /*===========================================================================*
  *				pty_echo				     *
  *===========================================================================*/
-PRIVATE void pty_echo(tty_t *tp, int c)
+PRIVATE void pty_echo(tp, c)
+tty_t *tp;
+int c;
 {
 /* Echo one character.  (Like pty_write, but only one character, optionally.) */
 
@@ -308,7 +346,8 @@ PRIVATE void pty_echo(tty_t *tp, int c)
 /*===========================================================================*
  *				pty_start				     *
  *===========================================================================*/
-PRIVATE void pty_start(pty_t *pp)
+PRIVATE void pty_start(pp)
+pty_t *pp;
 {
 /* Transfer bytes written to the output buffer to the PTY reader. */
   int count;
@@ -348,7 +387,8 @@ PRIVATE void pty_start(pty_t *pp)
 /*===========================================================================*
  *				pty_finish				     *
  *===========================================================================*/
-PRIVATE void pty_finish(pty_t *pp)
+PRIVATE void pty_finish(pp)
+pty_t *pp;
 {
 /* Finish the read request of a PTY reader if there is at least one byte
  * transferred.
@@ -367,7 +407,9 @@ PRIVATE void pty_finish(pty_t *pp)
 /*===========================================================================*
  *				pty_read				     *
  *===========================================================================*/
-PRIVATE int pty_read(tty_t *tp, int try)
+PRIVATE int pty_read(tp, try)
+tty_t *tp;
+int try;
 {
 /* Offer bytes from the PTY writer for input on the TTY.  (Do it one byte at
  * a time, 99% of the writes will be for one byte, so no sense in being smart.)
@@ -417,7 +459,7 @@ PRIVATE int pty_read(tty_t *tp, int try)
 	}
 
 	/* Input processing. */
-	if (in_process(tp, &c, 1, -1) == 0) break;
+	if (in_process(tp, &c, 1) == 0) break;
 
 	/* PTY writer bookkeeping. */
 	pp->wrcum++;
@@ -431,19 +473,19 @@ PRIVATE int pty_read(tty_t *tp, int try)
 			notify(pp->wrcaller);
 	}
   }
-
-  return 0;
 }
 
 /*===========================================================================*
  *				pty_close				     *
  *===========================================================================*/
-PRIVATE int pty_close(tty_t *tp, int try)
+PRIVATE int pty_close(tp, try)
+tty_t *tp;
+int try;
 {
 /* The tty side has closed, so shut down the pty side. */
   pty_t *pp = tp->tty_priv;
 
-  if (!(pp->state & PTY_ACTIVE)) return 0;
+  if (!(pp->state & PTY_ACTIVE)) return;
 
   if (pp->rdleft > 0) {
   	assert(!pp->rdsendreply);
@@ -456,14 +498,14 @@ PRIVATE int pty_close(tty_t *tp, int try)
   }
 
   if (pp->state & PTY_CLOSED) pp->state = 0; else pp->state |= TTY_CLOSED;
-
-  return 0;
 }
 
 /*===========================================================================*
  *				pty_icancel				     *
  *===========================================================================*/
-PRIVATE int pty_icancel(tty_t *tp, int try)
+PRIVATE int pty_icancel(tp, try)
+tty_t *tp;
+int try;
 {
 /* Discard waiting input. */
   pty_t *pp = tp->tty_priv;
@@ -473,28 +515,27 @@ PRIVATE int pty_icancel(tty_t *tp, int try)
   	pp->wrleft= 0;
   	notify(pp->wrcaller);
   }
-
-  return 0;
 }
 
 /*===========================================================================*
  *				pty_ocancel				     *
  *===========================================================================*/
-PRIVATE int pty_ocancel(tty_t *tp, int try)
+PRIVATE int pty_ocancel(tp, try)
+tty_t *tp;
+int try;
 {
 /* Drain the output buffer. */
   pty_t *pp = tp->tty_priv;
 
   pp->ocount = 0;
   pp->otail = pp->ohead;
-
-  return 0;
 }
 
 /*===========================================================================*
  *				pty_init				     *
  *===========================================================================*/
-PUBLIC void pty_init(tty_t *tp)
+PUBLIC void pty_init(tp)
+tty_t *tp;
 {
   pty_t *pp;
   int line;

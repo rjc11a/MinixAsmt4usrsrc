@@ -12,7 +12,7 @@
 # Configuration options:
 
 # Location and parameters of nm program to extract symbol tables
-$nm = "/usr/bin/acknm -dn";
+$nm = "/usr/bin/nm -dn";
 
 # Location of src (including trailing /)
 	$src_root = qw(
@@ -20,47 +20,32 @@ $nm = "/usr/bin/acknm -dn";
 	);
 
 # Location of system executables within src. Add new servers/drivers here.
-# This should be replaced with something less maintenance-prone some day.
 	@exes = qw(
 kernel/kernel
 
 servers/ds/ds
-servers/hgfs/hgfs
-servers/inet/inet
-servers/ipc/ipc
-servers/is/is
-servers/iso9660fs/isofs
+servers/vfs/vfs
 servers/mfs/mfs
-servers/pfs/pfs
+servers/inet/inet
+servers/is/is
 servers/pm/pm
 servers/rs/rs
-servers/vfs/vfs
-servers/vm/vm
 servers/rs/service
 
-drivers/ahci/ahci
-drivers/amddev/amddev
 drivers/at_wini/at_wini
-drivers/atl2/atl2
-drivers/audio/es1370/es1370
-drivers/audio/es1371/es1371
 drivers/bios_wini/bios_wini
-drivers/dec21140A/dec21140A
+drivers/cmos/cmos
 drivers/dp8390/dp8390
 drivers/dpeth/dpeth
-drivers/e1000/e1000
-drivers/filter/filter
 drivers/floppy/floppy
 drivers/fxp/fxp
 drivers/lance/lance
 drivers/log/log
 drivers/memory/memory
-drivers/orinoco/orinoco
 drivers/pci/pci
 drivers/printer/printer
 drivers/random/random
 drivers/rtl8139/rtl8139
-drivers/rtl8169/rtl8169
 drivers/sb16/sb16_dsp
 drivers/sb16/sb16_mixer
 drivers/ti1225/ti1225
@@ -106,16 +91,8 @@ foreach $file (@files) {
   if (process_datafile($file)) { exit 1; }
 }                                                    
 
-exit 0;
-
-
-sub short_name
-{
-  my $shortname = shift;
-  $shortname =~ s/^.*\///;
-  return substr($shortname, 0, 7);
-}
-
+exit 0;                                              
+                   
 
 sub read_symbols
 {
@@ -127,7 +104,6 @@ sub read_symbols
 	$shortname =~ s/^.*\///;
 	print " " if $i <= $#exes;
 	print $shortname;
-	$shortname = short_name($exe);
 
 	$fullname = $src_root . $exe;
 
@@ -222,6 +198,9 @@ sub process_datafile
 	read(FILE, $buf, $SAMPLE_SIZE) == $SAMPLE_SIZE  or die ("Short read.");
 	($exe, $pc) = unpack("Z8i", $buf);
 
+	# p_name "mem" refers to executable "memory".
+	$exe =~ s/^mem/memory/;
+
 	# We can access the hash by pc because they are all in there.
        	if (!defined(${$exe."_hash"}{$pc})) {
 		print "ERROR: Undefined in symbol table indexes: ";
@@ -235,7 +214,7 @@ sub process_datafile
   # We only need to continue with executables that had any hits.
   my @actives = ();
   foreach my $exe (@exes) {
-	$exe = short_name($exe);
+	$exe =~ s/^.*\///;
 	next if (!exists($res{$exe}));
 	push(@actives, $exe);
   }

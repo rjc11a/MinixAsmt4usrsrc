@@ -14,6 +14,7 @@
 #include "fproc.h"
 #include "lock.h"
 #include "param.h"
+
 #include "vnode.h"
 
 /*===========================================================================*
@@ -34,8 +35,8 @@ int req;			/* either F_SETLK or F_SETLKW */
 
   /* Fetch the flock structure from user space. */
   user_flock = (vir_bytes) m_in.name1;
-  r = sys_datacopy(who_e, (vir_bytes) user_flock, VFS_PROC_NR,
-		   (vir_bytes) &flock, (phys_bytes) sizeof(flock));
+  r = sys_datacopy(who_e, (vir_bytes) user_flock,
+	FS_PROC_NR, (vir_bytes) &flock, (phys_bytes) sizeof(flock));
   if (r != OK) return(EINVAL);
 
   /* Make some error checks. */
@@ -51,14 +52,15 @@ int req;			/* either F_SETLK or F_SETLKW */
   switch (flock.l_whence) {
 	case SEEK_SET:	first = 0; break;
 	case SEEK_CUR:
-	   if (ex64hi(f->filp_pos) != 0) 
-		panic("lock_op: position in file too high");
-	   first = ex64lo(f->filp_pos);
-	   break;
+		if (ex64hi(f->filp_pos) != 0)
+		{
+			panic(__FILE__, "lock_op: position in file too high",
+				NO_NUM);
+		}
+		first = ex64lo(f->filp_pos); break;
 	case SEEK_END:	first = f->filp_vno->v_size; break;
 	default:	return(EINVAL);
   }
-
   /* Check for overflow. */
   if (((long)flock.l_start > 0) && ((first + flock.l_start) < first))
 	return(EINVAL);
@@ -70,10 +72,10 @@ int req;			/* either F_SETLK or F_SETLKW */
   if (last < first) return(EINVAL);
 
   /* Check if this region conflicts with any existing lock. */
-  empty = NULL;
-  for (flp = &file_lock[0]; flp < &file_lock[NR_LOCKS]; flp++) {
+  empty = (struct file_lock *) 0;
+  for (flp = &file_lock[0]; flp < & file_lock[NR_LOCKS]; flp++) {
 	if (flp->lock_type == 0) {
-		if (empty == NULL) empty = flp;
+		if (empty == (struct file_lock *) 0) empty = flp;
 		continue;	/* 0 means unused slot */
 	}
 	if (flp->lock_vnode != f->filp_vno) continue;	/* different file */
@@ -93,7 +95,7 @@ int req;			/* either F_SETLK or F_SETLKW */
 			return(EAGAIN);
 		} else {
 			/* For F_SETLKW, suspend the process. */
-			suspend(FP_BLOCKED_ON_LOCK);
+			suspend(XLOCK);
 			return(SUSPEND);
 		}
 	}
@@ -147,7 +149,7 @@ int req;			/* either F_SETLK or F_SETLKW */
 	}
 
 	/* Copy the flock structure back to the caller. */
-	r = sys_datacopy(VFS_PROC_NR, (vir_bytes) &flock,
+	r = sys_datacopy(FS_PROC_NR, (vir_bytes) &flock,
 		who_e, (vir_bytes) user_flock, (phys_bytes) sizeof(flock));
 	return(r);
   }
@@ -155,7 +157,7 @@ int req;			/* either F_SETLK or F_SETLKW */
   if (ltype == F_UNLCK) return(OK);	/* unlocked a region with no locks */
 
   /* There is no conflict.  If space exists, store new lock in the table. */
-  if (empty == NULL) return(ENOLCK);	/* table full */
+  if (empty == (struct file_lock *) 0) return(ENOLCK);	/* table full */
   empty->lock_type = ltype;
   empty->lock_pid = fp->fp_pid;
   empty->lock_vnode = f->filp_vno;
@@ -164,7 +166,6 @@ int req;			/* either F_SETLK or F_SETLKW */
   nr_locks++;
   return(OK);
 }
-
 
 /*===========================================================================*
  *				lock_revive				     *
@@ -180,13 +181,14 @@ PUBLIC void lock_revive()
  * locking).
  */
 
+  int task;
   struct fproc *fptr;
 
-  for (fptr = &fproc[0]; fptr < &fproc[NR_PROCS]; fptr++){
+  for (fptr = &fproc[INIT_PROC_NR + 1]; fptr < &fproc[NR_PROCS]; fptr++){
 	if(fptr->fp_pid == PID_FREE) continue;
-	if (fptr->fp_blocked_on == FP_BLOCKED_ON_LOCK) {
+	task = -fptr->fp_task;
+	if (fptr->fp_suspended == SUSPENDED && task == XLOCK) {
 		revive(fptr->fp_endpoint, 0);
 	}
   }
 }
-

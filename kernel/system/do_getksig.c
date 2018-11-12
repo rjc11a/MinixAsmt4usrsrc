@@ -6,8 +6,9 @@
  *     m2_l1:	SIG_MAP		# bit map with pending signals
  */
 
-#include "kernel/system.h"
+#include "../system.h"
 #include <signal.h>
+#include <sys/sigcontext.h>
 #include <minix/endpoint.h>
 
 #if USE_GETKSIG
@@ -15,23 +16,25 @@
 /*===========================================================================*
  *			      do_getksig				     *
  *===========================================================================*/
-PUBLIC int do_getksig(struct proc * caller, message * m_ptr)
+PUBLIC int do_getksig(m_ptr)
+message *m_ptr;			/* pointer to request message */
 {
-/* The signal manager is ready to accept signals and repeatedly does a kernel
- * call to get one. Find a process with pending signals. If no signals are
- * available, return NONE in the process number field.
+/* PM is ready to accept signals and repeatedly does a kernel call to get 
+ * one. Find a process with pending signals. If no signals are available, 
+ * return NONE in the process number field.
+ * It is not sufficient to ready the process when PM is informed, because 
+ * PM can block waiting for FS to do a core dump.
  */
   register struct proc *rp;
 
   /* Find the next process with pending signals. */
   for (rp = BEG_USER_ADDR; rp < END_PROC_ADDR; rp++) {
-      if (RTS_ISSET(rp, RTS_SIGNALED)) {
-          if (caller->p_endpoint != priv(rp)->s_sig_mgr) continue;
+      if (RTS_ISSET(rp, SIGNALED)) {
 	  /* store signaled process' endpoint */
           m_ptr->SIG_ENDPT = rp->p_endpoint;
           m_ptr->SIG_MAP = rp->p_pending;	/* pending signals map */
-          (void) sigemptyset(&rp->p_pending); 	/* clear map in the kernel */
-	  RTS_UNSET(rp, RTS_SIGNALED);		/* blocked by SIG_PENDING */
+          sigemptyset(&rp->p_pending); 		/* ball is in PM's court */
+	  RTS_LOCK_UNSET(rp, SIGNALED);		/* blocked by SIG_PENDING */
           return(OK);
       }
   }

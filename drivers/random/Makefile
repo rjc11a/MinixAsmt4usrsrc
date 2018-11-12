@@ -1,17 +1,48 @@
 # Makefile for random driver (RANDOM)
-PROG=	random
-SRCS=	main.c random.c rijndael_api.c rijndael_alg.c
+DRIVER = random
 
-.PATH:	${.CURDIR}/aes
+# directories
+u = /usr
+i = $u/include
+s = $i/sys
+m = $i/minix
+b = $i/ibm
+d = ..
 
-DPADD+=	${LIBDRIVER} ${LIBSYS}
-LDADD+=	-ldriver -lsys -lutil
+# programs, flags, etc.
+MAKE = exec make
+CC =	exec cc
+CFLAGS = -I$i $(CPROFILE)
+LDFLAGS = -i -L../libdriver
+LIBS = -lsysutil -ldriver -lsys 
 
-MAN=
+OBJ = main.o random.o sha2.o aes/rijndael_api.o aes/rijndael_alg.o
 
-BINDIR?= /usr/sbin
+# build local binary
+all build:	$(DRIVER)
+$(DRIVER):	$(OBJ)
+	$(CC) -o $@ $(LDFLAGS) $(OBJ) $(LIBS)
+	install -S 8k $(DRIVER)
 
-CPPFLAGS.random.c+=	-I${MINIXSRCDIR}
+aes/rijndael_api.o:
+	$(CC) -c -o $@ aes/rijndael_api.c
 
-.include <bsd.prog.mk>
+aes/rijndael_alg.o:
+	$(CC) -c -o $@ aes/rijndael_alg.c
+
+# install with other drivers
+install:	/usr/sbin/$(DRIVER)
+/usr/sbin/$(DRIVER):	$(DRIVER)
+	install -o root -cs $? $@
+
+# clean up local files
+clean:
+	rm -f $(DRIVER) *.o *.bak aes/*.o
+
+
+depend: 
+	mkdep "$(CC) -E $(CPPFLAGS)" *.c ../libdriver/*.c aes/*.c > .depend
+
+# Include generated dependencies.
+include .depend
 

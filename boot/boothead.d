@@ -1,2 +1,0 @@
-
-boothead.o:	boothead.s

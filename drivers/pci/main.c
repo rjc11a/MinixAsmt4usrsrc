@@ -2,20 +2,38 @@
 main.c
 */
 
+#include "../drivers.h"
+
+#include <ibm/pci.h>
+#include <minix/rs.h>
+
 #include "pci.h"
 
-PUBLIC struct pci_acl pci_acl[NR_DRIVERS];
+#define NR_DRIVERS	16
+
+PRIVATE struct name
+{
+	char name[M3_STRING];
+	int tasknr;
+} names[NR_DRIVERS];
+
+PRIVATE struct acl
+{
+	int inuse;
+	struct rs_pci acl;
+} acl[NR_DRIVERS];
 
 FORWARD _PROTOTYPE( void do_init, (message *mp)				);
+FORWARD _PROTOTYPE( void do_sig_handler, (void)				);
 FORWARD _PROTOTYPE( void do_first_dev, (message *mp)			);
 FORWARD _PROTOTYPE( void do_next_dev, (message *mp)			);
 FORWARD _PROTOTYPE( void do_find_dev, (message *mp)			);
 FORWARD _PROTOTYPE( void do_ids, (message *mp)				);
 FORWARD _PROTOTYPE( void do_dev_name, (message *mp)			);
 FORWARD _PROTOTYPE( void do_dev_name_s, (message *mp)			);
+FORWARD _PROTOTYPE( void do_slot_name, (message *mp)			);
 FORWARD _PROTOTYPE( void do_slot_name_s, (message *mp)			);
-FORWARD _PROTOTYPE( void do_set_acl, (message *mp)			);
-FORWARD _PROTOTYPE( void do_del_acl, (message *mp)			);
+FORWARD _PROTOTYPE( void do_acl, (message *mp)				);
 FORWARD _PROTOTYPE( void do_reserve, (message *mp)			);
 FORWARD _PROTOTYPE( void do_attr_r8, (message *mp)			);
 FORWARD _PROTOTYPE( void do_attr_r16, (message *mp)			);
@@ -23,41 +41,30 @@ FORWARD _PROTOTYPE( void do_attr_r32, (message *mp)			);
 FORWARD _PROTOTYPE( void do_attr_w8, (message *mp)			);
 FORWARD _PROTOTYPE( void do_attr_w16, (message *mp)			);
 FORWARD _PROTOTYPE( void do_attr_w32, (message *mp)			);
-FORWARD _PROTOTYPE( void do_get_bar, (message *mp)			);
 FORWARD _PROTOTYPE( void do_rescan_bus, (message *mp)			);
 FORWARD _PROTOTYPE( void reply, (message *mp, int result)		);
 FORWARD _PROTOTYPE( struct rs_pci *find_acl, (int endpoint)		);
 
 extern int debug;
 
-/* SEF functions and variables. */
-FORWARD _PROTOTYPE( void sef_local_startup, (void) );
-
 int main(void)
 {
-	int r;
+	int i, r;
 	message m;
-	int ipc_status;
 
-	/* SEF local startup. */
-	sef_local_startup();
+	pci_init();
+
+	for (i= 0; i<NR_DRIVERS; i++)
+		names[i].tasknr= ANY;
 
 	for(;;)
 	{
-		r= driver_receive(ANY, &m, &ipc_status);
+		r= receive(ANY, &m);
 		if (r < 0)
 		{
-			printf("PCI: driver_receive failed: %d\n", r);
+			printf("PCI: receive from ANY failed: %d\n", r);
 			break;
 		}
-
-		if (is_ipc_notify(ipc_status)) {
-			printf("PCI: got notify from %d\n", m.m_source);
-
-			/* done, get a new message */
-			continue;
-		}
-
 		switch(m.m_type)
 		{
 		case BUSC_PCI_INIT: do_init(&m); break;
@@ -66,6 +73,7 @@ int main(void)
 		case BUSC_PCI_FIND_DEV: do_find_dev(&m); break;
 		case BUSC_PCI_IDS: do_ids(&m); break;
 		case BUSC_PCI_DEV_NAME: do_dev_name(&m); break;
+		case BUSC_PCI_SLOT_NAME: do_slot_name(&m); break;
 		case BUSC_PCI_RESERVE: do_reserve(&m); break;
 		case BUSC_PCI_ATTR_R8: do_attr_r8(&m); break;
 		case BUSC_PCI_ATTR_R16: do_attr_r16(&m); break;
@@ -76,9 +84,8 @@ int main(void)
 		case BUSC_PCI_RESCAN: do_rescan_bus(&m); break;
 		case BUSC_PCI_DEV_NAME_S: do_dev_name_s(&m); break;
 		case BUSC_PCI_SLOT_NAME_S: do_slot_name_s(&m); break;
-		case BUSC_PCI_SET_ACL: do_set_acl(&m); break;
-		case BUSC_PCI_DEL_ACL: do_del_acl(&m); break;
-		case BUSC_PCI_GET_BAR: do_get_bar(&m); break;
+		case BUSC_PCI_ACL: do_acl(&m); break;
+		case PROC_EVENT: break;
 		default:
 			printf("PCI: got message from %d, type %d\n",
 				m.m_source, m.m_type);
@@ -90,31 +97,52 @@ int main(void)
 }
 
 /*===========================================================================*
- *			       sef_local_startup			     *
+ *				do_sig_handler                               *
  *===========================================================================*/
-PRIVATE void sef_local_startup()
+PRIVATE void do_sig_handler()
 {
-  /* Register init callbacks. */
-  sef_setcb_init_fresh(sef_cb_init_fresh);
-  sef_setcb_init_lu(sef_cb_init_fresh);
-  sef_setcb_init_restart(sef_cb_init_fresh);
+  sigset_t sigset;
+  int sig;
 
-  /* Register live update callbacks. */
-  sef_setcb_lu_prepare(sef_cb_lu_prepare_always_ready);
-  sef_setcb_lu_state_isvalid(sef_cb_lu_state_isvalid_standard);
+  /* Try to obtain signal set from PM. */
+  if (getsigset(&sigset) != 0) return;
 
-  /* Let SEF perform startup. */
-  sef_startup();
+  /* Check for known signals. */
+  if (sigismember(&sigset, SIGTERM)) {
+      exit(0);
+  }
 }
 
 PRIVATE void do_init(mp)
 message *mp;
 {
-	int r;
+	int i, r, empty;
 
 #if DEBUG
-	printf("PCI: do_init: called by '%d'\n", mp->m_source);
+	printf("PCI: pci_init: called by '%s'\n", mp->m3_ca1);
 #endif
+	empty= -1;
+	for (i= 0; i<NR_DRIVERS; i++)
+	{
+		if (empty == -1 && names[i].tasknr == ANY)
+			empty= i;
+		if (strcmp(names[i].name, mp->m3_ca1) == 0)
+			break;
+	}
+	if (i >= NR_DRIVERS)
+	{
+		if (empty == -1)
+			panic("pci", "do_init: too many clients", NR_DRIVERS);
+		i= empty;
+		strcpy(names[i].name, mp->m3_ca1);
+	}
+	else if (names[i].tasknr == mp->m_source)
+	{
+		/* Ignore all init calls for a process after the first one */
+	}
+	else
+		pci_release(names[i].name);
+	names[i].tasknr= mp->m_source;
 
 	mp->m_type= 0;
 	r= send(mp->m_source, mp);
@@ -123,9 +151,10 @@ message *mp;
 			mp->m_source, r);
 }
 
-PRIVATE void do_first_dev(message *mp)
+PRIVATE void do_first_dev(mp)
+message *mp;
 {
-	int r, devind;
+	int i, r, devind;
 	u16_t vid, did;
 	struct rs_pci *aclp;
 
@@ -151,7 +180,8 @@ PRIVATE void do_first_dev(message *mp)
 	}
 }
 
-PRIVATE void do_next_dev(message *mp)
+PRIVATE void do_next_dev(mp)
+message *mp;
 {
 	int r, devind;
 	u16_t vid, did;
@@ -206,16 +236,10 @@ message *mp;
 
 	devind= mp->m1_i1;
 
-	r= pci_ids_s(devind, &vid, &did);
-	if (r != OK)
-	{
-		printf("pci:do_ids: failed for devind %d: %d\n",
-			devind, r);
-	}
-
+	pci_ids(devind, &vid, &did);
 	mp->m1_i1= vid;
 	mp->m1_i2= did;
-	mp->m_type= r;
+	mp->m_type= OK;
 	r= send(mp->m_source, mp);
 	if (r != 0)
 	{
@@ -298,6 +322,34 @@ message *mp;
 	}
 }
 
+PRIVATE void do_slot_name(mp)
+message *mp;
+{
+	int r, devind, name_len, len;
+	char *name_ptr, *name;
+
+	devind= mp->m1_i1;
+	name_len= mp->m1_i2;
+	name_ptr= mp->m1_p1;
+
+	name= pci_slot_name(devind);
+
+	len= strlen(name)+1;
+	if (len > name_len)
+		len= name_len;
+	printf("PCI: pci`do_slot_name: calling do_vircopy\n");
+	r= sys_vircopy(SELF, D, (vir_bytes)name, mp->m_source, D,
+		(vir_bytes)name_ptr, len);
+
+	mp->m_type= r;
+	r= send(mp->m_source, mp);
+	if (r != 0)
+	{
+		printf("PCI: do_slot_name: unable to send to %d: %d\n",
+			mp->m_source, r);
+	}
+}
+
 PRIVATE void do_slot_name_s(mp)
 message *mp;
 {
@@ -309,21 +361,12 @@ message *mp;
 	name_len= mp->m1_i2;
 	gid= mp->m1_i3;
 
-	r= pci_slot_name_s(devind, &name);
-	if (r != OK)
-	{
-		printf("pci:do_slot_name_s: failed for devind %d: %d\n",
-			devind, r);
-	}
+	name= pci_slot_name(devind);
 
-	if (r == OK)
-	{
-		len= strlen(name)+1;
-		if (len > name_len)
-			len= name_len;
-		r= sys_safecopyto(mp->m_source, gid, 0,
-			(vir_bytes)name, len, D);
-	}
+	len= strlen(name)+1;
+	if (len > name_len)
+		len= name_len;
+	r= sys_safecopyto(mp->m_source, gid, 0, (vir_bytes)name, len, D);
 
 	mp->m_type= r;
 	r= send(mp->m_source, mp);
@@ -334,96 +377,71 @@ message *mp;
 	}
 }
 
-PRIVATE void do_set_acl(mp)
+PRIVATE void do_acl(mp)
 message *mp;
 {
 	int i, r, gid;
 
 	if (mp->m_source != RS_PROC_NR)
 	{
-		printf("PCI: do_set_acl: not from RS\n");
+		printf("PCI: do_acl: not from RS\n");
 		reply(mp, EPERM);
 		return;
 	}
 
 	for (i= 0; i<NR_DRIVERS; i++)
 	{
-		if (!pci_acl[i].inuse)
+		if (!acl[i].inuse)
 			break;
 	}
 	if (i >= NR_DRIVERS)
 	{
-		printf("PCI: do_set_acl: table is full\n");
+		printf("PCI: do_acl: table is full\n");
 		reply(mp, ENOMEM);
 		return;
 	}
 
 	gid= mp->m1_i1;
 
-	r= sys_safecopyfrom(mp->m_source, gid, 0, (vir_bytes)&pci_acl[i].acl,
-		sizeof(pci_acl[i].acl), D);
+	r= sys_safecopyfrom(mp->m_source, gid, 0, (vir_bytes)&acl[i].acl,
+		sizeof(acl[i].acl), D);
 	if (r != OK)
 	{
-		printf("PCI: do_set_acl: safecopyfrom failed\n");
+		printf("PCI: do_acl: safecopyfrom failed\n");
 		reply(mp, r);
 		return;
 	}
-	pci_acl[i].inuse= 1;
+	acl[i].inuse= 1;
 	if(debug)
 	  printf("PCI: do_acl: setting ACL for %d ('%s') at entry %d\n",
-		pci_acl[i].acl.rsp_endpoint, pci_acl[i].acl.rsp_label,
+		acl[i].acl.rsp_endpoint, acl[i].acl.rsp_label,
 		i);
 
 	reply(mp, OK);
 }
 
-PRIVATE void do_del_acl(message *mp)
+PRIVATE void do_reserve(mp)
+message *mp;
 {
-	int i, proc_nr;
+	int i, r, devind;
 
-	if (mp->m_source != RS_PROC_NR)
-	{
-		printf("do_del_acl: not from RS\n");
-		reply(mp, EPERM);
-		return;
-	}
-
-	proc_nr= mp->m1_i1;
-
+	/* Find the name of the caller */
 	for (i= 0; i<NR_DRIVERS; i++)
 	{
-		if (!pci_acl[i].inuse)
-			continue;
-		if (pci_acl[i].acl.rsp_endpoint == proc_nr)
+		if (names[i].tasknr == mp->m_source)
 			break;
 	}
-
 	if (i >= NR_DRIVERS)
 	{
-		printf("do_del_acl: nothing found for %d\n", proc_nr);
-		reply(mp, EINVAL);
+		printf("pci`do_reserve: task %d did not call pci_init\n",
+			mp->m_source);
 		return;
 	}
 
-	pci_acl[i].inuse= 0;
-#if 0
-	printf("do_acl: deleting ACL for %d ('%s') at entry %d\n",
-		pci_acl[i].acl.rsp_endpoint, pci_acl[i].acl.rsp_label, i);
-#endif
-
-	/* Also release all devices held by this process */
-	pci_release(proc_nr);
-
-	reply(mp, OK);
-}
-
-PRIVATE void do_reserve(message *mp)
-{
-	int r, devind;
-
 	devind= mp->m1_i1;
+
 	
-	mp->m_type= pci_reserve2(devind, mp->m_source);
+	mp->m_type= pci_reserve3(devind, mp->m_source, names[i].name);
 	r= send(mp->m_source, mp);
 	if (r != 0)
 	{
@@ -441,15 +459,9 @@ message *mp;
 	devind= mp->m2_i1;
 	port= mp->m2_i2;
 
-	r= pci_attr_r8_s(devind, port, &v);
-	if (r != OK)
-	{
-		printf(
-		"pci:do_attr_r8: pci_attr_r8_s(%d, %d, ...) failed: %d\n",
-			devind, port, r);
-	}
+	v= pci_attr_r8(devind, port);
 	mp->m2_l1= v;
-	mp->m_type= r;
+	mp->m_type= OK;
 	r= send(mp->m_source, mp);
 	if (r != 0)
 	{
@@ -487,13 +499,7 @@ message *mp;
 	devind= mp->m2_i1;
 	port= mp->m2_i2;
 
-	r= pci_attr_r32_s(devind, port, &v);
-	if (r != OK)
-	{
-		printf(
-		"pci:do_attr_r32: pci_attr_r32_s(%d, %d, ...) failed: %d\n",
-			devind, port, r);
-	}
+	v= pci_attr_r32(devind, port);
 	mp->m2_l1= v;
 	mp->m_type= OK;
 	r= send(mp->m_source, mp);
@@ -564,32 +570,6 @@ message *mp;
 	}
 }
 
-PRIVATE void do_get_bar(mp)
-message *mp;
-{
-	int r, devind, port, ioflag;
-	u32_t base, size;
-
-	devind= mp->BUSC_PGB_DEVIND;
-	port= mp->BUSC_PGB_PORT;
-
-	mp->m_type= pci_get_bar_s(devind, port, &base, &size, &ioflag);
-
-	if (mp->m_type == OK)
-	{
-		mp->BUSC_PGB_BASE= base;
-		mp->BUSC_PGB_SIZE= size;
-		mp->BUSC_PGB_IOFLAG= ioflag;
-	}
-
-	r= send(mp->m_source, mp);
-	if (r != 0)
-	{
-		printf("do_get_bar: unable to send to %d: %d\n",
-			mp->m_source, r);
-	}
-}
-
 PRIVATE void do_rescan_bus(mp)
 message *mp;
 {
@@ -630,10 +610,10 @@ int endpoint;
 	/* Find ACL entry for caller */
 	for (i= 0; i<NR_DRIVERS; i++)
 	{
-		if (!pci_acl[i].inuse)
+		if (!acl[i].inuse)
 			continue;
-		if (pci_acl[i].acl.rsp_endpoint == endpoint)
-			return &pci_acl[i].acl;
+		if (acl[i].acl.rsp_endpoint == endpoint)
+			return &acl[i].acl;
 	}
 	return NULL;
 }

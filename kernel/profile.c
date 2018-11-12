@@ -17,11 +17,15 @@
 
 #include <minix/config.h>
 
+#if SPROFILE || CPROFILE
+
 #include <minix/profile.h>
 #include <minix/portio.h>
 #include "kernel.h"
 #include "profile.h"
 #include "proc.h"
+
+#endif
 
 #if SPROFILE
 
@@ -38,7 +42,9 @@ PRIVATE irq_hook_t profile_clock_hook;
  *===========================================================================*/
 PUBLIC void init_profile_clock(u32_t freq)
 {
-  int irq;
+  int r, irq;
+
+  intr_disable();
 
   if((irq = arch_init_profile_clock(freq)) >= 0) {
 	/* Register interrupt handler for statistical system profiling.  */
@@ -46,6 +52,8 @@ PUBLIC void init_profile_clock(u32_t freq)
 	put_irq_handler(&profile_clock_hook, irq, profile_clock_handler);
 	enable_irq(&profile_clock_hook);
   }
+
+  intr_enable();
 }
 
 /*===========================================================================*
@@ -53,7 +61,9 @@ PUBLIC void init_profile_clock(u32_t freq)
  *===========================================================================*/
 PUBLIC void stop_profile_clock()
 {
+  intr_disable();
   arch_stop_profile_clock();
+  intr_enable();
 
   /* Unregister interrupt handler. */
   disable_irq(&profile_clock_hook);
@@ -63,7 +73,8 @@ PUBLIC void stop_profile_clock()
 /*===========================================================================*
  *			profile_clock_handler                           *
  *===========================================================================*/
-PRIVATE int profile_clock_handler(irq_hook_t *hook)
+PRIVATE int profile_clock_handler(hook)
+irq_hook_t *hook;
 {
 /* This executes on every tick of the CMOS timer. */
 
@@ -83,18 +94,18 @@ PRIVATE int profile_clock_handler(irq_hook_t *hook)
 	sprof_info.idle_samples++;
   } else
   /* Runnable system process? */
-  if (priv(proc_ptr)->s_flags & SYS_PROC && proc_is_runnable(proc_ptr)) {
+  if (priv(proc_ptr)->s_flags & SYS_PROC && !proc_ptr->p_rts_flags) {
 	/* Note: k_reenter is always 0 here. */
 
 	/* Store sample (process name and program counter). */
-	data_copy(KERNEL, (vir_bytes) proc_ptr->p_name,
-		sprof_ep, sprof_data_addr_vir + sprof_info.mem_used,
-		strlen(proc_ptr->p_name));
+	phys_copy(vir2phys(proc_ptr->p_name),
+		(phys_bytes) (sprof_data_addr + sprof_info.mem_used),
+		(phys_bytes) strlen(proc_ptr->p_name));
 
-	data_copy(KERNEL, (vir_bytes) &proc_ptr->p_reg.pc, sprof_ep,
-		(vir_bytes) (sprof_data_addr_vir + sprof_info.mem_used +
+	phys_copy(vir2phys(&proc_ptr->p_reg.pc),
+		(phys_bytes) (sprof_data_addr+sprof_info.mem_used +
 					sizeof(proc_ptr->p_name)),
-		(vir_bytes) sizeof(proc_ptr->p_reg.pc));
+		(phys_bytes) sizeof(proc_ptr->p_reg.pc));
 
 	sprof_info.mem_used += sizeof(sprof_sample);
 
@@ -114,7 +125,9 @@ PRIVATE int profile_clock_handler(irq_hook_t *hook)
 
 #endif /* SPROFILE */
 
+
 #if CPROFILE
+
 /* 
  * The following variables and functions are used by the procentry/
  * procentry syslib functions when linked with kernelspace processes.
@@ -146,22 +159,29 @@ PUBLIC void profile_register(ctl_ptr, tbl_ptr)
 void *ctl_ptr;
 void *tbl_ptr;
 {
-  int proc_nr;
+  int len, proc_nr;
   vir_bytes vir_dst;
   struct proc *rp;                          
 
-  if(cprof_procs_no >= NR_SYS_PROCS)
-	return;
-
   /* Store process name, control struct, table locations. */
-  rp = proc_addr(SYSTEM);
+  proc_nr = KERNEL;
+  rp = proc_addr(proc_nr);
 
   cprof_proc_info[cprof_procs_no].endpt = rp->p_endpoint;
   cprof_proc_info[cprof_procs_no].name = rp->p_name;
-  cprof_proc_info[cprof_procs_no].ctl_v = (vir_bytes) ctl_ptr;
-  cprof_proc_info[cprof_procs_no].buf_v = (vir_bytes) tbl_ptr;
+
+  len = (phys_bytes) sizeof (void *);
+
+  vir_dst = (vir_bytes) ctl_ptr;
+  cprof_proc_info[cprof_procs_no].ctl =
+	  numap_local(proc_nr, vir_dst, len);
+
+  vir_dst = (vir_bytes) tbl_ptr;
+  cprof_proc_info[cprof_procs_no].buf =
+	  numap_local(proc_nr, vir_dst, len);
 
   cprof_procs_no++;
 }
 
-#endif
+#endif /* CPROFILE */
+

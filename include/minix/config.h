@@ -3,7 +3,7 @@
 
 /* Minix release and version numbers. */
 #define OS_RELEASE "3"
-#define OS_VERSION "1.8"
+#define OS_VERSION "1.3c"
 
 /* This file sets configuration parameters for the MINIX kernel, FS, and PM.
  * It is divided up into two main sections.  The first section contains
@@ -25,6 +25,10 @@
 #define MACHINE      _MINIX_MACHINE
 
 #define IBM_PC       _MACHINE_IBM_PC
+#define SUN_4        _MACHINE_SUN_4
+#define SUN_4_60     _MACHINE_SUN_4_60
+#define ATARI        _MACHINE_ATARI
+#define MACINTOSH    _MACHINE_MACINTOSH
 
 /* Number of slots in the process table for non-kernel processes. The number
  * of system processes defines how many processes with special privileges 
@@ -34,10 +38,45 @@
  */
 #define NR_PROCS 	  _NR_PROCS 
 #define NR_SYS_PROCS      _NR_SYS_PROCS
-#define NR_SYS_CHUNKS	  BITMAP_CHUNKS(NR_SYS_PROCS)
+
+#if _MINIX_SMALL
+
+#define NR_BUFS	100
+#define NR_BUF_HASH 128
+
+#else
+
+/* The buffer cache should be made as large as you can afford. */
+#if (MACHINE == IBM_PC && _WORD_SIZE == 2)
+#define NR_BUFS           40	/* # blocks in the buffer cache */
+#define NR_BUF_HASH       64	/* size of buf hash table; MUST BE POWER OF 2*/
+#endif
+
+#if (MACHINE == IBM_PC && _WORD_SIZE == 4)
+#define NR_BUFS          500	/* # blocks in the buffer cache */
+#define NR_BUF_HASH     2048	/* size of buf hash table; MUST BE POWER OF 2*/
+#endif
+
+#if (MACHINE == SUN_4_60)
+#define NR_BUFS		 512	/* # blocks in the buffer cache (<=1536) */
+#define NR_BUF_HASH	 512	/* size of buf hash table; MUST BE POWER OF 2*/
+#endif
+
+#endif	/* _MINIX_SMALL */
 
 /* Number of controller tasks (/dev/cN device classes). */
 #define NR_CTRLRS          2
+
+/* Enable or disable the second level file system cache on the RAM disk. */
+#define ENABLE_CACHE2      0
+
+/* Enable or disable swapping processes to disk. */
+#define ENABLE_SWAP	   0
+
+/* Include or exclude an image of /dev/boot in the boot image. 
+ * Please update the makefile in /usr/src/tools/ as well.
+ */
+#define ENABLE_BOOTDEV	   0	/* load image of /dev/boot at boot time */
 
 /* DMA_SECTORS may be increased to speed up DMA based drivers. */
 #define DMA_SECTORS        1	/* DMA buffer size (must be >= 1) */
@@ -62,32 +101,6 @@
 
 /* This feature enable the counting of system calls in PM and FS */
 #define ENABLE_SYSCALL_STATS	0
-
-/* Max. number of I/O ranges that can be assigned to a process */
-#define NR_IO_RANGE	64
-
-/* Max. number of device memory ranges that can be assigned to a process */
-#define NR_MEM_RANGE	20
-
-/* Max. number of IRQs that can be assigned to a process */
-#define NR_IRQ	8
-
-/* Scheduling priorities. Values must start at zero (highest
- * priority) and increment.
- */
-#define NR_SCHED_QUEUES   16	/* MUST equal minimum priority + 1 */
-#define TASK_Q		   0	/* highest, used for kernel tasks */
-#define MAX_USER_Q  	   0    /* highest priority for user processes */   
-#define USER_Q  	  ((MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q) /* default
-						(should correspond to nice 0) */
-#define MIN_USER_Q	  (NR_SCHED_QUEUES - 1)	/* minimum priority for user
-						   processes */
-/* default scheduling quanta */
-#define USER_QUANTUM 200
-
-/* defualt user process cpu */
-#define USER_DEFAULT_CPU	-1 /* use the default cpu or do not change the
-				      current one */
 
 /*===========================================================================*
  *	There are no user-settable parameters after this line		     *
@@ -117,9 +130,5 @@
 /* Enable or disable system profiling. */
 #define SPROFILE          1    /* statistical profiling */
 #define CPROFILE          0    /* call profiling */
-
-/* PCI configuration parameters */
-#define NR_PCIBUS 40
-#define NR_PCIDEV 50
 
 #endif /* _CONFIG_H */

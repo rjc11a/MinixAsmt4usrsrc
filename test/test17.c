@@ -13,7 +13,6 @@
 #include <utime.h>
 #include <stdio.h>
 #include <limits.h>
-#include <assert.h>
 
 #define NOCRASH 1		/* test11(), 2nd pipe */
 #define PDPNOHANG  1		/* test03(), write_standards() */
@@ -63,15 +62,18 @@
 
 int errct;
 
+char *file[];
+char *fnames[];
+char *dir[];
+
 /* "decl.c", created by Rene Montsma and Menno Wilcke */
 
 /* Used in open_alot, close_alot */
-char *filenames[MAXOPEN];
-
-#define MODES 8
-char *mode_fnames[MODES] = {"---", "--x", "-w-", "-wx", "r--", "r-x", "rw-", "rwx"},
-*mode_dir[MODES] = {"d---", "d--x", "d-w-", "d-wx", "dr--", "dr-x", "drw-", "drwx"};
-
+char *file[20] = {"f0", "f1", "f2", "f3", "f4", "f5", "f6",
+	  "f7", "f8", "f9", "f10", "f11", "f12", "f13",
+	  "f14", "f15", "f16", "f17", "f18", "f19"}, *fnames[8] = {"---", "--x", "-w-", "-wx", "r--",
+								   "r-x", "rw-", "rwx"}, *dir[8] = {"d---", "d--x", "d-w-", "d-wx", "dr--", "dr-x",
+						    "drw-", "drwx"};
  /* Needed for easy creating and deleting of directories */
 
 /* "test.c", created by Rene Montsma and Menno Wilcke */
@@ -117,31 +119,16 @@ int main(argc, argv)
 int argc;
 char *argv[];
 {
-  char buffer[PATH_MAX + 1];
-  int n, mask, i;
-
-  /* Create filenames for MAXOPEN files, the *filenames[] array. */
-  for(i = 0; i < MAXOPEN; i++) {
-	if(asprintf(&filenames[i], "file%d", i) == -1) {
-		fprintf(stderr, "asprintf failed\n");
-		return 1;
-	}
-  }
+  int n, mask;
 
   sync();
-
-#define DIR "DIR17"
-  system("rm -rf " DIR);
-
-  if(mkdir(DIR, 0755) != 0) {
-	perror("mkdir");
-	return 1;
+  if (geteuid() == 0 || getuid() == 0) {
+	printf("Test 17 cannot run as root; test aborted\n");
+	exit(1);
   }
 
-  if(chdir(DIR) < 0) {
-	perror("chdir");
-	return 1;
-  }
+  system("rm -rf DIR_17; mkdir DIR_17");
+  chdir("DIR_17");
 
   mask = (argc == 2 ? atoi(argv[1]) : 0xFFFF);
 
@@ -229,16 +216,17 @@ void test02()
   mode = 0;
   /* Create twenty files, check filedes */
   for (n = 0; n < MAXOPEN; n++) {
-	if (creat(filenames[n], mode) != FF + n)
-		err(13, CREAT, filenames[n]);
+	if (creat(file[n], mode) != FF + n)
+		err(13, CREAT, file[n]);
 	else {
-		if (get_mode(filenames[n]) != mode)
+		if (get_mode(file[n]) != mode)
 			err(7, CREAT, "mode set while creating many files");
 
 		/* Change  mode of file to standard mode, we want to *
 		 * use a lot (20) of files to be opened later, see   *
 		 * open_alot(), close_alot().                        */
-		if (chmod(filenames[n], 0700) != OK) err(5, CHMOD, filenames[n]);
+		if (chmod(file[n], 0700) != OK) err(5, CHMOD, file[n]);
+
 	}
 	mode = (mode + 0100) % 01000;
   }
@@ -461,7 +449,7 @@ void test10()
   int n, n1;
   char a[ARSIZE], b[ARSIZE], *f, *lf;
 
-  f = "anotherfile10";
+  f = "file10";
   lf = "linkfile10";
 
   if ((n = creat(f, 0702)) != FF)	/* no other open files */
@@ -759,12 +747,13 @@ char *string;
 
 void nlcr()
 {
-  fputs("\n",stdout);
+  printf("\n");
 }
 
-void str(char *s)
+void str(s)
+char *s;
 {
-  fputs(s,stdout);
+  printf(s);
 }
 
 /*****************************************************************************
@@ -883,9 +872,9 @@ void make_and_fill_dirs()
 {
   int mode, i;
 
-  for (i = 0; i < MODES; i++) {
-	mkdir(mode_dir[i], 0700);
-	chown(mode_dir[i], USER_ID, GROUP_ID);
+  for (i = 0; i < 8; i++) {
+	mkdir(dir[i], 0700);
+	chown(dir[i], USER_ID, GROUP_ID);
   }
   setuid(USER_ID);
   setgid(GROUP_ID);
@@ -911,12 +900,10 @@ int mode;
 	err(5, CHDIR, "to dirname (put_f_in_dir)");
   else {
 	/* Creat the file */
-	assert(mode >= 0 && mode < MODES);
-	if ((nr = creat(mode_fnames[mode], mode * 0100)) < 0)
-		err(13, CREAT, mode_fnames[mode]);
-	else {
-		try_close(nr, mode_fnames[mode]);
-	}
+	if ((nr = creat(fnames[mode], mode * 0100)) < 0)
+		err(13, CREAT, fnames[mode]);
+	else
+		try_close(nr, fnames[mode]);
 
 	if (chdir("..") != OK)
 		err(5, CHDIR, "to previous dir (put_f_in_dir)");
@@ -1076,7 +1063,7 @@ int open_alot()
   int i;
 
   for (i = 0; i < MAXOPEN; i++)
-	if (open(filenames[i], R) == FAIL) break;
+	if (open(file[i], R) == FAIL) break;
   if (i == 0) err(5, "open_alot", "at all");
   return(i);
 }				/* open_alot */
@@ -1107,17 +1094,13 @@ void clean_up_the_mess()
   char dirname[6];
 
   /* First remove 'a lot' files */
-  for (i = 0; i < MAXOPEN; i++) {
-	try_unlink(filenames[i]);
-}
+  for (i = 0; i < MAXOPEN; i++) try_unlink(file[i]);
 
   /* Unlink the files in dir 'drwx' */
   if (chdir("drwx") != OK)
 	err(5, CHDIR, "to 'drwx'");
   else {
-	for (i = 0; i < MODES; i++) {
-		try_unlink(mode_fnames[i]);
-	}
+	for (i = 0; i < 8; i++) try_unlink(fnames[i]);
 	if (chdir("..") != OK) err(5, CHDIR, "to '..'");
   }
 
@@ -1130,9 +1113,9 @@ void clean_up_the_mess()
   try_unlink("drw-/rwx");
 
   /* Unlink dirs */
-  for (i = 0; i < MODES; i++) {
+  for (i = 0; i < 8; i++) {
 	strcpy(dirname, "d");
-	strcat(dirname, mode_fnames[i]);
+	strcat(dirname, fnames[i]);
 
 	/* 'dirname' contains the directoryname */
 	rmdir(dirname);
@@ -1153,8 +1136,8 @@ int sw;				/* if switch == 8, give all different
   else
 	mode = sw;
 
-  for (i = 0; i < MODES; i++) {
-	chmod(mode_dir[i], 040000 + mode * 0100);
+  for (i = 0; i < 8; i++) {
+	chmod(dir[i], 040000 + mode * 0100);
 	if (sw == 8) mode++;
   }
 }

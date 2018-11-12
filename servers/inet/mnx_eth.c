@@ -21,19 +21,22 @@ Copyright 1995 Philip Homburg
 
 THIS_FILE
 
+static int recv_debug= 0;
+
 FORWARD _PROTOTYPE( void setup_read, (eth_port_t *eth_port) );
 FORWARD _PROTOTYPE( void read_int, (eth_port_t *eth_port, int count) );
-FORWARD _PROTOTYPE( void eth_issue_send, (eth_port_t *eth_port) );
 FORWARD _PROTOTYPE( void write_int, (eth_port_t *eth_port) );
-FORWARD _PROTOTYPE( void eth_restart, (eth_port_t *eth_port,
-	endpoint_t endpoint) );
-FORWARD _PROTOTYPE( void send_getstat, (eth_port_t *eth_port) );
+FORWARD _PROTOTYPE( void eth_recvev, (event_t *ev, ev_arg_t ev_arg) );
+FORWARD _PROTOTYPE( void eth_sendev, (event_t *ev, ev_arg_t ev_arg) );
+FORWARD _PROTOTYPE( eth_port_t *find_port, (message *m) );
+FORWARD _PROTOTYPE( void eth_restart, (eth_port_t *eth_port, int tasknr) );
 
 PUBLIC void osdep_eth_init()
 {
-	int i, j, rport;
+	int i, j, r, tasknr, rport;
 	struct eth_conf *ecp;
 	eth_port_t *eth_port, *rep;
+	message mess;
 	cp_grant_id_t gid;
 
 	/* First initialize normal ethernet interfaces */
@@ -47,11 +50,6 @@ PUBLIC void osdep_eth_init()
 		for (j= 0; j<RD_IOVEC; j++)
 			eth_port->etp_osdep.etp_rd_iovec[j].iov_grant= -1;
 		eth_port->etp_osdep.etp_rd_vec_grant= -1;
-
-		eth_port->etp_osdep.etp_state= OEPS_INIT;
-		eth_port->etp_osdep.etp_flags= OEPF_EMPTY;
-		eth_port->etp_osdep.etp_stat_gid= -1;
-		eth_port->etp_osdep.etp_stat_buf= NULL;
 
 		if (eth_is_vlan(ecp))
 			continue;
@@ -92,10 +90,81 @@ PUBLIC void osdep_eth_init()
 		}
 		eth_port->etp_osdep.etp_rd_vec_grant= gid;
 
-		eth_port->etp_osdep.etp_task= NONE;
-		eth_port->etp_osdep.etp_recvconf= 0;
+#ifdef __minix_vmd
+		r= sys_findproc(ecp->ec_task, &tasknr, 0);
+#else /* Minix 3 */
+		r = _pm_findproc(ecp->ec_task, &tasknr);
+#endif 
+		if (r != OK)
+		{
+			/* Eventually, we expect ethernet drivers to be
+			 * started after INET. So we always end up here. And
+			 * the findproc can be removed.
+			 */
+			printf("eth%d: unable to find task %s: %d\n",
+				i, ecp->ec_task, r);
+			tasknr= ANY;
+		}
+
+ 		eth_port->etp_osdep.etp_port= ecp->ec_port;
+		eth_port->etp_osdep.etp_task= tasknr;
+		eth_port->etp_osdep.etp_send_ev= 0;
 		ev_init(&eth_port->etp_osdep.etp_recvev);
 
+		mess.m_type= DL_CONF;
+		mess.DL_PORT= eth_port->etp_osdep.etp_port;
+		mess.DL_PROC= this_proc;
+		mess.DL_MODE= DL_NOMODE;
+
+		if (tasknr == ANY)
+			r= ENXIO;
+		else
+		{
+			r= send(eth_port->etp_osdep.etp_task, &mess);
+			if (r<0)
+			{
+				printf(
+		"osdep_eth_init: unable to send to ethernet task, error= %d\n",
+					r);
+			}
+		}
+
+		if (r == OK)
+		{
+			r= receive(eth_port->etp_osdep.etp_task, &mess);
+			if (r<0)
+			{
+				printf(
+	"osdep_eth_init: unable to receive from ethernet task, error= %d\n",
+					r);
+			}
+		}
+
+		if (r == OK)
+		{
+			r= mess.m3_i1;
+			if (r == ENXIO)
+			{
+				printf(
+		"osdep_eth_init: no ethernet device at task=%d,port=%d\n",
+					eth_port->etp_osdep.etp_task, 
+					eth_port->etp_osdep.etp_port);
+			}
+			else if (r < 0)
+			{
+				ip_panic((
+				"osdep_eth_init: DL_INIT returned error %d\n",
+					r));
+			}
+			else if (mess.m3_i1 != eth_port->etp_osdep.etp_port)
+			{
+				ip_panic((
+	"osdep_eth_init: got reply for wrong port (got %d, expected %d)\n",
+					mess.m3_i1,
+					eth_port->etp_osdep.etp_port));
+			}
+		}
+			
 		sr_add_minor(if2minor(ecp->ec_ifno, ETH_DEV_OFF),
 			i, eth_open, eth_close, eth_read, 
 			eth_write, eth_ioctl, eth_cancel, eth_select);
@@ -105,6 +174,12 @@ PUBLIC void osdep_eth_init()
 		eth_port->etp_vlan_port= NULL;
 		eth_port->etp_wr_pack= 0;
 		eth_port->etp_rd_pack= 0;
+		if (r == OK)
+		{
+			eth_port->etp_ethaddr= *(ether_addr_t *)mess.m3_ca1;
+			eth_port->etp_flags |= EPF_GOT_ADDR;
+			setup_read (eth_port);
+		}
 	}
 
 	/* And now come the VLANs */
@@ -114,10 +189,11 @@ PUBLIC void osdep_eth_init()
 		if (!eth_is_vlan(ecp))
 			continue;
 
-		eth_port->etp_osdep.etp_task= NONE;
+ 		eth_port->etp_osdep.etp_port= ecp->ec_port;
+		eth_port->etp_osdep.etp_task= ANY;
 		ev_init(&eth_port->etp_osdep.etp_recvev);
 
-		rport= ecp->ec_port;
+		rport= eth_port->etp_osdep.etp_port;
 		assert(rport >= 0 && rport < eth_conf_nr);
 		rep= &eth_port_table[rport];
 		if (!(rep->etp_flags & EPF_ENABLED))
@@ -138,7 +214,6 @@ PUBLIC void osdep_eth_init()
 		if (rep->etp_flags & EPF_GOT_ADDR)
 		{
 			eth_port->etp_ethaddr= rep->etp_ethaddr;
-			printf("osdep_eth_init: setting EPF_GOT_ADDR\n");
 			eth_port->etp_flags |= EPF_GOT_ADDR;
 		}
 
@@ -160,335 +235,22 @@ PUBLIC void eth_write_port(eth_port, pack)
 eth_port_t *eth_port;
 acc_t *pack;
 {
+	eth_port_t *loc_port;
+	message mess1, block_msg;
+	int i, pack_size;
+	acc_t *pack_ptr;
+	iovec_s_t *iovec;
+	u8_t *eth_dst_ptr;
+	int multicast, r;
+	ev_arg_t ev_arg;
+
 	assert(!no_ethWritePort);
 	assert(!eth_port->etp_vlan);
 
 	assert(eth_port->etp_wr_pack == NULL);
 	eth_port->etp_wr_pack= pack;
 
-	if (eth_port->etp_osdep.etp_state != OEPS_IDLE)
-	{
-		eth_port->etp_osdep.etp_flags |= OEPF_NEED_SEND;
-		return;
-	}
-
-
-	eth_issue_send(eth_port);
-}
-
-PUBLIC void eth_rec(message *m)
-{
-	int i, r, m_type, flags;
-	eth_port_t *loc_port, *vlan_port;
-
-	m_type= m->m_type;
-
-	assert(m_type == DL_CONF_REPLY || m_type == DL_TASK_REPLY ||
-		m_type == DL_STAT_REPLY);
-
-	for (i=0, loc_port= eth_port_table; i<eth_conf_nr; i++, loc_port++)
-	{
-		if (loc_port->etp_osdep.etp_task == m->m_source)
-			break;
-	}
-	if (i >= eth_conf_nr)
-	{
-		printf("eth_rec: message 0x%x from unknown driver %d\n",
-			m_type, m->m_source);
-		return;
-	}
-
-	if (loc_port->etp_osdep.etp_state == OEPS_CONF_SENT)
-	{
-		if (m_type == DL_TASK_REPLY)
-		{
-			flags= m->DL_FLAGS;
-
-			if (flags & DL_PACK_SEND)
-				write_int(loc_port);
-			if (flags & DL_PACK_RECV)
-				read_int(loc_port, m->DL_COUNT);
-			return;
-		}
-
-		if (m_type != DL_CONF_REPLY)
-		{
-			printf(
-	"eth_rec: got bad message type 0x%x from %d in CONF state\n",
-				m_type, m->m_source);
-			return;
-		}
-
-		r= m->DL_STAT;
-		if (r < 0)
-		{
-			ip_warning(("eth_rec: DL_CONF returned error %d\n",
-				r));
-
-			/* Just leave it in limbo. Nothing more we can do. */
-			return;
-		}
-	
-		loc_port->etp_osdep.etp_flags &= ~OEPF_NEED_CONF;
-		loc_port->etp_osdep.etp_state= OEPS_IDLE;
-		loc_port->etp_flags |= EPF_ENABLED;
-
-		loc_port->etp_ethaddr= *(ether_addr_t *)m->DL_HWADDR;
-		if (!(loc_port->etp_flags & EPF_GOT_ADDR))
-		{
-			loc_port->etp_flags |= EPF_GOT_ADDR;
-#if 0
-			printf("eth_rec: calling eth_restart_ioctl\n");
-#endif
-			eth_restart_ioctl(loc_port);
-
-			/* Also update any VLANs on this device */
-			for (i=0, vlan_port= eth_port_table; i<eth_conf_nr;
-				i++, vlan_port++)
-			{
-				if (!(vlan_port->etp_flags & EPF_ENABLED))
-					continue;
-				if (vlan_port->etp_vlan_port != loc_port)
-					continue;
-				 
-				vlan_port->etp_ethaddr= loc_port->etp_ethaddr;
-				vlan_port->etp_flags |= EPF_GOT_ADDR;
-				eth_restart_ioctl(vlan_port);
-			}
-		}
-		if (!(loc_port->etp_flags & EPF_READ_IP))
-			setup_read (loc_port);
-
-#if 0
-		if (loc_port->etp_osdep.etp_flags & OEPF_NEED_SEND)
-		{
-			printf("eth_rec(conf): OEPF_NEED_SEND is set\n");
-		}
-		if (loc_port->etp_osdep.etp_flags & OEPF_NEED_RECV)
-		{
-			printf("eth_rec(conf): OEPF_NEED_RECV is set\n");
-		}
-		if (loc_port->etp_osdep.etp_flags & OEPF_NEED_STAT)
-		{
-			printf("eth_rec(conf): OEPF_NEED_STAT is set\n");
-		}
-#endif
-
-		return;
-	}
-	if (loc_port->etp_osdep.etp_state == OEPS_GETSTAT_SENT)
-	{
-		if (m_type != DL_STAT_REPLY)
-		{
-			printf(
-	"eth_rec: got bad message type 0x%x from %d in GETSTAT state\n",
-				m_type, m->m_source);
-			return;
-		}
-
-		loc_port->etp_osdep.etp_state= OEPS_IDLE;
-		loc_port->etp_osdep.etp_flags &= ~OEPF_NEED_STAT;
-
-		assert(loc_port->etp_osdep.etp_stat_gid != -1);
-		cpf_revoke(loc_port->etp_osdep.etp_stat_gid);
-		loc_port->etp_osdep.etp_stat_gid= -1;
-		loc_port->etp_osdep.etp_stat_buf= NULL;
-		
-		/* Finish ioctl */
-		assert(loc_port->etp_flags & EPF_GOT_ADDR);
-		eth_restart_ioctl(loc_port);
-
-#if 0
-		if (loc_port->etp_osdep.etp_flags & OEPF_NEED_SEND)
-		{
-			printf("eth_rec(stat): OEPF_NEED_SEND is set\n");
-		}
-		if (loc_port->etp_osdep.etp_flags & OEPF_NEED_RECV)
-		{
-			printf("eth_rec(stat): OEPF_NEED_RECV is set\n");
-		}
-		if (loc_port->etp_osdep.etp_flags & OEPF_NEED_CONF)
-		{
-			printf("eth_rec(stat): OEPF_NEED_CONF is set\n");
-		}
-#endif
-
-#if 0
-		if (loc_port->etp_osdep.etp_state == OEPS_IDLE &&
-			(loc_port->etp_osdep.etp_flags & OEPF_NEED_CONF))
-		{
-			eth_set_rec_conf(loc_port,
-				loc_port->etp_osdep.etp_recvconf);
-		}
-#endif
-		return;
-	}
-	assert(loc_port->etp_osdep.etp_state == OEPS_IDLE  ||
-		loc_port->etp_osdep.etp_state == OEPS_RECV_SENT ||
-		loc_port->etp_osdep.etp_state == OEPS_SEND_SENT ||
-		(printf("etp_state = %d\n", loc_port->etp_osdep.etp_state), 0));
-	loc_port->etp_osdep.etp_state= OEPS_IDLE;
-
-	flags= m->DL_FLAGS;
-
-	if (flags & DL_PACK_SEND)
-		write_int(loc_port);
-	if (flags & DL_PACK_RECV)
-		read_int(loc_port, m->DL_COUNT);
-
-	if (loc_port->etp_osdep.etp_state == OEPS_IDLE &&
-		loc_port->etp_osdep.etp_flags & OEPF_NEED_SEND)
-	{
-		loc_port->etp_osdep.etp_flags &= ~OEPF_NEED_SEND;
-		if (loc_port->etp_wr_pack)
-			eth_issue_send(loc_port);
-	}
-	if (loc_port->etp_osdep.etp_state == OEPS_IDLE &&
-		(loc_port->etp_osdep.etp_flags & OEPF_NEED_RECV))
-	{
-		loc_port->etp_osdep.etp_flags &= ~OEPF_NEED_RECV;
-		if (!(loc_port->etp_flags & EPF_READ_IP))
-			setup_read (loc_port);
-	}
-	if (loc_port->etp_osdep.etp_flags & OEPF_NEED_CONF)
-	{
-#if 0
-		printf("eth_rec: OEPF_NEED_CONF is set\n");
-#endif
-	}
-	if (loc_port->etp_osdep.etp_state == OEPS_IDLE &&
-		(loc_port->etp_osdep.etp_flags & OEPF_NEED_STAT))
-	{
-		send_getstat(loc_port);
-	}
-}
-
-PUBLIC void eth_check_driver(char *label, endpoint_t endpoint)
-{
-	int i;
-	eth_port_t *loc_port;
-	struct eth_conf *ecp;
-
-	/* Re-init ethernet interface */
-	for (i= 0, ecp= eth_conf, loc_port= eth_port_table;
-		i<eth_conf_nr; i++, ecp++, loc_port++)
-	{
-		if (eth_is_vlan(ecp))
-			continue;
-
-		if (strcmp(ecp->ec_label, label) != 0)
-		{
-			/* Wrong driver */
-			continue;
-		}
-		eth_restart(loc_port, endpoint);
-	}
-}
-
-PUBLIC int eth_get_stat(eth_port, eth_stat)
-eth_port_t *eth_port;
-eth_stat_t *eth_stat;
-{
-	cp_grant_id_t gid;
-
-	assert(!eth_port->etp_vlan);
-
-	if (eth_port->etp_osdep.etp_flags & OEPF_NEED_STAT)
-		ip_panic(( "eth_get_stat: getstat already in progress" ));
-
-	gid= cpf_grant_direct(eth_port->etp_osdep.etp_task,
-		(vir_bytes)eth_stat, sizeof(*eth_stat), CPF_WRITE);
-	if (gid == -1)
-	{
-		ip_panic(( "eth_get_stat: cpf_grant_direct failed: %d\n",
-			errno));
-	}
-	assert(eth_port->etp_osdep.etp_stat_gid == -1);
-	eth_port->etp_osdep.etp_stat_gid= gid;
-	eth_port->etp_osdep.etp_stat_buf= eth_stat;
-
-	if (eth_port->etp_osdep.etp_state != OEPS_IDLE)
-	{
-		eth_port->etp_osdep.etp_flags |= OEPF_NEED_STAT;
-		return SUSPEND;
-	}
-
-	send_getstat(eth_port);
-
-	return SUSPEND;
-}
-
-PUBLIC void eth_set_rec_conf (eth_port, flags)
-eth_port_t *eth_port;
-u32_t flags;
-{
-	int r;
-	unsigned dl_flags, mask;
-	message mess;
-
-	assert(!eth_port->etp_vlan);
-
-	if (!(eth_port->etp_flags & EPF_GOT_ADDR))
-	{
-		/* We have never seen the device. */
-#if 0
-		printf("eth_set_rec_conf: waiting for device to appear\n");
-#endif
-		return;
-	}
-
-	if (eth_port->etp_osdep.etp_state != OEPS_IDLE)
-	{
-#if 0
-		printf(
-		"eth_set_rec_conf: setting OEPF_NEED_CONF, state = %d\n",
-			eth_port->etp_osdep.etp_state);
-#endif
-		eth_port->etp_osdep.etp_flags |= OEPF_NEED_CONF;
-		return;
-	}
-
-	mask = NWEO_EN_BROAD | NWEO_EN_MULTI | NWEO_EN_PROMISC;
-	if ((eth_port->etp_osdep.etp_recvconf & mask) == (flags & mask))
-	{
-		/* No change for the driver, so don't send an update */
-		return;
-	}
-
-	eth_port->etp_osdep.etp_recvconf= flags;
-	dl_flags= DL_NOMODE;
-	if (flags & NWEO_EN_BROAD)
-		dl_flags |= DL_BROAD_REQ;
-	if (flags & NWEO_EN_MULTI)
-		dl_flags |= DL_MULTI_REQ;
-	if (flags & NWEO_EN_PROMISC)
-		dl_flags |= DL_PROMISC_REQ;
-
-	mess.m_type= DL_CONF;
-	mess.DL_MODE= dl_flags;
-
-	assert(eth_port->etp_osdep.etp_state == OEPS_IDLE);
-	r= asynsend(eth_port->etp_osdep.etp_task, &mess);
-	eth_port->etp_osdep.etp_state= OEPS_CONF_SENT;
-
-	if (r < 0)
-	{
-		printf("eth_set_rec_conf: asynsend to %d failed: %d\n",
-			eth_port->etp_osdep.etp_task, r);
-		return;
-	}
-}
-
-PRIVATE void eth_issue_send(eth_port)
-eth_port_t *eth_port;
-{
-	int i, r, pack_size;
-	acc_t *pack, *pack_ptr;
-	iovec_s_t *iovec;
-	message m;
-
 	iovec= eth_port->etp_osdep.etp_wr_iovec;
-	pack= eth_port->etp_wr_pack;
 	pack_size= 0;
 	for (i=0, pack_ptr= pack; i<IOVEC_NR && pack_ptr; i++,
 		pack_ptr= pack_ptr->acc_next)
@@ -531,6 +293,7 @@ eth_port_t *eth_port;
 	assert (i< IOVEC_NR);
 	assert (pack_size >= ETH_MIN_PACK_SIZE);
 
+
 	r= cpf_setgrant_direct(eth_port->etp_osdep.etp_wr_vec_grant,
 		eth_port->etp_osdep.etp_task,
 		(vir_bytes)iovec,
@@ -542,24 +305,327 @@ eth_port_t *eth_port;
 	"eth_write_port: cpf_setgrant_direct failed: %d\n",
 			errno));
 	}
-	m.m_type= DL_WRITEV_S;
-	m.DL_ENDPT= this_proc;
-	m.DL_COUNT= i;
-	m.DL_GRANT= eth_port->etp_osdep.etp_wr_vec_grant;
+	mess1.DL_COUNT= i;
+	mess1.DL_GRANT= eth_port->etp_osdep.etp_wr_vec_grant;
+	mess1.m_type= DL_WRITEV_S;
 
-	assert(eth_port->etp_osdep.etp_state == OEPS_IDLE);
-	r= asynsend(eth_port->etp_osdep.etp_task, &m);
+	mess1.DL_PORT= eth_port->etp_osdep.etp_port;
+	mess1.DL_PROC= this_proc;
+	mess1.DL_MODE= DL_NOMODE;
+
+	for (;;)
+	{
+		r= sendrec(eth_port->etp_osdep.etp_task, &mess1);
+		if (r != ELOCKED)
+			break;
+
+		/* ethernet task is sending to this task, I hope */
+		r= receive(eth_port->etp_osdep.etp_task, &block_msg);
+		if (r < 0)
+			ip_panic(("unable to receive"));
+
+		loc_port= eth_port;
+		if (loc_port->etp_osdep.etp_port != block_msg.DL_PORT ||
+			loc_port->etp_osdep.etp_task != block_msg.m_source)
+		{
+			loc_port= find_port(&block_msg);
+		}
+		assert(block_msg.DL_STAT & (DL_PACK_SEND|DL_PACK_RECV));
+		if (block_msg.DL_STAT & DL_PACK_SEND)
+		{
+			assert(loc_port != eth_port);
+			loc_port->etp_osdep.etp_sendrepl= block_msg;
+			ev_arg.ev_ptr= loc_port;
+			assert(!loc_port->etp_osdep.etp_send_ev);
+			loc_port->etp_osdep.etp_send_ev= 1;
+			ev_enqueue(&loc_port->etp_sendev, eth_sendev, ev_arg);
+		}
+		if (block_msg.DL_STAT & DL_PACK_RECV)
+		{
+			if (recv_debug)
+			{
+				printf(
+			"eth_write_port(block_msg): eth%d got DL_PACK_RECV\n",
+					loc_port-eth_port_table);
+			}
+			loc_port->etp_osdep.etp_recvrepl= block_msg;
+			ev_arg.ev_ptr= loc_port;
+			ev_enqueue(&loc_port->etp_osdep.etp_recvev,
+				eth_recvev, ev_arg);
+		}
+	}
 
 	if (r < 0)
 	{
-		printf("eth_issue_send: send to %d failed: %d\n",
+		printf("eth_write_port: sendrec to %d failed: %d\n",
 			eth_port->etp_osdep.etp_task, r);
 		return;
 	}
-	eth_port->etp_osdep.etp_state= OEPS_SEND_SENT;
+
+	if (mess1.m_type != DL_TASK_REPLY ||
+		mess1.DL_PORT != eth_port->etp_osdep.etp_port ||
+		mess1.DL_PROC != this_proc)
+	{
+		printf(
+"eth_write_port: ignoring bad message (type = 0x%x, port = %d, proc = %d) from %d\n",
+			mess1.m_type, mess1.DL_PORT, mess1.DL_PROC,
+			mess1.m_source);
+		return;
+	}
+
+	assert(mess1.m_type == DL_TASK_REPLY &&
+		mess1.DL_PORT == eth_port->etp_osdep.etp_port &&
+		mess1.DL_PROC == this_proc);
+	assert((mess1.DL_STAT >> 16) == OK);
+
+	if (mess1.DL_STAT & DL_PACK_RECV)
+	{
+		if (recv_debug)
+		{
+			printf(
+			"eth_write_port(mess1): eth%d got DL_PACK_RECV\n",
+				mess1.DL_PORT);
+		}
+		eth_port->etp_osdep.etp_recvrepl= mess1;
+		ev_arg.ev_ptr= eth_port;
+		ev_enqueue(&eth_port->etp_osdep.etp_recvev, eth_recvev,
+			ev_arg);
+	}
+	if (!(mess1.DL_STAT & DL_PACK_SEND))
+	{
+		/* Packet is not yet sent. */
+		return;
+	}
+
+	/* If the port is in promiscuous mode or the packet is
+	 * broad- or multicast, enqueue the reply packet.
+	 */
+	eth_dst_ptr= (u8_t *)ptr2acc_data(pack);
+	multicast= (*eth_dst_ptr & 1);	/* low order bit indicates multicast */
+	if (multicast || (eth_port->etp_osdep.etp_recvconf & NWEO_EN_PROMISC))
+	{
+		eth_port->etp_osdep.etp_sendrepl= mess1;
+		ev_arg.ev_ptr= eth_port;
+		assert(!eth_port->etp_osdep.etp_send_ev);
+		eth_port->etp_osdep.etp_send_ev= 1;
+		ev_enqueue(&eth_port->etp_sendev, eth_sendev, ev_arg);
+
+		/* Pretend that we didn't get a reply. */
+		return;
+	}
+
+	/* packet is sent */
+	bf_afree(eth_port->etp_wr_pack);
+	eth_port->etp_wr_pack= NULL;
 }
 
-PRIVATE void write_int(eth_port_t *eth_port)
+PUBLIC void eth_rec(m)
+message *m;
+{
+	int i;
+	eth_port_t *loc_port;
+	int stat;
+
+	assert(m->m_type == DL_TASK_REPLY);
+
+	set_time (m->DL_CLCK);
+
+	for (i=0, loc_port= eth_port_table; i<eth_conf_nr; i++, loc_port++)
+	{
+		if (loc_port->etp_osdep.etp_port == m->DL_PORT &&
+			loc_port->etp_osdep.etp_task == m->m_source)
+			break;
+	}
+	if (i == eth_conf_nr)
+	{
+		ip_panic(("message from unknown source: %d:%d",
+			m->m_source, m->DL_PORT));
+	}
+
+	stat= m->DL_STAT & 0xffff;
+
+	if (!(stat & (DL_PACK_SEND|DL_PACK_RECV)))
+		printf("eth_rec: neither DL_PACK_SEND nor DL_PACK_RECV\n");
+	if (stat & DL_PACK_SEND)
+		write_int(loc_port);
+	if (stat & DL_PACK_RECV)
+	{
+		if (recv_debug)
+		{
+			printf("eth_rec: eth%d got DL_PACK_RECV\n",
+				m->DL_PORT);
+		}
+		read_int(loc_port, m->DL_COUNT);
+	}
+}
+
+PUBLIC void eth_check_drivers(m)
+message *m;
+{
+	int i, r, tasknr;
+	struct eth_conf *ecp;
+	eth_port_t *eth_port;
+	char *drivername;
+
+	tasknr= m->m_source;
+	printf("eth_check_drivers: got a notification from %d\n", tasknr);
+
+	m->m_type= DL_GETNAME;
+	r= sendrec(tasknr, m);
+	if (r != OK)
+	{
+		printf("eth_check_drivers: sendrec to %d failed: %d\n",
+			tasknr, r);
+		return;
+	}
+	if (m->m_type != DL_NAME_REPLY)
+	{
+		printf(
+		"eth_check_drivers: got bad getname reply (%d) from %d\n",
+			m->m_type, tasknr);
+		return;
+	}
+
+	drivername= m->m3_ca1;
+	printf("eth_check_drivers: got name: %s\n", drivername);
+
+	/* Re-init ethernet interfaces */
+	for (i= 0, ecp= eth_conf, eth_port= eth_port_table;
+		i<eth_conf_nr; i++, ecp++, eth_port++)
+	{
+		if (eth_is_vlan(ecp))
+			continue;
+
+		if (strcmp(ecp->ec_task, drivername) != 0)
+		{
+			/* Wrong driver */
+			continue;
+		}
+
+		eth_restart(eth_port, tasknr);
+	}
+}
+
+PUBLIC int eth_get_stat(eth_port, eth_stat)
+eth_port_t *eth_port;
+eth_stat_t *eth_stat;
+{
+	int r;
+	cp_grant_id_t gid;
+	message mess, mlocked;
+
+	assert(!eth_port->etp_vlan);
+
+	gid= cpf_grant_direct(eth_port->etp_osdep.etp_task,
+		(vir_bytes)eth_stat, sizeof(*eth_stat), CPF_WRITE);
+	if (gid == -1)
+	{
+		ip_panic(( "eth_get_stat: cpf_grant_direct failed: %d\n",
+			errno));
+	}
+
+	mess.m_type= DL_GETSTAT_S;
+	mess.DL_PORT= eth_port->etp_osdep.etp_port;
+	mess.DL_PROC= this_proc;
+	mess.DL_GRANT= gid;
+
+	for (;;)
+	{
+		r= sendrec(eth_port->etp_osdep.etp_task, &mess);
+		if (r != ELOCKED)
+			break;
+
+		r= receive(eth_port->etp_osdep.etp_task, &mlocked);
+		assert(r == OK);
+
+		compare(mlocked.m_type, ==, DL_TASK_REPLY);
+		eth_rec(&mlocked);
+	}
+	cpf_revoke(gid);
+
+	if (r != OK)
+	{
+		printf("eth_get_stat: sendrec to %d failed: %d\n",
+			eth_port->etp_osdep.etp_task, r);
+		return EIO;
+	}
+
+	assert(mess.m_type == DL_TASK_REPLY);
+
+	r= mess.DL_STAT >> 16;
+	assert (r == 0);
+
+	if (mess.DL_STAT)
+	{
+		eth_rec(&mess);
+	}
+	return OK;
+}
+
+PUBLIC void eth_set_rec_conf (eth_port, flags)
+eth_port_t *eth_port;
+u32_t flags;
+{
+	int r;
+	unsigned dl_flags;
+	message mess, repl_mess;
+
+	assert(!eth_port->etp_vlan);
+
+	if (!(eth_port->etp_flags & EPF_GOT_ADDR))
+	{
+		/* We have never seen the device. */
+		printf("eth_set_rec_conf: waiting for device to appear\n");
+		return;
+	}
+
+	eth_port->etp_osdep.etp_recvconf= flags;
+	dl_flags= DL_NOMODE;
+	if (flags & NWEO_EN_BROAD)
+		dl_flags |= DL_BROAD_REQ;
+	if (flags & NWEO_EN_MULTI)
+		dl_flags |= DL_MULTI_REQ;
+	if (flags & NWEO_EN_PROMISC)
+		dl_flags |= DL_PROMISC_REQ;
+
+	mess.m_type= DL_CONF;
+	mess.DL_PORT= eth_port->etp_osdep.etp_port;
+	mess.DL_PROC= this_proc;
+	mess.DL_MODE= dl_flags;
+
+	do
+	{
+		r= sendrec(eth_port->etp_osdep.etp_task, &mess);
+		if (r == ELOCKED)	/* etp_task is sending to this task,
+					   I hope */
+		{
+			if (receive (eth_port->etp_osdep.etp_task, 
+				&repl_mess)< 0)
+			{
+				ip_panic(("unable to receive"));
+			}
+
+			compare(repl_mess.m_type, ==, DL_TASK_REPLY);
+			eth_rec(&repl_mess);
+		}
+	} while (r == ELOCKED);
+	
+	if (r < 0)
+	{
+		printf("eth_set_rec_conf: sendrec to %d failed: %d\n",
+			eth_port->etp_osdep.etp_task, r);
+		return;
+	}
+
+	assert (mess.m_type == DL_CONF_REPLY);
+	if (mess.m3_i1 != eth_port->etp_osdep.etp_port)
+	{
+		ip_panic(("got reply for wrong port"));
+	}
+}
+
+PRIVATE void write_int(eth_port)
+eth_port_t *eth_port;
 {
 	acc_t *pack;
 	int multicast;
@@ -569,7 +635,7 @@ PRIVATE void write_int(eth_port_t *eth_port)
 	if (pack == NULL)
 	{
 		printf("write_int: strange no packet on eth port %d\n",
-			(int)(eth_port-eth_port_table));
+			eth_port-eth_port_table);
 		eth_restart_write(eth_port);
 		return;
 	}
@@ -596,37 +662,10 @@ PRIVATE void read_int(eth_port, count)
 eth_port_t *eth_port;
 int count;
 {
-	acc_t *pack, *pack_ptr, *cut_pack;
-	iovec_s_t *iovec;
-	int i, r;
-
-	/* A buggy driver might try to feed us a reply for a request we never
-	 * sent. Don't let this cause a crash further up.
-	 */
-	if (!(eth_port->etp_flags & EPF_READ_IP))
-	{
-		printf("mnx_eth`read_int: read reply with no read going on\n");
-		return;
-	}
+	acc_t *pack, *cut_pack;
 
 	pack= eth_port->etp_rd_pack;
 	eth_port->etp_rd_pack= NULL;
-
-	/* Invalidate the grants first, so that the ethernet driver can no
-	 * longer modify the contents of the packet.
-	 */
-	iovec= eth_port->etp_osdep.etp_rd_iovec;
-	for (i=0, pack_ptr= pack; i<RD_IOVEC && pack_ptr;
-		i++, pack_ptr= pack_ptr->acc_next)
-	{
-		r= cpf_setgrant_disable(iovec[i].iov_grant);
-		if (r != 0)
-		{
-			ip_panic((
-			"mnx_eth`read_int: cpf_setgrant_disable failed: %d\n",
-				errno));
-		}
-	}
 
 	if (count < ETH_MIN_PACK_SIZE)
 	{
@@ -659,124 +698,274 @@ int count;
 PRIVATE void setup_read(eth_port)
 eth_port_t *eth_port;
 {
+	eth_port_t *loc_port;
 	acc_t *pack, *pack_ptr;
-	message mess;
+	message mess1, block_msg;
 	iovec_s_t *iovec;
+	ev_arg_t ev_arg;
 	int i, r;
 
 	assert(!eth_port->etp_vlan);
 	assert(!(eth_port->etp_flags & (EPF_READ_IP|EPF_READ_SP)));
 
-	if (eth_port->etp_osdep.etp_state != OEPS_IDLE)
+	do
 	{
-		eth_port->etp_osdep.etp_flags |= OEPF_NEED_RECV;
+		assert (!eth_port->etp_rd_pack);
 
-		return;
-	}
+		iovec= eth_port->etp_osdep.etp_rd_iovec;
+		pack= bf_memreq (ETH_MAX_PACK_SIZE_TAGGED);
 
-	assert (!eth_port->etp_rd_pack);
+		for (i=0, pack_ptr= pack; i<RD_IOVEC && pack_ptr;
+			i++, pack_ptr= pack_ptr->acc_next)
+		{
+			r= cpf_setgrant_direct(iovec[i].iov_grant,
+				eth_port->etp_osdep.etp_task,
+				(vir_bytes)ptr2acc_data(pack_ptr),
+				(vir_bytes)pack_ptr->acc_length,
+				CPF_WRITE);
+			if (r != 0)
+			{
+				ip_panic((
+			"mnx_eth`setup_read: cpf_setgrant_direct failed: %d\n",
+					errno));
+			}
+			iovec[i].iov_size= (vir_bytes)pack_ptr->acc_length;
+		}
+		assert (!pack_ptr);
 
-	iovec= eth_port->etp_osdep.etp_rd_iovec;
-	pack= bf_memreq (ETH_MAX_PACK_SIZE_TAGGED);
-
-	for (i=0, pack_ptr= pack; i<RD_IOVEC && pack_ptr;
-		i++, pack_ptr= pack_ptr->acc_next)
-	{
-		r= cpf_setgrant_direct(iovec[i].iov_grant,
+		r= cpf_setgrant_direct(eth_port->etp_osdep.etp_rd_vec_grant,
 			eth_port->etp_osdep.etp_task,
-			(vir_bytes)ptr2acc_data(pack_ptr),
-			(vir_bytes)pack_ptr->acc_length,
-			CPF_WRITE);
+			(vir_bytes)iovec,
+			(vir_bytes)(i * sizeof(iovec[0])),
+			CPF_READ);
 		if (r != 0)
 		{
 			ip_panic((
 		"mnx_eth`setup_read: cpf_setgrant_direct failed: %d\n",
 				errno));
 		}
-		iovec[i].iov_size= (vir_bytes)pack_ptr->acc_length;
-	}
-	assert (!pack_ptr);
 
-	r= cpf_setgrant_direct(eth_port->etp_osdep.etp_rd_vec_grant,
-		eth_port->etp_osdep.etp_task,
-		(vir_bytes)iovec,
-		(vir_bytes)(i * sizeof(iovec[0])),
-		CPF_READ);
-	if (r != 0)
-	{
-		ip_panic((
-	"mnx_eth`setup_read: cpf_setgrant_direct failed: %d\n",
-			errno));
-	}
+		mess1.m_type= DL_READV_S;
+		mess1.DL_PORT= eth_port->etp_osdep.etp_port;
+		mess1.DL_PROC= this_proc;
+		mess1.DL_COUNT= i;
+		mess1.DL_GRANT= eth_port->etp_osdep.etp_rd_vec_grant;
 
-	mess.m_type= DL_READV_S;
-	mess.DL_ENDPT= this_proc;
-	mess.DL_COUNT= i;
-	mess.DL_GRANT= eth_port->etp_osdep.etp_rd_vec_grant;
+		for (;;)
+		{
+			if (recv_debug)
+			{
+				printf("eth%d: sending DL_READV_S\n",
+					mess1.DL_PORT);
+			}
+			r= sendrec(eth_port->etp_osdep.etp_task, &mess1);
+			if (r != ELOCKED)
+				break;
 
-	assert(eth_port->etp_osdep.etp_state == OEPS_IDLE);
+			/* ethernet task is sending to this task, I hope */
+			r= receive(eth_port->etp_osdep.etp_task, &block_msg);
+			if (r < 0)
+				ip_panic(("unable to receive"));
 
-	r= asynsend(eth_port->etp_osdep.etp_task, &mess);
-	eth_port->etp_osdep.etp_state= OEPS_RECV_SENT;
+			loc_port= eth_port;
+			if (loc_port->etp_osdep.etp_port != block_msg.DL_PORT ||
+				loc_port->etp_osdep.etp_task !=
+				block_msg.m_source)
+			{
+				loc_port= find_port(&block_msg);
+			}
+			assert(block_msg.DL_STAT &
+				(DL_PACK_SEND|DL_PACK_RECV));
+			if (block_msg.DL_STAT & DL_PACK_SEND)
+			{
+				loc_port->etp_osdep.etp_sendrepl=
+					block_msg;
+				ev_arg.ev_ptr= loc_port;
+				assert(!loc_port->etp_osdep.etp_send_ev);
+				loc_port->etp_osdep.etp_send_ev= 1;
+				ev_enqueue(&loc_port->etp_sendev,
+					eth_sendev, ev_arg);
+			}
+			if (block_msg.DL_STAT & DL_PACK_RECV)
+			{
+				if (recv_debug)
+				{
+					printf(
+			"setup_read(block_msg): eth%d got DL_PACK_RECV\n",
+						block_msg.DL_PORT);
+				}
+				assert(loc_port != eth_port);
+				loc_port->etp_osdep.etp_recvrepl= block_msg;
+				ev_arg.ev_ptr= loc_port;
+				ev_enqueue(&loc_port->etp_osdep.etp_recvev,
+					eth_recvev, ev_arg);
+			}
+		}
 
-	if (r < 0)
-	{
-		printf(
-		"mnx_eth`setup_read: asynsend to %d failed: %d\n",
-			eth_port->etp_osdep.etp_task, r);
-	}
-	eth_port->etp_rd_pack= pack;
-	eth_port->etp_flags |= EPF_READ_IP;
+		if (r < 0)
+		{
+			printf("mnx_eth`setup_read: sendrec to %d failed: %d\n",
+				eth_port->etp_osdep.etp_task, r);
+			eth_port->etp_rd_pack= pack;
+			eth_port->etp_flags |= EPF_READ_IP;
+			continue;
+		}
+
+		if (mess1.m_type != DL_TASK_REPLY ||
+			mess1.DL_PORT !=  eth_port->etp_osdep.etp_port ||
+			mess1.DL_PROC != this_proc)
+		{
+			printf("mnx_eth`setup_read: bad type, port or proc\n");
+			printf("got type %d, port %d, proc %d\n",
+				mess1.m_type, mess1.DL_PORT, mess1.DL_PROC);
+			continue;
+		}
+
+		if ((mess1.DL_STAT >> 16) != OK)
+		{
+			printf(
+			"mnx_eth`setup_read: bad value in DL_STAT: 0x%x\n",
+				mess1.DL_STAT);
+			mess1.DL_STAT= 0;
+		}
+
+		if (mess1.DL_STAT & DL_PACK_RECV)
+		{
+			if (recv_debug)
+			{
+				printf(
+			"setup_read(mess1): eth%d: got DL_PACK_RECV\n",
+					mess1.DL_PORT);
+			}
+
+			if (mess1.DL_COUNT < ETH_MIN_PACK_SIZE)
+			{
+				printf(
+			"mnx_eth`setup_read: packet size too small (%d)\n",
+					mess1.DL_COUNT);
+				bf_afree(pack);
+			}
+			else
+			{
+				/* packet received */
+				pack_ptr= bf_cut(pack, 0, mess1.DL_COUNT);
+				bf_afree(pack);
+
+				assert(!no_ethWritePort);
+				no_ethWritePort= 1;
+				eth_arrive(eth_port, pack_ptr, mess1.DL_COUNT);
+				assert(no_ethWritePort);
+				no_ethWritePort= 0;
+			}
+		}
+		else
+		{
+			/* no packet received */
+			eth_port->etp_rd_pack= pack;
+			eth_port->etp_flags |= EPF_READ_IP;
+		}
+
+		if (mess1.DL_STAT & DL_PACK_SEND)
+		{
+			if (eth_port->etp_osdep.etp_send_ev)
+			{
+				printf(
+	"mnx_eth`setup_read: etp_send_ev is set, ignoring DL_PACK_SEND\n");
+			}
+			else
+			{
+				eth_port->etp_osdep.etp_sendrepl= mess1;
+				ev_arg.ev_ptr= eth_port;
+				assert(!eth_port->etp_osdep.etp_send_ev);
+				eth_port->etp_osdep.etp_send_ev= 1;
+				ev_enqueue(&eth_port->etp_sendev, eth_sendev,
+					ev_arg);
+			}
+		}
+	} while (!(eth_port->etp_flags & EPF_READ_IP));
 	eth_port->etp_flags |= EPF_READ_SP;
 }
 
-static void eth_restart(eth_port_t *eth_port, endpoint_t endpoint)
+PRIVATE void eth_recvev(ev, ev_arg)
+event_t *ev;
+ev_arg_t ev_arg;
 {
-	int r;
+	eth_port_t *eth_port;
+	message *m_ptr;
+
+	eth_port= ev_arg.ev_ptr;
+	assert(ev == &eth_port->etp_osdep.etp_recvev);
+	m_ptr= &eth_port->etp_osdep.etp_recvrepl;
+
+	assert(m_ptr->m_type == DL_TASK_REPLY);
+	assert(eth_port->etp_osdep.etp_port == m_ptr->DL_PORT &&
+		eth_port->etp_osdep.etp_task == m_ptr->m_source);
+
+	assert(m_ptr->DL_STAT & DL_PACK_RECV);
+	m_ptr->DL_STAT &= ~DL_PACK_RECV;
+
+	if (recv_debug)
+	{
+		printf("eth_recvev: eth%d got DL_PACK_RECV\n", m_ptr->DL_PORT);
+	}
+
+	read_int(eth_port, m_ptr->DL_COUNT);
+}
+
+PRIVATE void eth_sendev(ev, ev_arg)
+event_t *ev;
+ev_arg_t ev_arg;
+{
+	eth_port_t *eth_port;
+	message *m_ptr;
+
+	eth_port= ev_arg.ev_ptr;
+	assert(ev == &eth_port->etp_sendev);
+	m_ptr= &eth_port->etp_osdep.etp_sendrepl;
+
+	assert (m_ptr->m_type == DL_TASK_REPLY);
+	assert(eth_port->etp_osdep.etp_port == m_ptr->DL_PORT &&
+		eth_port->etp_osdep.etp_task == m_ptr->m_source);
+
+	assert(m_ptr->DL_STAT & DL_PACK_SEND);
+	m_ptr->DL_STAT &= ~DL_PACK_SEND;
+	assert(eth_port->etp_osdep.etp_send_ev);
+	eth_port->etp_osdep.etp_send_ev= 0;
+
+	/* packet is sent */
+	write_int(eth_port);
+}
+
+PRIVATE eth_port_t *find_port(m)
+message *m;
+{
+	eth_port_t *loc_port;
+	int i;
+
+	for (i=0, loc_port= eth_port_table; i<eth_conf_nr; i++, loc_port++)
+	{
+		if (loc_port->etp_osdep.etp_port == m->DL_PORT &&
+			loc_port->etp_osdep.etp_task == m->m_source)
+			break;
+	}
+	assert (i<eth_conf_nr);
+	return loc_port;
+}
+
+static void eth_restart(eth_port, tasknr)
+eth_port_t *eth_port;
+int tasknr;
+{
+	int i, r;
 	unsigned flags, dl_flags;
-	cp_grant_id_t gid;
 	message mess;
+	eth_port_t *loc_port;
 
-	eth_port->etp_osdep.etp_task= endpoint;
+	printf("eth_restart: restarting eth%d, task %d, port %d\n",
+		eth_port-eth_port_table, tasknr,
+		eth_port->etp_osdep.etp_port);
 
-	switch(eth_port->etp_osdep.etp_state)
-	{
-	case OEPS_INIT:
-	case OEPS_CONF_SENT:
-	case OEPS_RECV_SENT:
-	case OEPS_SEND_SENT:
-		/* We can safely ignore the pending CONF, RECV, and SEND
-		 * requests. If this is the first time that we see this
-		 * driver at all, that's fine too.
-		 */
-		eth_port->etp_osdep.etp_state= OEPS_IDLE;
-		break;
-	case OEPS_GETSTAT_SENT:
-		/* Set the OEPF_NEED_STAT to trigger a new request */
-		eth_port->etp_osdep.etp_flags |= OEPF_NEED_STAT;
-		eth_port->etp_osdep.etp_state= OEPS_IDLE;
-		break;
-	}
-
-	/* If there is a pending GETSTAT request then we have to create a
-	 * new grant.
-	 */
-	if (eth_port->etp_osdep.etp_flags & OEPF_NEED_STAT)
-	{
-		assert(eth_port->etp_osdep.etp_stat_gid != -1);
-		cpf_revoke(eth_port->etp_osdep.etp_stat_gid);
-
-		gid= cpf_grant_direct(eth_port->etp_osdep.etp_task,
-		(vir_bytes)eth_port->etp_osdep.etp_stat_buf,
-		sizeof(*eth_port->etp_osdep.etp_stat_buf), CPF_WRITE);
-		if (gid == -1)
-		{
-			ip_panic((
-				"eth_restart: cpf_grant_direct failed: %d\n",
-				errno));
-		}
-		eth_port->etp_osdep.etp_stat_gid= gid;
-	}
+	eth_port->etp_osdep.etp_task= tasknr;
 
 	flags= eth_port->etp_osdep.etp_recvconf;
 	dl_flags= DL_NOMODE;
@@ -787,18 +976,61 @@ static void eth_restart(eth_port_t *eth_port, endpoint_t endpoint)
 	if (flags & NWEO_EN_PROMISC)
 		dl_flags |= DL_PROMISC_REQ;
 	mess.m_type= DL_CONF;
+	mess.DL_PORT= eth_port->etp_osdep.etp_port;
+	mess.DL_PROC= this_proc;
 	mess.DL_MODE= dl_flags;
 
-	compare(eth_port->etp_osdep.etp_state, ==, OEPS_IDLE);
-	r= asynsend(eth_port->etp_osdep.etp_task, &mess);
+	r= sendrec(eth_port->etp_osdep.etp_task, &mess);
+	/* YYY */
 	if (r<0)
 	{
 		printf(
-	"eth_restart: send to ethernet task %d failed: %d\n",
+	"eth_restart: sendrec to ethernet task %d failed: %d\n",
 			eth_port->etp_osdep.etp_task, r);
 		return;
 	}
-	eth_port->etp_osdep.etp_state= OEPS_CONF_SENT;
+
+	if (mess.m3_i1 == ENXIO)
+	{
+		printf(
+	"osdep_eth_init: no ethernet device at task=%d,port=%d\n",
+			eth_port->etp_osdep.etp_task, 
+			eth_port->etp_osdep.etp_port);
+		return;
+	}
+	if (mess.m3_i1 < 0)
+		ip_panic(("osdep_eth_init: DL_INIT returned error %d\n",
+			mess.m3_i1));
+		
+	if (mess.m3_i1 != eth_port->etp_osdep.etp_port)
+	{
+		ip_panic((
+"osdep_eth_init: got reply for wrong port (got %d, expected %d)\n",
+			mess.m3_i1, eth_port->etp_osdep.etp_port));
+	}
+
+	eth_port->etp_flags |= EPF_ENABLED;
+
+	eth_port->etp_ethaddr= *(ether_addr_t *)mess.m3_ca1;
+	if (!(eth_port->etp_flags & EPF_GOT_ADDR))
+	{
+		eth_port->etp_flags |= EPF_GOT_ADDR;
+		eth_restart_ioctl(eth_port);
+
+		/* Also update any VLANs on this device */
+		for (i=0, loc_port= eth_port_table; i<eth_conf_nr;
+			i++, loc_port++)
+		{
+			if (!(loc_port->etp_flags & EPF_ENABLED))
+				continue;
+			if (loc_port->etp_vlan_port != eth_port)
+				continue;
+			 
+			loc_port->etp_ethaddr= eth_port->etp_ethaddr;
+			loc_port->etp_flags |= EPF_GOT_ADDR;
+			eth_restart_ioctl(loc_port);
+		}
+	}
 
 	if (eth_port->etp_wr_pack)
 	{
@@ -812,26 +1044,7 @@ static void eth_restart(eth_port_t *eth_port, endpoint_t endpoint)
 		eth_port->etp_rd_pack= NULL;
 		eth_port->etp_flags &= ~(EPF_READ_IP|EPF_READ_SP);
 	}
-
-}
-
-PRIVATE void send_getstat(eth_port)
-eth_port_t *eth_port;
-{
-	int r;
-	message mess;
-
-	mess.m_type= DL_GETSTAT_S;
-	mess.DL_ENDPT= this_proc;
-	mess.DL_GRANT= eth_port->etp_osdep.etp_stat_gid;
-
-	assert(eth_port->etp_osdep.etp_state == OEPS_IDLE);
-
-	r= asynsend(eth_port->etp_osdep.etp_task, &mess);
-	eth_port->etp_osdep.etp_state= OEPS_GETSTAT_SENT;
-
-	if (r != OK)
-		ip_panic(( "eth_get_stat: asynsend failed: %d", r));
+	setup_read (eth_port);
 }
 
 /*

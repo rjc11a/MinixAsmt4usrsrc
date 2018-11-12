@@ -92,7 +92,7 @@ f_sfpref()
  */
 tstfillp(lim)
 int lim;
-{	register int i;
+{	register int i, c;
 	register char *cp;
 	chroff savdot;
 
@@ -260,7 +260,7 @@ int c;
 fill_cur_line()
 {
 	register int foundit, i;
-	chroff lastbrkdot, boldot;
+	chroff lastbrkdot, boldot, eoldot;
 
 	boldot = e_boldot();
 

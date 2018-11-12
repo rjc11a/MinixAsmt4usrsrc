@@ -77,14 +77,14 @@ extern struct state _res;
 struct rrec;
 
 int res_init _ARGS(( void ));
-int res_mkquery _ARGS(( int op, const char *dname, int cls, int type,
+int res_mkquery _ARGS(( int op, const char *dname, int class, int type,
 	const char *data, int datalen, const struct rrec *newrr,
 	char *buf, int buflen ));
-int res_query _ARGS(( char *name, int cls, int type, u8_t *answer, 
+int res_query _ARGS(( char *name, int class, int type, u8_t *answer, 
 	int anslen ));
-int res_querydomain _ARGS(( char *name, char *domain, int cls, int type, 
+int res_querydomain _ARGS(( char *name, char *domain, int class, int type, 
 	u8_t *answer, int anslen ));
-int res_search _ARGS(( char *name, int cls, int type, u8_t *answer, 
+int res_search _ARGS(( char *name, int class, int type, u8_t *answer, 
 	int anslen ));
 int res_send _ARGS(( const char *buf, int buflen, char *answer, int anslen ));
 void _res_close _ARGS(( void ));
@@ -99,7 +99,7 @@ char *__hostalias _ARGS(( const char *name ));
 
 u16_t _getshort _ARGS(( const u8_t *msgp ));
 u32_t _getlong _ARGS(( const u8_t *msgp ));
-void __putshort _ARGS(( u16_t s, u8_t *msgp ));
+void __putshort _ARGS(( U16_t s, u8_t *msgp ));
 void __putlong _ARGS(( u32_t l, u8_t *msgp ));
 
 void p_query _ARGS(( char *msg ));

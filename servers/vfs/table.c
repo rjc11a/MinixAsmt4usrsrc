@@ -10,6 +10,7 @@
 #include "file.h"
 #include "fproc.h"
 #include "lock.h"
+
 #include "vnode.h"
 #include "vmnt.h"
 
@@ -40,7 +41,7 @@ PUBLIC _PROTOTYPE (int (*call_vec[]), (void) ) = {
 	do_umount,	/* 22 = umount	*/
 	no_sys,		/* 23 = (setuid) */
 	no_sys,		/* 24 = getuid	*/
-	no_sys,		/* 25 = (stime)	*/
+	do_stime,	/* 25 = stime	*/
 	no_sys,		/* 26 = ptrace	*/
 	no_sys,		/* 27 = alarm	*/
 	do_fstat,	/* 28 = fstat	*/
@@ -61,7 +62,7 @@ PUBLIC _PROTOTYPE (int (*call_vec[]), (void) ) = {
 	no_sys,		/* 43 = times	*/
 	no_sys,		/* 44 = (prof)	*/
 	do_slink,	/* 45 = symlink	*/
-	no_sys,		/* 46 = (setgid)*/
+	no_sys,		/* 46 = (setgid) */
 	no_sys,		/* 47 = getgid	*/
 	no_sys,		/* 48 = (signal)*/
 	do_rdlink,	/* 49 = readlink*/
@@ -74,18 +75,19 @@ PUBLIC _PROTOTYPE (int (*call_vec[]), (void) ) = {
 	no_sys,		/* 56 = (mpx)	*/
 	do_fslogin,	/* 57 = FS proc login */
 	no_sys,		/* 58 = unused	*/
-	no_sys,		/* 59 = (execve)*/
+	no_sys,		/* 59 = (execve) */
 	do_umask,	/* 60 = umask	*/
 	do_chroot,	/* 61 = chroot	*/
-	no_sys,		/* 62 = (setsid)*/
-	no_sys,		/* 63 = (getpgrp)*/
-	no_sys,		/* 64 = (itimer)*/
+	no_sys,		/* 62 = (setsid) */
+	no_sys,		/* 63 = (getpgrp) */
+
+	no_sys,		/* 64 = unused	*/
 	no_sys,		/* 65 = unused	*/
 	no_sys, 	/* 66 = unused  */
 	no_sys,		/* 67 = unused	*/
 	no_sys,		/* 68 = unused	*/
-	no_sys,		/* 69 = unused  */
-	no_sys,		/* 70 = unused  */
+	no_sys,		/* 69 = unused */
+	no_sys,		/* 70 = unused */
 	no_sys,		/* 71 = (sigaction) */
 	no_sys,		/* 72 = (sigsuspend) */
 	no_sys,		/* 73 = (sigpending) */
@@ -93,13 +95,14 @@ PUBLIC _PROTOTYPE (int (*call_vec[]), (void) ) = {
 	no_sys,		/* 75 = (sigreturn) */
 	no_sys,		/* 76 = (reboot) */
 	do_svrctl,	/* 77 = svrctl */
+
 	no_sys,		/* 78 = (sysuname) */
 	do_getsysinfo,  /* 79 = getsysinfo */
 	do_getdents,	/* 80 = getdents */
 	do_llseek,	/* 81 = llseek */
 	do_fstatfs,	/* 82 = fstatfs */
-	do_statvfs,		/* 83 = fstatvfs */
-	do_fstatvfs,		/* 84 = statvfs */
+	no_sys,		/* 83 = unused */
+	no_sys,		/* 84 = unused */
 	do_select,	/* 85 = select */
 	do_fchdir,	/* 86 = fchdir */
 	do_fsync,	/* 87 = fsync */
@@ -115,31 +118,7 @@ PUBLIC _PROTOTYPE (int (*call_vec[]), (void) ) = {
 	no_sys,		/* 97 = getsysinfo_up */
 	no_sys,		/* 98 = (sprofile) */
 	no_sys,		/* 99 = (cprofile) */
-	/* THE MINIX3 ABI ENDS HERE */
-	no_sys,		/* 100 = (exec_newmem) */
-	no_sys,		/* 101 = (srv_fork) */
-	no_sys,		/* 102 = (exec_restart) */
-	no_sys,		/* 103 = (procstat) */
-	no_sys,		/* 104 = (getprocnr) */
-	no_sys,		/* 105 = unused */
-	no_sys,		/* 106 = unused */
-	no_sys,		/* 107 = (getepinfo) */
-	no_sys,		/* 108 = (adddma) */
-	no_sys,		/* 109 = (deldma) */
-	no_sys,		/* 110 = (getdma) */
-	no_sys,		/* 111 = (srv_kill) */
-	do_gcov_flush,	/* 112 = gcov_flush */
 };
 /* This should not fail with "array size is negative": */
 extern int dummy[sizeof(call_vec) == NCALLS * sizeof(call_vec[0]) ? 1 : -1];
 
-PUBLIC _PROTOTYPE (int (*pfs_call_vec[]), (void) ) = {
-
-	no_sys,		/* 0 */
-	do_check_perms,	/* 1 */
-	do_verify_fd,	/* 2 */ 
-	do_set_filp,	/* 3 */
-	do_copy_filp,	/* 4 */
-	do_put_filp,	/* 5 */
-	do_cancel_fd	/* 6 */
-};

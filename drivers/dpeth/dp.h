@@ -29,9 +29,9 @@
 **
 **  Revision 2.0  2005/06/26 16:16:46  lsodgf0
 **  Initial revision for Minix 3.0.6
+**
+**  $Id$
 */
-
-#include <sys/null.h>
 
 #undef  ENABLE_3C501
 #undef  ENABLE_3C503
@@ -49,6 +49,8 @@
 #define ENABLE_DP8390	(ENABLE_3C503|ENABLE_WDETH|ENABLE_NE2000)
 #define	HAVE_BUFFERS	(ENABLE_3C501|ENABLE_3C509)
 
+#undef  NULL
+#define NULL ((void *)0)
 #define NOT(x) (~(x))
 
 #if debug == 1
@@ -80,6 +82,7 @@ typedef void (*dp_nic2userf_t) (struct dpeth *, int, int);
 typedef void (*dp_getblock_t) (struct dpeth *, u16_t, int, void *);
 #endif
 
+#define DE_PORT_NR	2	/* Number of devices supported	 */
 #define SENDQ_NR	2	/* Size of the send queue	 */
 #define IOVEC_NR	16	/* Number of IOVEC entries at a time */
 
@@ -221,15 +224,15 @@ void dp_next_iovec(iovec_dat_s_t * iovp);
 
 /* devio.c */
 #if defined USE_IOPL
-#include <machine/portio.h>
+#include <ibm/portio.h>
 #else
 unsigned int inb(unsigned short int);
 unsigned int inw(unsigned short int);
-void insb(unsigned short int, endpoint_t, void *, int);
+void insb(unsigned short int, int, void *, int);
 void insw(unsigned short int, int, void *, int);
 void outb(unsigned short int, unsigned long);
 void outw(unsigned short int, unsigned long);
-void outsb(unsigned short int, endpoint_t, void *, int);
+void outsb(unsigned short int, int, void *, int);
 void outsw(unsigned short int, int, void *, int);
 #endif
 
@@ -276,7 +279,7 @@ int wdeth_probe(dpeth_t * dep);
 #endif
 
 #define lock()	 (++dep->de_int_pending,sys_irqdisable(&dep->de_hook))
-#define unlock() do{int i=(--dep->de_int_pending)?0:sys_irqenable(&dep->de_hook);(void) i;}while(0)
+#define unlock() do{int i=(--dep->de_int_pending)?0:sys_irqenable(&dep->de_hook);}while(0)
 #define milli_delay(t) tickdelay(1)
 
 /** dp.h **/

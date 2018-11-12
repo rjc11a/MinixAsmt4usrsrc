@@ -9,10 +9,10 @@ mdec=/usr/mdec	# bootstraps
 
 # Check arguments.
 case "$#:$1" in
-1:bootable | 1:hdboot | [12]:fdboot )
-	action=$1 dev=$2 size=$3
+1:bootable | 1:hdboot | [12]:fdboot | [12]:cdfdboot )
+	action=$1 dev=$2
 	;;
-*)	echo "Usage: $0 [bootable | hdboot | fdboot [device]]" >&2
+*)	echo "Usage: $0 [bootable | hdboot | cdfdboot | fdboot [device]] | cdfdboot [device]" >&2
 	exit 1
 esac
 
@@ -53,12 +53,12 @@ hdboot)
 	# Install a new image on the root device.
 	if [ ! -d $rootdir/boot/image ]
 	then
-		# /boot/image is not yet a directory!  Fix it.
+		 /boot/image is not yet a directory!  Fix it.
 		su root -c \
 		    "exec mv $rootdir/boot/image /M"
 		install -d $rootdir/boot/image
 		su root -c \
-		    "exec mv $rootdir/M $rootdir/boot/image/`uname -r`"
+		    "exec mv $rootdir/M $rootdir/boot/image/`uname -r`.`uname -v`"
 	fi
 
 	sh tell_config OS_RELEASE . OS_VERSION >/tmp/mkb.$$
@@ -108,14 +108,6 @@ hdboot)
 	# Install the new image.
 	echo "install image $root:/boot/image/$target"
 	install -o root -m 600 image $rootdir/boot/image/$target || exit
-
-	# Tell GRUB which image is newest
-	image_latest="`ls -t $rootdir/boot/image | head -n 1`"
-	if [ -f "$rootdir/boot/image/$image_latest" ]
-	then image_latest="/boot/image/$image_latest"
-	else image_latest=/boot/image_big
-	fi
-	ln -f $image_latest $rootdir/boot/image_latest
 
 	# Save the revision number.
 	test "$revision" != "$oldrev" && echo $revision >revision
@@ -169,6 +161,49 @@ fdboot)
 	edparams $dev 'main(){delay 2000;boot}; save' || exit
 	echo "Test kernel installed on $dev"
 	;;
+
+cdfdboot)
+	# cdfdboot: Make a boot floppy image to go on a CD for booting from.
+	if [ -z "$dev" ]
+	then
+		ramdisk `expr 1440 \* 1024` 2>/dev/null
+		dev=/dev/ram
+	fi
+	umount $dev 2>/dev/null
+	if mkfs -B 1024 -b 1440 -i 512 $dev || exit 1
+	then :
+	else
+		echo "mkfs of $dev failed."
+		exit 1;
+	fi
+
+	# Install /dev, /boot
+	mount $dev /mnt || exit 1
+	mkdir /mnt/dev
+	mkdir /mnt/boot
+	mkdir /mnt/boot/image
+	( cd /mnt/dev && sh /usr/src/commands/scripts/MAKEDEV.sh std )
+	cp -p image /mnt/boot/image || exit 1
+	cp -p ../boot/boot /mnt/boot/boot || exit 1
+	umount $dev || exit 1
+	installboot -d $dev ../boot/bootblock boot/boot || exit 1
+	edparams $dev '
+unset bootopts;
+unset servers;
+unset rootdev;
+unset leader;
+unset image;
+disable=inet;
+bootcd=1;
+cdproberoot=1;
+ata_id_timeout=2;
+bootbig(1, MINIX 3) { unset image; boot }
+leader() { echo \n--- Welcome to MINIX 3. This is the boot monitor. ---\n\nChoose an option from the menu or press ESC if you need to do anything special.\nOtherwise I will boot with my defaults in 10 seconds.\n\n };
+main(){trap 10000 boot; menu; };
+save' || exit
+
+	# copy image
+	dd if=$dev of=cdfdimage bs=8192 count=180
 esac
 sync
 exit 0

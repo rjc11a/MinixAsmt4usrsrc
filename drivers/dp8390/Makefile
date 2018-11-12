@@ -1,12 +1,40 @@
 # Makefile for dp8390 driver
-PROG=	dp8390
-SRCS=	3c503.c dp8390.c ne2000.c rtl8029.c wdeth.c
+DRIVER = dp8390
 
-DPADD+=	${LIBNETDRIVER} ${LIBSYS} ${LIBTIMERS}
-LDADD+=	-lnetdriver -lsys -ltimers
+# directories
+u = /usr
+i = $u/include
+s = $i/sys
+m = $i/minix
+b = $i/ibm
+d = ..
 
-MAN=
+# programs, flags, etc.
+CC =	exec cc
+CFLAGS = -I$i $(CPROFILE)
+LDFLAGS = -i 
+LIBS = -lsysutil -lsys -ltimers
 
-BINDIR?= /usr/sbin
+OBJ = 3c503.o dp8390.o ne2000.o rtl8029.o wdeth.o
 
-.include <bsd.prog.mk>
+# build local binary
+all build:	$(DRIVER)
+$(DRIVER):	$(OBJ) 
+	$(CC) -o $@ $(LDFLAGS) $(OBJ) $(LIBS)
+	install -S 64k $(DRIVER)
+
+# install with other drivers
+install:	/usr/sbin/$(DRIVER)
+/usr/sbin/$(DRIVER):	$(DRIVER)
+	install -o root -cs $? $@
+
+# clean up local files
+clean:
+	rm -f *.o *.bak $(DRIVER)
+
+depend: 
+	mkdep "$(CC) -E $(CPPFLAGS)" *.c > .depend
+
+# Include generated dependencies.
+include .depend
+

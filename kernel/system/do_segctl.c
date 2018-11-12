@@ -8,14 +8,15 @@
  *    m4_l2:	SEG_OFFSET	(return offset within segment here)
  *    m4_l5:	SEG_INDEX	(return index into remote memory map here)
  */
-#include "kernel/system.h"
+#include "../system.h"
 
 #if USE_SEGCTL
 
 /*===========================================================================*
  *			        do_segctl				     *
  *===========================================================================*/
-PUBLIC int do_segctl(struct proc * caller, message * m_ptr)
+PUBLIC int do_segctl(m_ptr)
+register message *m_ptr;	/* pointer to request message */
 {
 /* Return a segment selector and offset that can be used to reach a physical
  * address, for use by a driver doing memory I/O in the A0000 - DFFFF range.
@@ -23,24 +24,26 @@ PUBLIC int do_segctl(struct proc * caller, message * m_ptr)
   u32_t selector;
   vir_bytes offset;
   int i, index;
+  register struct proc *rp;
   phys_bytes phys = (phys_bytes) m_ptr->SEG_PHYS;
   vir_bytes size = (vir_bytes) m_ptr->SEG_SIZE;
   int result;
 
   /* First check if there is a slot available for this segment. */
+  rp = proc_addr(who_p);
   index = -1;
   for (i=0; i < NR_REMOTE_SEGS; i++) {
-      if (! caller->p_priv->s_farmem[i].in_use) {
+      if (! rp->p_priv->s_farmem[i].in_use) {
           index = i; 
-          caller->p_priv->s_farmem[i].in_use = TRUE;
-          caller->p_priv->s_farmem[i].mem_phys = phys;
-          caller->p_priv->s_farmem[i].mem_len = size;
+          rp->p_priv->s_farmem[i].in_use = TRUE;
+          rp->p_priv->s_farmem[i].mem_phys = phys;
+          rp->p_priv->s_farmem[i].mem_len = size;
           break;
       }
   }
   if (index < 0) return(ENOSPC);
 
-       offset = alloc_remote_segment(&selector, &caller->p_seg,
+       offset = alloc_remote_segment(&selector, &rp->p_seg,
 		i, phys, size, USER_PRIVILEGE);
        result = OK;          
 

@@ -13,7 +13,7 @@ typedef struct sr_fd
 	int srf_flags;
 	int srf_fd;
 	int srf_port;
-	endpoint_t srf_select_proc;
+	int srf_select_proc;
 	sr_open_t srf_open;
 	sr_close_t srf_close;
 	sr_write_t srf_write;

@@ -9,13 +9,13 @@
 #ifndef _TIME_H
 #define _TIME_H
 
-#include <sys/null.h>
-
-#define CLOCKS_PER_SEC    60
+#define CLOCKS_PER_SEC    60	/* MINIX always uses 60 Hz, even in Europe */
 
 #ifdef _POSIX_SOURCE
 #define CLK_TCK CLOCKS_PER_SEC	/* obsolescent mame for CLOCKS_PER_SEC */
 #endif
+
+#define NULL    ((void *)0)
 
 #ifndef _SIZE_T
 #define _SIZE_T
@@ -56,20 +56,11 @@ _PROTOTYPE( double difftime, (time_t _time1, time_t _time0)		);
 _PROTOTYPE( time_t mktime, (struct tm *_timeptr)			);
 _PROTOTYPE( time_t time, (time_t *_timeptr)				);
 _PROTOTYPE( char *asctime, (const struct tm *_timeptr)			);
-_PROTOTYPE( char *asctime_r, (const struct tm *_timeptr, char *buf)			);
-_PROTOTYPE( char *ctime, (const time_t *_timer)				);
-_PROTOTYPE( char *ctime_r, (const time_t *_timer, char *buf)			);
+_PROTOTYPE( char *ctime, (const time_t *_timer)			);
 _PROTOTYPE( struct tm *gmtime, (const time_t *_timer)			);
-_PROTOTYPE( struct tm *gmtime_r, (const time_t *_timer,struct tm *tmp)			);
 _PROTOTYPE( struct tm *localtime, (const time_t *_timer)		);
-_PROTOTYPE( struct tm *localtime_r, (const time_t *const timep,
-					struct tm *tmp)			);
 _PROTOTYPE( size_t strftime, (char *_s, size_t _max, const char *_fmt,
 				const struct tm *_timep)		);
-_PROTOTYPE( char *strptime, (const char *buf, const char *format,
-				struct tm *timeptr)			);
-_PROTOTYPE( time_t timegm, (struct tm * const tmp)			);
-
 
 #ifdef _POSIX_SOURCE
 _PROTOTYPE( void tzset, (void)						);
@@ -80,15 +71,5 @@ _PROTOTYPE( int stime, (time_t *_top)					);
 #endif
 
 extern long timezone;
-
-#ifdef _POSIX_SOURCE
-struct timespec
-{
-	time_t tv_sec;
-	long tv_nsec;
-};
-
-int nanosleep(const struct timespec *rqtp, struct timespec *rmtp);
-#endif
 
 #endif /* _TIME_H */

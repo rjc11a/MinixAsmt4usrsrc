@@ -352,7 +352,7 @@ int wasopen;
 
    if(passive) {
    	/* passive mode we connect to them */
-	tcpcopt.nwtcl_flags = 0;
+	tcplopt.nwtcl_flags = 0;
 #ifdef DEBUG
 	printf("Doing TCPCONN\n");
 #endif

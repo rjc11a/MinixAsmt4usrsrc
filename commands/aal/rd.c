@@ -3,13 +3,8 @@
  * (c) copyright 1987 by the Vrije Universiteit, Amsterdam, The Netherlands.
  * See the copyright notice in the ACK home directory, in the file "Copyright".
  */
-#include <sys/types.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include "out.h"
+#include <out.h>
 #include "object.h"
-#include "rd.h"
-#include "rd_bytes.h"
 
 extern long		lseek();
 
@@ -48,7 +43,9 @@ static long		rd_base;
 static int sectionnr;
 
 static
-void OUTREAD(int p, char *b, long n)
+OUTREAD(p, b, n)
+	char *b;
+	long n;
 {
 	register long l = outseek[p];
 
@@ -65,17 +62,18 @@ void OUTREAD(int p, char *b, long n)
  * Open the output file according to the chosen strategy.
  */
 int
-rd_open(char *f)
+rd_open(f)
+	char *f;
 {
-	int outfile = open(f, 0);
-	if (outfile < 0)
+
+	if ((outfile = open(f, 0)) < 0)
 		return 0;
 	return rd_fdopen(outfile);
 }
 
 static int offcnt;
 
-int rd_fdopen(int fd)
+rd_fdopen(fd)
 {
 	register int i;
 
@@ -92,19 +90,20 @@ int rd_fdopen(int fd)
 	return 1;
 }
 
-void rd_close()
+rd_close()
 {
 
 	close(outfile);
 	outfile = -1;
 }
 
-int rd_fd()
+rd_fd()
 {
 	return outfile;
 }
 
-void rd_ohead(register struct outhead *head)
+rd_ohead(head)
+	register struct outhead	*head;
 {
 	register long off;
 
@@ -136,7 +135,7 @@ void rd_ohead(register struct outhead *head)
 #endif
 }
 
-void rd_rew_relos(head)
+rd_rew_relos(head)
 	register struct outhead *head;
 {
 	register long off = OFF_RELO(*head) + rd_base;
@@ -144,7 +143,7 @@ void rd_rew_relos(head)
 	BEGINSEEK(PARTRELO, off);
 }
 
-void rd_sect(sect, cnt)
+rd_sect(sect, cnt)
 	register struct outsect	*sect;
 	register unsigned int	cnt;
 {
@@ -174,7 +173,7 @@ void rd_sect(sect, cnt)
 	}
 }
 
-void rd_outsect(int s)
+rd_outsect(s)
 {
 	OUTSECT(s);
 	sectionnr = s;
@@ -183,7 +182,7 @@ void rd_outsect(int s)
 /*
  * We don't have to worry about byte order here.
  */
-void rd_emit(emit, cnt)
+rd_emit(emit, cnt)
 	char		*emit;
 	long		cnt;
 {
@@ -191,10 +190,11 @@ void rd_emit(emit, cnt)
 	offset[sectionnr] += cnt;
 }
 
-void rd_relo(relo, cnt)
+rd_relo(relo, cnt)
 	register struct outrelo	*relo;
 	register unsigned int cnt;
 {
+
 	OUTREAD(PARTRELO, (char *) relo, (long) cnt * SZ_RELO);
 #if ! (BYTES_REVERSED || WORDS_REVERSED)
 	if (sizeof(struct outrelo) != SZ_RELO)
@@ -213,7 +213,9 @@ void rd_relo(relo, cnt)
 	}
 }
 
-void rd_name(struct outname *name, unsigned int cnt)
+rd_name(name, cnt)
+	register struct outname	*name;
+	register unsigned int cnt;
 {
 
 	OUTREAD(PARTNAME, (char *) name, (long) cnt * SZ_NAME);
@@ -234,13 +236,18 @@ void rd_name(struct outname *name, unsigned int cnt)
 	}
 }
 
-void rd_string(char *addr, long len)
+rd_string(addr, len)
+	char *addr;
+	long len;
 {
+	
 	OUTREAD(PARTCHAR, addr, len);
 }
 
 #ifdef SYMDBUG
-void rd_dbug(char *buf, long size)
+rd_dbug(buf, size)
+	char		*buf;
+	long		size;
 {
 	OUTREAD(PARTDBUG, buf, size);
 }

@@ -4,16 +4,17 @@ ti1225.c
 Created:	Dec 2005 by Philip Homburg
 */
 
-#include <minix/drivers.h>
-#include <minix/driver.h>
-#include <machine/pci.h>
-#include <machine/vm.h>
+#include "../drivers.h"
+#include <ibm/pci.h>
+#include <sys/vm.h>
 
 #include "ti1225.h"
 #include "i82365.h"
 
 /* The use of interrupts is not yet ready for prime time */
 #define USE_INTS	0
+
+#define MICROS_TO_TICKS(m)  (((m)*HZ/1000000)+1)
 
 #define NR_PORTS 2
 
@@ -30,7 +31,7 @@ PRIVATE struct port
 	char *base_ptr;
 	volatile struct csr *csr_ptr;
 
-	char buffer[2*I386_PAGE_SIZE];
+	char buffer[2*PAGE_SIZE];
 } ports[NR_PORTS];
 
 #define PF_PRESENT	1
@@ -51,83 +52,50 @@ PRIVATE struct pcitab pcitab_ti[]=
 PRIVATE char *progname;
 PRIVATE int debug;
 
+FORWARD _PROTOTYPE( void init, (void)					);
 FORWARD _PROTOTYPE( void hw_init, (struct port *pp)			);
 FORWARD _PROTOTYPE( void map_regs, (struct port *pp, u32_t base)	);
 FORWARD _PROTOTYPE( void do_int, (struct port *pp)			);
+FORWARD _PROTOTYPE( u8_t read_exca, (struct port *pp, int socket, int reg) );
 FORWARD _PROTOTYPE( void do_outb, (port_t port, u8_t value)		);
 FORWARD _PROTOTYPE( u8_t do_inb, (port_t port)				);
+FORWARD _PROTOTYPE( void micro_delay, (unsigned long usecs)		);
 
-/* SEF functions and variables. */
-FORWARD _PROTOTYPE( void sef_local_startup, (void) );
-FORWARD _PROTOTYPE( int sef_cb_init_fresh, (int type, sef_init_info_t *info) );
-
-/*===========================================================================*
- *				main					     *
- *===========================================================================*/
 int main(int argc, char *argv[])
 {
-	int r;
+	int c, r;
 	message m;
-	int ipc_status;
 
-	/* SEF local startup. */
-	env_setargs(argc, argv);
-	sef_local_startup();
+	(progname=strrchr(argv[0],'/')) ? progname++ : (progname=argv[0]);
+
+	debug= 0;
+	while (c= getopt(argc, argv, "d?"), c != -1)
+	{
+		switch(c)
+		{
+		case '?': panic("ti1225", "Usage: ti1225 [-d]", NO_NUM);
+		case 'd': debug++; break;
+		default: panic("ti1225", "getopt failed", NO_NUM);
+		}
+	}
+
+	init();
 
 	for (;;)
 	{
-		r= driver_receive(ANY, &m, &ipc_status);
+		r= receive(ANY, &m);
 		if (r != OK)
-			panic("driver_receive failed: %d", r);
+			panic("ti1225", "receive failed", r);
 		printf("ti1225: got message %u from %d\n",
 			m.m_type, m.m_source);
 	}
 	return 0;
 }
 
-/*===========================================================================*
- *			       sef_local_startup			     *
- *===========================================================================*/
-PRIVATE void sef_local_startup()
+PRIVATE void init()
 {
-  /* Register init callbacks. */
-  sef_setcb_init_fresh(sef_cb_init_fresh);
-  sef_setcb_init_lu(sef_cb_init_fresh);
-  sef_setcb_init_restart(sef_cb_init_fresh);
-
-  /* Register live update callbacks. */
-  sef_setcb_lu_prepare(sef_cb_lu_prepare_always_ready);
-  sef_setcb_lu_state_isvalid(sef_cb_lu_state_isvalid_standard);
-
-  /* Let SEF perform startup. */
-  sef_startup();
-}
-
-/*===========================================================================*
- *		            sef_cb_init_fresh                                *
- *===========================================================================*/
-PRIVATE int sef_cb_init_fresh(int type, sef_init_info_t *info)
-{
-/* Initialize the ti1225 driver. */
-	int c, i, r, first, devind, port;
+	int i, r, first, devind, port;
 	u16_t vid, did;
-
-	(progname=strrchr(env_argv[0],'/')) ? progname++
-		: (progname=env_argv[0]);
-
-	if((r=tsc_calibrate()) != OK)
-		panic("tsc_calibrate failed: %d", r);
-
-	debug= 0;
-	while (c= getopt(env_argc, env_argv, "d?"), c != -1)
-	{
-		switch(c)
-		{
-		case '?': panic("Usage: ti1225 [-d]");
-		case 'd': debug++; break;
-		default: panic("getopt failed");
-		}
-	}
 
 	pci_init1(progname);
 
@@ -151,8 +119,11 @@ PRIVATE int sef_cb_init_fresh(int type, sef_init_info_t *info)
 				continue;
 			if (pcitab_ti[i].did != did)
 				continue;
-			if (pcitab_ti[i].checkclass) {
-				panic("fxp_probe: class check not implemented");
+			if (pcitab_ti[i].checkclass)
+			{
+				panic("ti1225",
+				"fxp_probe: class check not implemented",
+					NO_NUM);
 			}
 			break;
 		}
@@ -176,16 +147,12 @@ PRIVATE int sef_cb_init_fresh(int type, sef_init_info_t *info)
 			continue;
 		hw_init(&ports[i]);
 	}
-
-	/* Announce we are up! */
-	driver_announce();
-
-	return(OK);
 }
 
-PRIVATE void hw_init(struct port *pp)
+PRIVATE void hw_init(pp)
+struct port *pp;
 {
-	int r, devind, irq;
+	int i, r, devind, irq, socket;
 	u8_t v8;
 	u16_t v16;
 	u32_t v32;
@@ -235,7 +202,7 @@ PRIVATE void hw_init(struct port *pp)
 	}
 
 	if (v32 == 0)
-		panic("bad legacy-mode base address: %d", v32);
+		panic("ti1225", "bad lagacy-mode base address 0x%x\n", v32);
 	pp->p_exca_port= v32;
 
 	if (debug)
@@ -248,7 +215,7 @@ PRIVATE void hw_init(struct port *pp)
  	pp->p_hook = pp->p_irq;
 	r= sys_irqsetpolicy(pp->p_irq, 0, &pp->p_hook);
 	if (r != OK)
-		panic("sys_irqsetpolicy failed: %d", r);
+		panic("ti1225","sys_irqsetpolicy failed", r);
 #endif
 
 	/* Clear CBB_BC_INTEXCA */
@@ -278,18 +245,20 @@ PRIVATE void hw_init(struct port *pp)
 #if USE_INTS
 	r= sys_irqenable(&pp->p_hook);
 	if (r != OK)
-		panic("unable enable interrupts: %d", r);
+		panic("ti1225","unable enable interrupts", r);
 #endif
 }
 
-PRIVATE void map_regs(struct port *pp, u32_t base)
+PRIVATE void map_regs(pp, base)
+struct port *pp;
+u32_t base;
 {
 	int r;
 	vir_bytes buf_base;
 
 	buf_base= (vir_bytes)pp->buffer;
-	if (buf_base % I386_PAGE_SIZE)
-		buf_base += I386_PAGE_SIZE-(buf_base % I386_PAGE_SIZE);
+	if (buf_base % PAGE_SIZE)
+		buf_base += PAGE_SIZE-(buf_base % PAGE_SIZE);
 	pp->base_ptr= (char *)buf_base;
 	if (debug)
 	{
@@ -300,21 +269,18 @@ PRIVATE void map_regs(struct port *pp, u32_t base)
 	/* Clear low order bits in base */
 	base &= ~(u32_t)0xF;
 
-#if 0
 	r= sys_vm_map(SELF, 1 /* map */, (vir_bytes)pp->base_ptr,
-		I386_PAGE_SIZE, (phys_bytes)base);
-#else
-	r = ENOSYS;
-#endif
+		PAGE_SIZE, (phys_bytes)base);
 	if (r != OK)
-		panic("map_regs: sys_vm_map failed: %d", r);
+		panic("ti1225", "map_regs: sys_vm_map failed", r);
 }
 
-PRIVATE void do_int(struct port *pp)
+PRIVATE void do_int(pp)
+struct port *pp;
 {
-	int r, devind, vcc_5v, vcc_3v, vcc_Xv, vcc_Yv,
+	int i, r, devind, vcc_5v, vcc_3v, vcc_Xv, vcc_Yv,
 		socket_5v, socket_3v, socket_Xv, socket_Yv;
-	spin_t spin;
+	clock_t t0, t1;
 	u32_t csr_event, csr_present, csr_control;
 	u8_t v8;
 	u16_t v16;
@@ -323,7 +289,7 @@ PRIVATE void do_int(struct port *pp)
 	v8= pci_attr_r8(devind, TI_CARD_CTRL);
 	if (v8 & TI_CCR_IFG)
 	{
-		printf("ti1225: got functional interrupt\n");
+		printf("ti1225: got functional interrupt\n", v8);
 		pci_attr_w8(devind, TI_CARD_CTRL, v8);
 	}
 
@@ -441,7 +407,7 @@ PRIVATE void do_int(struct port *pp)
 	v8= pci_attr_r8(devind, TI_CARD_CTRL);
 	if (v8 & TI_CCR_IFG)
 	{
-		printf("ti1225: got functional interrupt\n");
+		printf("ti1225: got functional interrupt\n", v8);
 		pci_attr_w8(devind, TI_CARD_CTRL, v8);
 	}
 
@@ -451,12 +417,12 @@ PRIVATE void do_int(struct port *pp)
 		printf("TI_CARD_CTRL: 0x%02x\n", v8);
 	}
 
-	spin_init(&spin, 100000);
+	getuptime(&t0);
 	do {
 		csr_present= pp->csr_ptr->csr_present;
 		if (csr_present & CP_PWRCYCLE)
 			break;
-	} while (spin_check(&spin));
+	} while (getuptime(&t1)==OK && (t1-t0) < MICROS_TO_TICKS(100000));
 
 	if (!(csr_present & CP_PWRCYCLE))
 	{
@@ -487,11 +453,24 @@ PRIVATE void do_int(struct port *pp)
 #if USE_INTS
 	r= sys_irqenable(&pp->p_hook);
 	if (r != OK)
-		panic("unable enable interrupts: %d", r);
+		panic("ti1225","unable enable interrupts", r);
 #endif
 
 }
 
+PRIVATE u8_t read_exca(pp, socket, reg)
+struct port *pp;
+int socket;
+int reg;
+{
+	u16_t port;
+
+	port= pp->p_exca_port;
+	if (port == 0)
+		panic("ti1225", "read_exca: bad port", NO_NUM);
+	do_outb(port, socket * 0x40 + reg);
+	return do_inb(port+1);
+}
 
 PRIVATE u8_t do_inb(port_t port)
 {
@@ -500,7 +479,7 @@ PRIVATE u8_t do_inb(port_t port)
 
 	r= sys_inb(port, &value);
 	if (r != OK)
-		panic("sys_inb failed: %d", r);
+		panic("ti1225","sys_inb failed", r);
 	return value;
 }
 
@@ -510,7 +489,11 @@ PRIVATE void do_outb(port_t port, u8_t value)
 
 	r= sys_outb(port, value);
 	if (r != OK)
-		panic("sys_outb failed: %d", r);
+		panic("ti1225","sys_outb failed", r);
 }
 
+PRIVATE void micro_delay(unsigned long usecs)
+{
+	tickdelay(MICROS_TO_TICKS(usecs));
+}
 

@@ -1,97 +1,116 @@
 # Makefile for the boot monitor package.
 
-# XXX: Can only be built with ACK currently
-CC:=${CC:C/^gcc/cc/}
-COMPILER_TYPE:=ack
+SYS	= ..
 
-PROGS=	bootblock cdbootblock boot masterboot \
-	jumpboot installboot edparams dosboot mkfile
+CC	= exec cc
+CC86	= exec cc -mi86 -Was-ncc
+CFLAGS	= -I$(SYS)
+LIBS	= -lsys
+LD	= $(CC) -s -.o
+LD86	= $(CC86) -.o
+BIN	= /usr/bin
+MDEC	= /usr/mdec
 
-SRCS.bootblock=		bootblock.s
-CPPFLAGS.bootblock.s=	${I86CPPFLAGS}
-LDFLAGS.bootblock=	${I86LDFLAGS}
-BINDIR.bootblock=	/usr/mdec
-MAN.bootblock=
+all:	bootblock boot edparams masterboot jumpboot installboot addaout
+dos:	boot.com mkfile.com
 
-SRCS.cdbootblock=	cdbootblock.s
-CPPFLAGS.cdbootblock.s=	${I86CPPFLAGS} -DCDBOOT
-LDFLAGS.cdbootblock=	${I86LDFLAGS}
-BINDIR.cdbootblock=	/usr/mdec
-MAN.cdbootblock=
+bootblock:	bootblock.s
+	$(LD86) -com -o $@ bootblock.s
 
-SRCS.boot=		boothead.s boot.c bootimage.c rawfs86.c
-CPPFLAGS.boothead.s=	${I86CPPFLAGS}
-CPPFLAGS.boot.c=	${I86CPPFLAGS}
-CPPFLAGS.bootimage.c=	${I86CPPFLAGS}
-CPPFLAGS.rawfs86.c=	${I86CPPFLAGS}
-LDFLAGS.boot=	${I86LDFLAGS}
-DPADD.boot=		${LIBSYS}
-LDADD.boot=		-lsys
-BINDIR.boot=	/usr/mdec
-MAN.boot=
+masterboot:	masterboot.s
+	$(LD86) -com -o $@ masterboot.s
 
-realall: .PHONY bootsize
-bootsize: boot
-	${INSTALL} -S 22kb boot
+jumpboot:	jumpboot.s
+	$(LD86) -com -o $@ jumpboot.s
 
-SRCS.masterboot=	masterboot.s
-CPPFLAGS.masterboot.s=	${I86CPPFLAGS}
-LDFLAGS.masterboot=	${I86LDFLAGS}
-BINDIR.masterboot=	/usr/mdec
-MAN.masterboot=
+boot.o:	boot.c
+	$(CC86) $(CFLAGS) -c boot.c
 
-SRCS.jumpboot=		jumpboot.s
-CPPFLAGS.jumpboot.s=	${I86CPPFLAGS}
-LDFLAGS.jumpboot=	${I86LDFLAGS}
-BINDIR.jumpboot=	/usr/mdec
-MAN.jumpboot=
+bootimage.o:	bootimage.c
+	$(CC86) $(CFLAGS) -c bootimage.c
 
-SRCS.installboot=	installboot.c rawfs.c
-BINDIR.installboot=	/usr/bin
-MAN.installboot=
-
-SRCS.edparams=		edparams.c rawfs.c
-CPPFLAGS.edparams.c=	-DUNIX
-BINDIR.edparams=	/usr/bin
-MAN.edparams=
-
-SRCS.dosboot=		doshead.s dosboot.o bootimage.o rawfs86.o
-CPPFLAGS.dosboot.c=	-DDOS $(I86CPPFLAGS)
-LDADD.dosboot=	${I86LDFLAGS} -lsys
-BINDIR.dosboot=	/usr/mdec
-CPPFLAGS.doshead.s= -mi386
-MAN.dosboot=
-
-SRCS.mkfile=		mkfhead.s mkfile.c
-CPPFLAGS.mkfile.s=	${I86CPPFLAGS}
-LDADD.mkfile=	${I86LDFLAGS} -lsys
-BINDIR.mkfile=	/usr/mdec
-MAN.mkfile=
-
-rawfs86.c:	rawfs.c
+rawfs86.o:	rawfs.c rawfs.o
 	ln -f rawfs.c rawfs86.c
+	$(CC86) $(CFLAGS) -c rawfs86.c
+	rm rawfs86.c
+	-cmp -s rawfs.o rawfs86.o && ln -f rawfs.o rawfs86.o
 
-edparams.c:	boot.c
+boot:	boothead.s boot.o bootimage.o rawfs86.o
+	$(LD86) -o $@ \
+		boothead.s boot.o bootimage.o rawfs86.o $(LIBS)
+	install -S 8kb boot
+
+edparams.o:	boot.c
 	ln -f boot.c edparams.c
+	$(CC) $(CFLAGS) -DUNIX -c edparams.c
+	rm edparams.c
 
-dosboot.c: boot.c
-	ln -f boot.c dosboot.c
+edparams:	edparams.o rawfs.o
+	$(CC) $(CFLAGS) $(STRIP) -o $@ edparams.o rawfs.o
+	install -S 16kw edparams
 
-cdbootblock.s:	bootblock.s
-	ln -f bootblock.s cdbootblock.s
+dosboot.o:	boot.c
+	$(CC86) $(CFLAGS) -DDOS -o $@ -c boot.c
 
-mkfile.com: mkfile
+doshead.o:	doshead.s
+	$(CC) -mi386 -o $@ -c doshead.s
 
-boot.com: dosboot
+dosboot:	doshead.o dosboot.o bootimage.o rawfs86.o
+	$(LD86) -com -o $@ \
+		doshead.o dosboot.o bootimage.o rawfs86.o $(LIBS)
+
+boot.com:	dosboot
 	./a.out2com dosboot boot.com
 
-CPPFLAGS=	-I${MINIXSRCDIR}
-AFLAGS=		-I${MINIXSRCDIR}
-I86CPPFLAGS=	-mi86 -Was-ncc
-I86LDFLAGS=	-mi86 -Was-ncc -.o -com
+mkfile:	mkfhead.s mkfile.c
+	$(LD) -.o -mi86 -com -o $@ mkfhead.s mkfile.c $(LIBS)
 
-STRIPFLAG=	-s
+mkfile.com:	mkfile
+	./a.out2com mkfile mkfile.com
 
-CLEANFILES+=	rawfs86.c edparams.c cdbootblock.s dosboot.c
+installboot:	installboot.o rawfs.o
+	$(CC) $(STRIP) -o installboot installboot.o rawfs.o
+	install -S 6kw installboot
 
-.include <bsd.prog.mk>
+addaout:	addaout.o
+	$(CC) -o addaout addaout.o
+
+installboot.o bootimage.o: image.h
+boot.o bootimage.o dosboot.o edparams.o: boot.h
+rawfs.o rawfs86.o installboot.o boot.o bootimage.o: rawfs.h
+
+install:	$(MDEC)/bootblock $(MDEC)/boot $(MDEC)/masterboot \
+		$(MDEC)/jumpboot $(BIN)/installboot $(BIN)/edparams
+dosinstall:	$(MDEC)/boot.com $(MDEC)/mkfile.com
+
+$(MDEC)/bootblock:	bootblock
+	install -cs -o bin -m 644 $? $@
+
+$(MDEC)/boot:		boot
+	install -cs -o bin -m 644 $? $@
+
+$(MDEC)/boot.com:	boot.com
+	install -c -m 644 $? $@
+
+$(MDEC)/mkfile.com:	mkfile.com
+	install -c -m 644 $? $@
+
+$(MDEC)/masterboot:	masterboot
+	install -cs -o bin -m 644 $? $@
+
+$(MDEC)/jumpboot:	jumpboot
+	install -cs -o bin -m 644 $? $@
+
+$(BIN)/installboot:	installboot
+	install -cs -o bin $? $@
+
+$(BIN)/addaout:	addaout
+	install -cs -o bin $? $@
+
+$(BIN)/edparams:	edparams
+	install -cs -o bin $? $@
+
+clean:
+	rm -f *.bak *.o
+	rm -f bootblock addaout installboot boot masterboot jumpboot edparams 
+	rm -f dosboot boot.com mkfile mkfile.com

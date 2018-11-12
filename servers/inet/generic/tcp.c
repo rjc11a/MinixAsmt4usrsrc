@@ -20,6 +20,8 @@ Copyright 1995 Philip Homburg
 
 THIS_FILE
 
+#define NOT_IMPLEMENTED 0
+
 PUBLIC tcp_port_t *tcp_port_table;
 PUBLIC tcp_fd_t tcp_fd_table[TCP_FD_NR];
 PUBLIC tcp_conn_t tcp_conn_table[TCP_CONN_NR];
@@ -39,19 +41,19 @@ FORWARD int tcp_connect ARGS(( tcp_fd_t *tcp_fd ));
 FORWARD int tcp_listen ARGS(( tcp_fd_t *tcp_fd, int do_listenq ));
 FORWARD int tcp_acceptto ARGS(( tcp_fd_t *tcp_fd ));
 FORWARD tcpport_t find_unused_port ARGS(( int fd ));
-FORWARD int is_unused_port ARGS(( tcpport_t port ));
+FORWARD int is_unused_port ARGS(( Tcpport_t port ));
 FORWARD int reply_thr_put ARGS(( tcp_fd_t *tcp_fd, int reply,
 	int for_ioctl ));
 FORWARD void reply_thr_get ARGS(( tcp_fd_t *tcp_fd, int reply,
 	int for_ioctl ));
-FORWARD tcp_conn_t *find_conn_entry ARGS(( tcpport_t locport,
-	ipaddr_t locaddr, tcpport_t remport, ipaddr_t readaddr ));
+FORWARD tcp_conn_t *find_conn_entry ARGS(( Tcpport_t locport,
+	ipaddr_t locaddr, Tcpport_t remport, ipaddr_t readaddr ));
 FORWARD tcp_conn_t *find_empty_conn ARGS(( void ));
 FORWARD tcp_conn_t *find_best_conn ARGS(( ip_hdr_t *ip_hdr, 
 	tcp_hdr_t *tcp_hdr ));
 FORWARD tcp_conn_t *new_conn_for_queue ARGS(( tcp_fd_t *tcp_fd ));
-FORWARD int maybe_listen ARGS(( ipaddr_t locaddr, tcpport_t locport,
-				ipaddr_t remaddr, tcpport_t remport ));
+FORWARD int maybe_listen ARGS(( ipaddr_t locaddr, Tcpport_t locport,
+				ipaddr_t remaddr, Tcpport_t remport ));
 FORWARD int tcp_su4connect ARGS(( tcp_fd_t *tcp_fd ));
 FORWARD void tcp_buffree ARGS(( int priority ));
 #ifdef BUF_CONSISTENCY_CHECK
@@ -390,14 +392,12 @@ assert (count == sizeof(struct nwio_ipopt));
 			result= (int)offset;
 			if (result<0)
 			{
-				if (result == EHOSTUNREACH ||
-					result == ENETUNREACH ||
-					result == ENETDOWN)
+				if (result == EDSTNOTRCH)
 				{
 					if (tcp_port->tp_snd_head)
 					{
 						tcp_notreach(tcp_port->
-							tp_snd_head, result);
+							tp_snd_head);
 					}
 				}
 				else
@@ -1276,7 +1276,8 @@ assert (data->acc_length == sizeof(nwio_tcpopt_t));
 }
 
 
-PRIVATE tcpport_t find_unused_port(int fd)
+PRIVATE tcpport_t find_unused_port(fd)
+int fd;
 {
 	tcpport_t port, nw_port;
 
@@ -1296,7 +1297,8 @@ PRIVATE tcpport_t find_unused_port(int fd)
 	return 0;
 }
 
-PRIVATE int is_unused_port(tcpport_t port)
+PRIVATE int is_unused_port(port)
+tcpport_t port;
 {
 	int i;
 	tcp_fd_t *tcp_fd;
@@ -1424,12 +1426,11 @@ If no such connection exists NULL is returned.
 If a connection exists without mainuser it is closed.
 */
 
-PRIVATE tcp_conn_t *find_conn_entry(
-  tcpport_t locport,
-  ipaddr_t locaddr,
-  tcpport_t remport,
-  ipaddr_t remaddr
-)
+PRIVATE tcp_conn_t *find_conn_entry(locport, locaddr, remport, remaddr)
+tcpport_t locport;
+ipaddr_t locaddr;
+tcpport_t remport;
+ipaddr_t remaddr;
 {
 	tcp_conn_t *tcp_conn;
 	int i, state;
@@ -1587,9 +1588,6 @@ tcp_hdr_t *tcp_hdr;
 		 * there are empty connections as well.
 		 */
 		listen_conn= new_conn_for_queue(listen_conn->tc_fd);
-
-		if (listen_conn)
-			return listen_conn;
 	}
 	
 	if (!best_conn && !listen_conn)
@@ -1681,12 +1679,11 @@ tcp_fd_t *tcp_fd;
 /*
 maybe_listen
 */
-PRIVATE int maybe_listen(
-  ipaddr_t locaddr,
-  tcpport_t locport,
-  ipaddr_t remaddr,
-  tcpport_t remport
-)
+PRIVATE int maybe_listen(locaddr, locport, remaddr, remport)
+ipaddr_t locaddr;
+tcpport_t locport;
+ipaddr_t remaddr;
+tcpport_t remport;
 {
 	int i;
 	tcp_conn_t *tcp_conn;
@@ -2335,7 +2332,7 @@ tcp_fd_t *tcp_fd;
 		dst_fd->tf_conn != NULL ||
 		!(dst_fd->tf_flags & TFF_COOKIE))
 	{
-		printf("tcp_acceptto: bad flags 0x%lx or conn %p for fd %d\n",
+		printf("tcp_acceptto: bad flags 0x%x or conn %p for fd %d\n",
 			dst_fd->tf_flags, dst_fd->tf_conn, dst_nr);
 		tcp_reply_ioctl(tcp_fd, EINVAL);
 		return NW_OK;
@@ -2414,7 +2411,7 @@ int priority;
 			{
 				continue;
 			}
-			tcp_close_connection (tcp_conn, ENOBUFS);
+			tcp_close_connection (tcp_conn, EOUTOFBUFS);
 		}
 	}
 
@@ -2434,7 +2431,7 @@ int priority;
 			{
 				continue;
 			}
-			tcp_close_connection (tcp_conn, ENOBUFS);
+			tcp_close_connection (tcp_conn, EOUTOFBUFS);
 		}
 	}
 }
@@ -2470,9 +2467,8 @@ PRIVATE void tcp_bufcheck()
 }
 #endif
 
-PUBLIC void tcp_notreach(tcp_conn, error)
+PUBLIC void tcp_notreach(tcp_conn)
 tcp_conn_t *tcp_conn;
-int error;
 {
 	int new_ttl;
 
@@ -2480,7 +2476,7 @@ int error;
 	if (new_ttl == IP_MAX_TTL)
 	{
 		if (tcp_conn->tc_state == TCS_SYN_SENT)
-			tcp_close_connection(tcp_conn, error);
+			tcp_close_connection(tcp_conn, EDSTNOTRCH);
 		return;
 	}
 	else if (new_ttl < TCP_DEF_TTL_NEXT)

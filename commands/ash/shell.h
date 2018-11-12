@@ -82,9 +82,14 @@ extern char nullstr[1];		/* null string */
 #endif
 
 #ifdef __minix
+#define __unused
+
 typedef long quad_t;		/* XXX */
 typedef unsigned long u_quad_t;	/* XXX */
 #endif
+
+mode_t getmode(void *, int /* mode_t */);
+void *setmode(char *);
 
 /*
  * $PchId: shell.h,v 1.7 2006/05/22 12:47:00 philip Exp $

@@ -12,8 +12,8 @@
  *   Sep 30, 2004   source code documentation updated  (Jorrit N. Herder)
  *   Sep 24, 2004   redesigned alarm timers  (Jorrit N. Herder)
  *
- * Clock task is notified by the clock's interrupt handler when a timer
- * has expired.
+ * The function do_clocktick() is triggered by the clock's interrupt 
+ * handler when a watchdog timer has expired or a process must be scheduled. 
  *
  * In addition to the main clock_task() entry point, which starts the main 
  * loop, there are several other minor entry points:
@@ -24,6 +24,7 @@
  *   read_clock:	read the counter of channel 0 of the 8253A timer
  *
  * (+) The CLOCK task keeps tracks of watchdog timers for the entire kernel.
+ * The watchdog functions of expired timers are executed in do_clocktick(). 
  * It is crucial that watchdog functions not block, or the CLOCK task may
  * be blocked. Do not send() a message when the receiver is not expecting it.
  * Instead, notify(), which always returns, should be used. 
@@ -31,18 +32,14 @@
 
 #include "kernel.h"
 #include "proc.h"
-#include <minix/endpoint.h>
-#include <assert.h>
-
-#include "clock.h"
-#include "debug.h"
-
-#ifdef CONFIG_WATCHDOG
-#include "watchdog.h"
-#endif
+#include <signal.h>
+#include <minix/com.h>
 
 /* Function prototype for PRIVATE functions.
  */ 
+FORWARD _PROTOTYPE( void init_clock, (void) );
+FORWARD _PROTOTYPE( int clock_handler, (irq_hook_t *hook) );
+FORWARD _PROTOTYPE( void do_clocktick, (message *m_ptr) );
 FORWARD _PROTOTYPE( void load_update, (void));
 
 /* The CLOCK's timers queue. The functions in <timers.h> operate on this. 
@@ -58,37 +55,163 @@ PRIVATE clock_t next_timeout;	/* realtime that next timer expires */
 /* The time is incremented by the interrupt handler on each clock tick.
  */
 PRIVATE clock_t realtime = 0;		      /* real time clock */
+PRIVATE irq_hook_t clock_hook;		/* interrupt handler hook */
 
-/*
- * The boot processor timer interrupt handler. In addition to non-boot cpus it
- * keeps real time and notifies the clock task if need be
- */
-extern unsigned ooq_msg;
-PUBLIC int bsp_timer_int_handler(void)
+/*===========================================================================*
+ *				clock_task				     *
+ *===========================================================================*/
+PUBLIC void clock_task()
 {
-	unsigned ticks;
+/* Main program of clock task. If the call is not HARD_INT it is an error.
+ */
+  message m;       /* message buffer for both input and output */
+  int result;      /* result returned by the handler */
 
-	if(minix_panicing)
-		return 0;
+  init_clock();    /* initialize clock task */
+    
+  /* Main loop of the clock task.  Get work, process it. Never reply. */
+  while(TRUE) {
+	/* Go get a message. */
+	result = receive(ANY, &m);
 
-	/* Get number of ticks and update realtime. */
-	ticks = lost_ticks + 1;
-	lost_ticks = 0;
-	realtime += ticks;
+	if(result != OK)
+		panic("receive() failed", result);
 
-	ap_timer_int_handler();
+	/* Handle the request. Only clock ticks are expected. */
+	switch (m.m_type) {
+	case HARD_INT:      
+		do_clocktick(&m); /* handle clock tick */
+		break;
+	default: /* illegal request type */
+		kprintf("CLOCK: illegal request %d from %d.\n",
+			m.m_type, m.m_source);
+    }
+  }
+}
 
-	/* if a timer expired, notify the clock task */
-	if ((next_timeout <= realtime)) {
-		tmrs_exptimers(&clock_timers, realtime, NULL);
-		next_timeout = (clock_timers == NULL) ?
-			TMR_NEVER : clock_timers->tmr_exp_time;
-	}
+/*===========================================================================*
+ *				do_clocktick				     *
+ *===========================================================================*/
+PRIVATE void do_clocktick(m_ptr)
+message *m_ptr;				/* pointer to request message */
+{
+/* Despite its name, this routine is not called on every clock tick. It
+ * is called on those clock ticks when a lot of work needs to be done.
+ */
+  
+  /* A process used up a full quantum. The interrupt handler stored this
+   * process in 'prev_ptr'.  First make sure that the process is not on the 
+   * scheduling queues.  Then announce the process ready again. Since it has 
+   * no more time left, it gets a new quantum and is inserted at the right 
+   * place in the queues.  As a side-effect a new process will be scheduled.
+   */ 
+  if (prev_ptr->p_ticks_left <= 0 && priv(prev_ptr)->s_flags & PREEMPTIBLE) {
+      if(prev_ptr->p_rts_flags == 0) {	/* if it was runnable .. */
+	lock_dequeue(prev_ptr);		/* take it off the queues */
+      	lock_enqueue(prev_ptr);		/* and reinsert it again */ 
+      } else {
+	kprintf("CLOCK: %d not runnable; flags: %x\n",
+		prev_ptr->p_endpoint, prev_ptr->p_rts_flags);
+      }
+  }
 
-	if (do_serial_debug)
-		do_ser_debug();
+  /* Check if a clock timer expired and run its watchdog function. */
+  if (next_timeout <= realtime) {
+  	tmrs_exptimers(&clock_timers, realtime, NULL);  	
+	next_timeout = (clock_timers == NULL) ?
+		 TMR_NEVER : clock_timers->tmr_exp_time;	
+  }
 
-	return(1);					/* reenable interrupts */
+  return;
+}
+
+/*===========================================================================*
+ *				init_clock				     *
+ *===========================================================================*/
+PRIVATE void init_clock()
+{
+  /* First of all init the clock system.
+   *
+   * Here the (a) clock is set to produce a interrupt at
+   * every 1/60 second (ea. 60Hz).
+   *
+   * Running right away.
+   */
+  arch_init_clock();	/* architecture-dependent initialization. */
+   
+  /* Initialize the CLOCK's interrupt hook. */
+  clock_hook.proc_nr_e = CLOCK;
+ 
+  put_irq_handler(&clock_hook, CLOCK_IRQ, clock_handler);
+  enable_irq(&clock_hook);		/* ready for clock interrupts */
+    
+  /* Set a watchdog timer to periodically balance the scheduling queues. */
+  balance_queues(NULL);			/* side-effect sets new timer */
+}
+
+/*===========================================================================*
+ *				clock_handler				     *
+ *===========================================================================*/
+PRIVATE int clock_handler(hook)
+irq_hook_t *hook;
+{
+/* This executes on each clock tick (i.e., every time the timer chip generates 
+ * an interrupt). It does a little bit of work so the clock task does not have 
+ * to be called on every tick.  The clock task is called when:
+ *
+ *	(1) the scheduling quantum of the running process has expired, or
+ *	(2) a timer has expired and the watchdog function should be run.
+ *
+ * Many global global and static variables are accessed here.  The safety of
+ * this must be justified. All scheduling and message passing code acquires a 
+ * lock by temporarily disabling interrupts, so no conflicts with calls from 
+ * the task level can occur. Furthermore, interrupts are not reentrant, the 
+ * interrupt handler cannot be bothered by other interrupts.
+ * 
+ * Variables that are updated in the clock's interrupt handler:
+ *	lost_ticks:
+ *		Clock ticks counted outside the clock task. This for example
+ *		is used when the boot monitor processes a real mode interrupt.
+ * 	realtime:
+ * 		The current uptime is incremented with all outstanding ticks.
+ *	proc_ptr, bill_ptr:
+ *		These are used for accounting.  It does not matter if proc.c
+ *		is changing them, provided they are always valid pointers,
+ *		since at worst the previous process would be billed.
+ */
+  register unsigned ticks;
+
+  /* Get number of ticks and update realtime. */
+  ticks = lost_ticks + 1;
+  lost_ticks = 0;
+  realtime += ticks;
+
+  /* Update user and system accounting times. Charge the current process for
+   * user time. If the current process is not billable, that is, if a non-user
+   * process is running, charge the billable process for system time as well.
+   * Thus the unbillable process' user time is the billable user's system time.
+   */
+  
+  proc_ptr->p_user_time += ticks;
+  if (priv(proc_ptr)->s_flags & PREEMPTIBLE) {
+      proc_ptr->p_ticks_left -= ticks;
+  }
+  if (! (priv(proc_ptr)->s_flags & BILLABLE)) {
+      bill_ptr->p_sys_time += ticks;
+      bill_ptr->p_ticks_left -= ticks;
+  }
+
+  /* Update load average. */
+  load_update();
+  
+  /* Check if do_clocktick() must be called. Done for alarms and scheduling.
+   * Some processes, such as the kernel tasks, cannot be preempted. 
+   */ 
+  if ((next_timeout <= realtime) || (proc_ptr->p_ticks_left <= 0)) {
+      prev_ptr = proc_ptr;			/* store running process */
+      lock_notify(HARDWARE, CLOCK);		/* send notification */
+  } 
+  return(1);					/* reenable interrupts */
 }
 
 /*===========================================================================*
@@ -136,7 +259,7 @@ struct timer *tp;		/* pointer to timer structure */
 PRIVATE void load_update(void)
 {
 	u16_t slot;
-	int enqueued = 0, q;
+	int enqueued = -1, q;	/* -1: special compensation for IDLE. */
 	struct proc *p;
 
 	/* Load average data is stored as a list of numbers in a circular
@@ -145,7 +268,7 @@ PRIVATE void load_update(void)
 	 * be made of the load average over variable periods, in the
 	 * user library (see getloadavg(3)).
 	 */
-	slot = (realtime / system_hz / _LOAD_UNIT_SECS) % _LOAD_HISTORY;
+	slot = (realtime / HZ / _LOAD_UNIT_SECS) % _LOAD_HISTORY;
 	if(slot != kloadinfo.proc_last_slot) {
 		kloadinfo.proc_load_history[slot] = 0;
 		kloadinfo.proc_last_slot = slot;
@@ -153,7 +276,7 @@ PRIVATE void load_update(void)
 
 	/* Cumulation. How many processes are ready now? */
 	for(q = 0; q < NR_SCHED_QUEUES; q++)
-		for(p = rdy_head[q]; p; p = p->p_nextready)
+		for(p = rdy_head[q]; p != NIL_PROC; p = p->p_nextready)
 			enqueued++;
 
 	kloadinfo.proc_load_history[slot] += enqueued;
@@ -162,91 +285,5 @@ PRIVATE void load_update(void)
 	kloadinfo.last_clock = realtime;
 }
 
-/*
- * Timer interupt handler. This is the only thing executed on non boot
- * processors. It is called by bsp_timer_int_handler() on the boot processor
- */
-PUBLIC int ap_timer_int_handler(void)
-{
 
-	/* Update user and system accounting times. Charge the current process
-	 * for user time. If the current process is not billable, that is, if a
-	 * non-user process is running, charge the billable process for system
-	 * time as well.  Thus the unbillable process' user time is the billable
-	 * user's system time.
-	 */
 
-	const unsigned ticks = 1;
-	struct proc * p, * billp;
-
-#ifdef CONFIG_WATCHDOG
-	/*
-	 * we need to know whether local timer ticks are happening or whether
-	 * the kernel is locked up. We don't care about overflows as we only
-	 * need to know that it's still ticking or not
-	 */
-	watchdog_local_timer_ticks++;
-#endif
-
-	/* Update user and system accounting times. Charge the current process
-	 * for user time. If the current process is not billable, that is, if a
-	 * non-user process is running, charge the billable process for system
-	 * time as well.  Thus the unbillable process' user time is the billable
-	 * user's system time.
-	 */
-
-	/* FIXME prepared for get_cpu_local_var() */
-	p = proc_ptr;
-	billp = bill_ptr;
-
-	p->p_user_time += ticks;
-
-	/* FIXME make this ms too */
-	if (! (priv(p)->s_flags & BILLABLE)) {
-		billp->p_sys_time += ticks;
-	}
-
-	/* Decrement virtual timers, if applicable. We decrement both the
-	 * virtual and the profile timer of the current process, and if the
-	 * current process is not billable, the timer of the billed process as
-	 * well.  If any of the timers expire, do_clocktick() will send out
-	 * signals.
-	 */
-	if ((p->p_misc_flags & MF_VIRT_TIMER)){
-		p->p_virt_left -= ticks;
-	}
-	if ((p->p_misc_flags & MF_PROF_TIMER)){
-		p->p_prof_left -= ticks;
-	}
-	if (! (priv(p)->s_flags & BILLABLE) &&
-			(billp->p_misc_flags & MF_PROF_TIMER)){
-		billp->p_prof_left -= ticks;
-	}
-
-	/*
-	 * Check if a process-virtual timer expired. Check current process, but
-	 * also bill_ptr - one process's user time is another's system time, and
-	 * the profile timer decreases for both!
-	 */
-	vtimer_check(p);
-
-	if (p != billp)
-		vtimer_check(billp);
-
-	/* Update load average. */
-	load_update();
-
-	return 1;
-}
-
-PUBLIC int boot_cpu_init_timer(unsigned freq)
-{
-	if (arch_init_local_timer(freq))
-		return -1;
-
-	if (arch_register_local_timer_handler(
-				(irq_handler_t) bsp_timer_int_handler))
-		return -1;
-
-	return 0;
-}

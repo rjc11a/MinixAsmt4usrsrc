@@ -10,7 +10,11 @@ Created:	June 1995 by Philip Homburg <philip@f-mnx.phicoh.com>
 #include "generic/assert.h"
 
 #include <sys/svrctl.h>
-#include "queryparam.h"
+#ifdef __minix_vmd
+#include <minix/queryparam.h>
+#else /* Minix 3 */
+#include <minix3/queryparam.h>
+#endif
 
 #include "generic/buf.h"
 #include "generic/clock.h"
@@ -157,7 +161,8 @@ PRIVATE int qp_read(fd, count)
 int fd;
 size_t count;
 {
-	int r;
+	int r, err;
+	size_t len;
 	acc_t *pkt;
 	qp_fd_t *qp_fd;
 
@@ -227,7 +232,6 @@ int fd;
 int which_operation;
 {
 	ip_panic(( "qp_cancel: should not be here, no blocking calls" ));
-	return OK;
 }
 
 PRIVATE int qp_select(fd, operations)
@@ -329,7 +333,7 @@ int c;
 	/* Send one character back to the user. */
 	acc_t *pkt;
 	qp_fd_t *qp_fd;
-	size_t bytes_left;
+	size_t n, bytes_left;
 	off_t off;
 
 	bytes_left= qv->rd_bytes_left;

@@ -1,25 +1,18 @@
 # Makefile for the tests.
 
-GCC=gcc
-CFLAGS= -O0 -D_MINIX -D_POSIX_SOURCE
-CFLAGS-GCC= $(CFLAGS) -Wall 
-CFLAGS-GCCFPU= $(CFLAGS) -Wall -mhard-float
-CFLAGS-GCCFPU= $(CFLAGS-GCC) -W -mhard-float
+CC =	exec cc
+CFLAGS= -O -D_MINIX -D_POSIX_SOURCE
 
 OBJ=	test1  test2  test3  test4  test5  test6  test7  test8  test9  \
 	test10        test12 test13 test14 test15 test16 test17 test18 test19 \
 	       test21 test22 test23        test25 test26 test27 test28 test29 \
-	test30 test31 test32        test34 test35 test36 test37 test38 \
-	test39 t10a t11a t11b test40 t40a t40b t40c t40d t40e t40f test41 \
-	test42 test45 test47 test48 test49 test50 test51 test52 test53 \
-	test54 test55 test56 test58
+	test30 test31 test32        test34 test35 test36 test37 test38 test39 \
+	test40 test41 t10a t11a t11b
 
 BIGOBJ=  test20 test24
-ROOTOBJ= test11 test33 test43 test44 test46
-GCCOBJ=  test45-gcc test49-gcc 
-GCCFPUOBJ= test51-gcc test52-gcc
+ROOTOBJ= test11 test33
 
-all:	$(OBJ) $(BIGOBJ) $(GCCOBJ) $(GCCFPUOBJ) $(ROOTOBJ) test57
+all:	$(OBJ) $(BIGOBJ) $(ROOTOBJ)
 	chmod 755 *.sh run
 
 $(OBJ):
@@ -28,21 +21,14 @@ $(OBJ):
 $(BIGOBJ):
 	$(CC) $(CFLAGS) -o $@ $@.c
 
-$(GCCOBJ):
-	if which $(GCC) >/dev/null 2>&1; then $(GCC) $(CFLAGS-GCC) -o $@ ${@:S/-gcc//}.c; fi
-
-$(GCCFPUOBJ):
-	if which $(GCC) >/dev/null 2>&1; then $(GCC) $(CFLAGS-GCCFPU) -o $@ ${@:S/-gcc//}.c; fi
-
 $(ROOTOBJ):
 	$(CC) $(CFLAGS) $@.c
 	@install -c -o root -m 4755 a.out $@
 	@rm a.out
 
 clean:	
-	$(MAKE) -C select clean
-	-rm -rf *.o *.s *.bak test? test?? test??-gcc t10a t11a t11b \
-		t40a t40b t40c t40d t40e t40f t43 DIR*
+	cd select && make clean
+	-rm -rf *.o *.s *.bak test? test?? t10a t11a t11b DIR*
 
 test1:	test1.c
 test2:	test2.c
@@ -85,33 +71,6 @@ test35:	test35.c
 test36:	test36.c
 test37:	test37.c
 test38:	test38.c
-test39: test39.c
-test40: test40.c
-t40a: t40a.c
-t40b: t40b.c
-t40c: t40c.c
-t40d: t40d.c
-t40e: t40e.c
-t40f: t40f.c
+test39:	test39.c
+test40:	test40.c
 test41: test41.c
-test42: test42.c
-test43: test43.c
-test44: test44.c
-test45: test45.c test45.h
-test45-gcc: test45.c test45.h
-test46: test46.c
-test47: test47.c
-test48: test48.c
-test49: test49.c
-test49-gcc: test49.c
-test50: test50.c
-test51: test51.c
-test51-gcc: test51.c
-test52: test52.c
-test52-gcc: test52.c
-test54: test54.c
-test55: test55.c
-test56: test56.c
-test57: test57.c test57loop.S
-	if which $(GCC) >/dev/null 2>&1; then $(GCC) $(CFLAGS-GCC) -o $@ test57.c test57loop.S; fi
-test58: test58.c

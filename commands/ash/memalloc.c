@@ -83,7 +83,7 @@ ckrealloc(pointer p, int nbytes)
  */
 
 char *
-savestr(const char *s)
+savestr(char *s)
 {
 	char *p;
 

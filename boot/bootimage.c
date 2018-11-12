@@ -18,28 +18,14 @@
 #include <minix/const.h>
 #include <minix/type.h>
 #include <minix/syslib.h>
-#include <minix/tty.h>
-#include <sys/video.h>
 #include <kernel/const.h>
 #include <kernel/type.h>
-#include <machine/partition.h>
+#include <ibm/partition.h>
 #include "rawfs.h"
 #include "image.h"
 #include "boot.h"
 
 static int block_size = 0;
-static int verboseboot = VERBOSEBOOT_QUIET;
-
-#define DEBUG_PRINT(params, level) do { \
-	if (verboseboot >= (level)) printf params; } while (0)
-#define DEBUGBASIC(params) DEBUG_PRINT(params, VERBOSEBOOT_BASIC)
-#define DEBUGEXTRA(params) DEBUG_PRINT(params, VERBOSEBOOT_EXTRA)
-#define DEBUGMAX(params)   DEBUG_PRINT(params, VERBOSEBOOT_MAX)
-
-extern int serial_line;
-extern u16_t vid_port;         /* Video i/o port. */
-extern u32_t vid_mem_base;     /* Video memory base address. */
-extern u32_t vid_mem_size;     /* Video memory size. */
 
 #define click_shift	clck_shft	/* 7 char clash with click_size. */
 
@@ -53,8 +39,7 @@ extern u32_t vid_mem_size;     /* Video memory size. */
 #define K_INT86	 0x0040	/* Requires generic INT support. */
 #define K_MEML	 0x0080	/* Pass a list of free memory. */
 #define K_BRET	 0x0100	/* New monitor code on shutdown in boot parameters. */
-#define K_KHIGH  0x0200	/* Load kernel in extended memory. */
-#define K_ALL	 0x03FF	/* All feature bits this monitor supports. */
+#define K_ALL	 0x01FF	/* All feature bits this monitor supports. */
 
 
 /* Data about the different processes. */
@@ -85,7 +70,7 @@ int n_procs;			/* Number of processes. */
 
 #define between(a, c, z)	((unsigned) ((c) - (a)) <= ((z) - (a)))
 
-void pretty_image(const char *image)
+void pretty_image(char *image)
 /* Pretty print the name of the image to load.  Translate '/' and '_' to
  * space, first letter goes uppercase.  An 'r' before a digit prints as
  * 'revision'.  E.g. 'minix/1.6.16r10' -> 'Minix 1.6.16 revision 10'.
@@ -110,20 +95,16 @@ void pretty_image(const char *image)
 	}
 }
 
-#define RAW_ALIGN	16
-#define BUFSIZE_ZEROS	128
-
 void raw_clear(u32_t addr, u32_t count)
 /* Clear "count" bytes at absolute address "addr". */
 {
-	static char zerosdata[BUFSIZE_ZEROS + RAW_ALIGN];
-	char *zeros = zerosdata + RAW_ALIGN - (unsigned) &zerosdata % RAW_ALIGN;
+	static char zeros[128];
 	u32_t dst;
 	u32_t zct;
 
-	zct= BUFSIZE_ZEROS;
+	zct= sizeof(zeros);
 	if (zct > count) zct= count;
-	raw_copy(addr, mon2abs(zeros), zct);
+	raw_copy(addr, mon2abs(&zeros), zct);
 	count-= zct;
 
 	while (count > 0) {
@@ -235,7 +216,7 @@ void patch_sizes(void)
 	put_word(process[FS].data + P_INIT_OFF+4, data_size);
 }
 
-int selected(const char *name)
+int selected(char *name)
 /* True iff name has no label or the proper label. */
 {
 	char *colon, *label;
@@ -250,7 +231,7 @@ int selected(const char *name)
 	return cmp == 0;
 }
 
-static u32_t proc_size(const struct image_header *hdr)
+u32_t proc_size(struct image_header *hdr)
 /* Return the size of a process in sectors as found in an image. */
 {
 	u32_t len= hdr->process.a_text;
@@ -294,10 +275,9 @@ char *get_sector(u32_t vsec)
 	u32_t sec;
 	int r;
 #define SECBUFS 16
-	static char bufdata[SECBUFS * SECTOR_SIZE + RAW_ALIGN];
+	static char buf[SECBUFS * SECTOR_SIZE];
 	static size_t count;		/* Number of sectors in the buffer. */
 	static u32_t bufsec;		/* First Sector now in the buffer. */
-	char *buf = bufdata + RAW_ALIGN - (unsigned) &bufdata % RAW_ALIGN;
 
 	if (vsec == 0) count= 0;	/* First sector; initialize. */
 
@@ -378,20 +358,10 @@ int get_segment(u32_t *vsec, long *size, u32_t *addr, u32_t limit)
 			if ((buf= get_sector((*vsec)++)) == nil) return 0;
 			cnt= SECTOR_SIZE;
 		}
-		if (*addr + click_size > limit) 
-		{ 
-			DEBUGEXTRA(("get_segment: out of memory; "
-				"addr=0x%lx; limit=0x%lx; size=%lx\n", 
-				*addr, limit, size));
-			errno= ENOMEM; 
-			return 0; 
-		}
+		if (*addr + click_size > limit) { errno= ENOMEM; return 0; }
 		n= click_size;
 		if (n > cnt) n= cnt;
-		DEBUGMAX(("raw_copy(0x%lx, 0x%lx/0x%x, 0x%lx)... ", 
-			*addr, mon2abs(buf), buf, n));
 		raw_copy(*addr, mon2abs(buf), n);
-		DEBUGMAX(("done\n"));
 		*addr+= n;
 		*size-= n;
 		buf+= n;
@@ -400,76 +370,35 @@ int get_segment(u32_t *vsec, long *size, u32_t *addr, u32_t limit)
 
 	/* Zero extend to a click. */
 	n= align(*addr, click_size) - *addr;
-	DEBUGMAX(("raw_clear(0x%lx, 0x%lx)... ", *addr, n));
 	raw_clear(*addr, n);
-	DEBUGMAX(("done\n"));
 	*addr+= n;
 	*size-= n;
 	return 1;
 }
 
-static void restore_screen(void)
-{
-	struct boot_tty_info boot_tty_info;
-	u32_t info_location;
-#define LINES 25
-#define CHARS 80
-	static u16_t consolescreen[LINES][CHARS];
-
-	/* Try and find out what the main console was displaying
-	 * by looking into video memory.
-	 */
-
-	info_location = vid_mem_base+vid_mem_size-sizeof(boot_tty_info);
-        raw_copy(mon2abs(&boot_tty_info), info_location,
-                sizeof(boot_tty_info));
-
-        if(boot_tty_info.magic == TTYMAGIC) {
-                if((boot_tty_info.flags & (BTIF_CONSORIGIN|BTIF_CONSCURSOR)) ==
-			(BTIF_CONSORIGIN|BTIF_CONSCURSOR)) {
-			int line;
-			raw_copy(mon2abs(consolescreen), 
-				vid_mem_base + boot_tty_info.consorigin,
-				sizeof(consolescreen));
-			clear_screen();
-			for(line = 0; line < LINES; line++) {
-				int ch;
-				for(ch = 0; ch < CHARS; ch++) {
-					u16_t newch = consolescreen[line][ch] & BYTE;
-					if(newch < ' ') newch = ' ';
-					putch(newch);
-				}
-			}
-		}
-        }
-}
-
 void exec_image(char *image)
 /* Get a Minix image into core, patch it up and execute. */
 {
+	char *delayvalue;
 	int i;
 	struct image_header hdr;
 	char *buf;
-	u32_t vsec, addr, limit, aout, n, totalmem = 0;
+	u32_t vsec, addr, limit, aout, n;
 	struct process *procp;		/* Process under construction. */
 	long a_text, a_data, a_bss, a_stack;
 	int banner= 0;
 	long processor= a2l(b_value("processor"));
-	u16_t kmagic, mode;
+	u16_t mode;
 	char *console;
 	char params[SECTOR_SIZE];
 	extern char *sbrk(int);
-	char *verb;
 
 	/* The stack is pretty deep here, so check if heap and stack collide. */
 	(void) sbrk(0);
 
-	if ((verb= b_value(VERBOSEBOOTVARNAME)) != nil)
-		verboseboot = a2l(verb);
-
 	printf("\nLoading ");
 	pretty_image(image);
-	printf(".\n");
+	printf(".\n\n");
 
 	vsec= 0;			/* Load this sector from image next. */
 	addr= mem[0].base;		/* Into this memory block. */
@@ -484,8 +413,6 @@ void exec_image(char *image)
 
 	/* Read the many different processes: */
 	for (i= 0; vsec < image_size; i++) {
-		u32_t startaddr;
-		startaddr = addr;
 		if (i == PROCESS_MAX) {
 			printf("There are more then %d programs in %s\n",
 				PROCESS_MAX, image);
@@ -495,7 +422,6 @@ void exec_image(char *image)
 		procp= &process[i];
 
 		/* Read header. */
-		DEBUGEXTRA(("Reading header... "));
 		for (;;) {
 			if ((buf= get_sector(vsec++)) == nil) return;
 
@@ -509,7 +435,6 @@ void exec_image(char *image)
 			/* Bad label, skip this process. */
 			vsec+= proc_size(&hdr);
 		}
-		DEBUGEXTRA(("done\n"));
 
 		/* Sanity check: an 8086 can't run a 386 kernel. */
 		if (hdr.process.a_cpu == A_I80386 && processor < 386) {
@@ -523,35 +448,22 @@ void exec_image(char *image)
 		if (i == KERNEL_IDX) {
 			if (!get_clickshift(vsec, &hdr)) return;
 			addr= align(addr, click_size);
-
-			/* big kernels must be loaded into extended memory */
-			if (k_flags & K_KHIGH) {
-				addr= mem[1].base;
-				limit= mem[1].base + mem[1].size;
-			}
 		}
 
 		/* Save a copy of the header for the kernel, with a_syms
 		 * misused as the address where the process is loaded at.
 		 */
-		DEBUGEXTRA(("raw_copy(0x%lx, 0x%lx, 0x%x)... ", 
-			aout + i * A_MINHDR, mon2abs(&hdr.process), A_MINHDR));
 		hdr.process.a_syms= addr;
 		raw_copy(aout + i * A_MINHDR, mon2abs(&hdr.process), A_MINHDR);
-		DEBUGEXTRA(("done\n"));
 
 		if (!banner) {
-			DEBUGBASIC(("     cs       ds     text     data      bss"));
-			if (k_flags & K_CHMEM) DEBUGBASIC(("    stack"));
-			DEBUGBASIC(("\n"));
+			printf("     cs       ds     text     data      bss");
+			if (k_flags & K_CHMEM) printf("    stack");
+			putch('\n');
 			banner= 1;
 		}
 
 		/* Segment sizes. */
-		DEBUGEXTRA(("a_text=0x%lx; a_data=0x%lx; a_bss=0x%lx; a_flags=0x%x)\n",
-			hdr.process.a_text, hdr.process.a_data, 
-			hdr.process.a_bss, hdr.process.a_flags));
-
 		a_text= hdr.process.a_text;
 		a_data= hdr.process.a_data;
 		a_bss= hdr.process.a_bss;
@@ -575,12 +487,7 @@ void exec_image(char *image)
 		/* Separate I&D: two segments.  Common I&D: only one. */
 		if (hdr.process.a_flags & A_SEP) {
 			/* Read the text segment. */
-			DEBUGEXTRA(("get_segment(0x%lx, 0x%lx, 0x%lx, 0x%lx)\n",
-				vsec, a_text, addr, limit));
 			if (!get_segment(&vsec, &a_text, &addr, limit)) return;
-			DEBUGEXTRA(("get_segment done vsec=0x%lx a_text=0x%lx "
-				"addr=0x%lx\n", 
-				vsec, a_text, addr));
 
 			/* The data segment follows. */
 			procp->ds= addr;
@@ -594,20 +501,19 @@ void exec_image(char *image)
 		}
 
 		/* Read the data segment. */
-		DEBUGEXTRA(("get_segment(0x%lx, 0x%lx, 0x%lx, 0x%lx)\n", 
-			vsec, a_data, addr, limit));
 		if (!get_segment(&vsec, &a_data, &addr, limit)) return;
-		DEBUGEXTRA(("get_segment done vsec=0x%lx a_data=0x%lx "
-			"addr=0x%lx\n", 
-			vsec, a_data, addr));
 
 		/* Make space for bss and stack unless... */
 		if (i != KERNEL_IDX && (k_flags & K_CLAIM)) a_bss= a_stack= 0;
 
-		DEBUGBASIC(("%07lx  %07lx %8ld %8ld %8ld",
-			procp->cs, procp->ds, hdr.process.a_text,
-			hdr.process.a_data, hdr.process.a_bss));
-		if (k_flags & K_CHMEM) DEBUGBASIC((" %8ld", a_stack));
+		printf("%07lx  %07lx %8ld %8ld %8ld",
+			procp->cs, procp->ds,
+			hdr.process.a_text, hdr.process.a_data,
+			hdr.process.a_bss
+		);
+		if (k_flags & K_CHMEM) printf(" %8ld", a_stack);
+
+		printf("  %s\n", hdr.name);
 
 		/* Note that a_data may be negative now, but we can look at it
 		 * as -a_data bss bytes.
@@ -619,10 +525,8 @@ void exec_image(char *image)
 		a_bss-= n;
 
 		/* Zero out bss. */
-		DEBUGEXTRA(("\nraw_clear(0x%lx, 0x%lx); limit=0x%lx... ", addr, n, limit));
 		if (addr + n > limit) { errno= ENOMEM; return; }
 		raw_clear(addr, n);
-		DEBUGEXTRA(("done\n"));
 		addr+= n;
 
 		/* And the number of stack clicks. */
@@ -636,24 +540,12 @@ void exec_image(char *image)
 		/* Process endpoint. */
 		procp->end= addr;
 
-		if (verboseboot >= VERBOSEBOOT_BASIC)
-			printf("  %s\n", hdr.name);
-		else {
-			u32_t mem;
-			mem = addr-startaddr;
-			printf("%s ", hdr.name);
-			totalmem += mem;
-		}
-
-		if (i == 0 && (k_flags & (K_HIGH | K_KHIGH)) == K_HIGH) {
+		if (i == 0 && (k_flags & K_HIGH)) {
 			/* Load the rest in extended memory. */
 			addr= mem[1].base;
 			limit= mem[1].base + mem[1].size;
 		}
 	}
-
-	if (verboseboot < VERBOSEBOOT_BASIC)
-		printf("(%luk)\n", totalmem/1024);
 
 	if ((n_procs= i) == 0) {
 		printf("There are no programs in %s\n", image);
@@ -662,19 +554,14 @@ void exec_image(char *image)
 	}
 
 	/* Check the kernel magic number. */
-	raw_copy(mon2abs(&kmagic), 
-		process[KERNEL_IDX].data + MAGIC_OFF, sizeof(kmagic));
-	if (kmagic != KERNEL_D_MAGIC) {
-		printf("Kernel magic number is incorrect (0x%x@0x%lx)\n", 
-			kmagic, process[KERNEL_IDX].data + MAGIC_OFF);
+	if (get_word(process[KERNEL_IDX].data + MAGIC_OFF) != KERNEL_D_MAGIC) {
+		printf("Kernel magic number is incorrect\n");
 		errno= 0;
 		return;
 	}
 
 	/* Patch sizes, etc. into kernel data. */
-	DEBUGEXTRA(("patch_sizes()... "));
 	patch_sizes();
-	DEBUGEXTRA(("done\n"));
 
 #if !DOS
 	if (!(k_flags & K_MEML)) {
@@ -683,34 +570,28 @@ void exec_image(char *image)
 	}
 #endif
 
+	/* Do delay if wanted. */
+	if((delayvalue = b_value("bootdelay")) != nil > 0) {
+		delay(delayvalue);
+	}
+
 	/* Run the trailer function just before starting Minix. */
-	DEBUGEXTRA(("run_trailer()... "));
 	if (!run_trailer()) { errno= 0; return; }
-	DEBUGEXTRA(("done\n"));
 
 	/* Translate the boot parameters to what Minix likes best. */
-	DEBUGEXTRA(("params2params(0x%x, 0x%x)... ", params, sizeof(params)));
 	if (!params2params(params, sizeof(params))) { errno= 0; return; }
-	DEBUGEXTRA(("done\n"));
 
 	/* Set the video to the required mode. */
 	if ((console= b_value("console")) == nil || (mode= a2x(console)) == 0) {
 		mode= strcmp(b_value("chrome"), "color") == 0 ? COLOR_MODE :
 								MONO_MODE;
 	}
-	DEBUGEXTRA(("set_mode(%d)... ", mode));
 	set_mode(mode);
-	DEBUGEXTRA(("done\n"));
 
 	/* Close the disk. */
-	DEBUGEXTRA(("dev_close()... "));
 	(void) dev_close();
-	DEBUGEXTRA(("done\n"));
 
 	/* Minix. */
-	DEBUGEXTRA(("minix(0x%lx, 0x%lx, 0x%lx, 0x%x, 0x%x, 0x%lx)\n", 
-		process[KERNEL_IDX].entry, process[KERNEL_IDX].cs,
-		process[KERNEL_IDX].ds, params, sizeof(params), aout));
 	minix(process[KERNEL_IDX].entry, process[KERNEL_IDX].cs,
 			process[KERNEL_IDX].ds, params, sizeof(params), aout);
 
@@ -726,12 +607,7 @@ void exec_image(char *image)
 
 	/* Read leftover character, if any. */
 	scan_keyboard();
-
-	/* Restore screen contents. */
-	restore_screen();
 }
-
-
 
 ino_t latest_version(char *version, struct stat *stp)
 /* Recursively read the current directory, selecting the newest image on
@@ -825,13 +701,6 @@ void bootminix(void)
 
 	if ((image= select_image(b_value("image"))) == nil) return;
 
-	if(serial_line >= 0) {
-		char linename[2];
-		linename[0] = serial_line + '0';
-		linename[1] = '\0';
-		b_setvar(E_VAR, SERVARNAME, linename);
-	}
-
 	exec_image(image);
 
 	switch (errno) {
@@ -842,14 +711,11 @@ void bootminix(void)
 		printf("Not enough memory to load %s\n", image);
 		break;
 	case EIO:
-		printf("Unexpected EOF on %s\n", image);
+		printf("Unsuspected EOF on %s\n", image);
 	case 0:
 		/* No error or error already reported. */;
 	}
 	free(image);
-
-	if(serial_line >= 0) 
-		b_unset(SERVARNAME);
 }
 
 /*

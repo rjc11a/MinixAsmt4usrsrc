@@ -48,7 +48,7 @@ extern int herefd;
 
 pointer ckmalloc(int);
 pointer ckrealloc(pointer, int);
-char *savestr(const char *);
+char *savestr(char *);
 pointer stalloc(int);
 void stunalloc(pointer);
 void setstackmark(struct stackmark *);

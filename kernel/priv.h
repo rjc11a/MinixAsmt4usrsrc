@@ -9,34 +9,34 @@
  * between common and privileged process fields and is very space efficient. 
  *
  * Changes:
- *   Nov 22, 2009  rewrite of privilege management (Cristiano Giuffrida)
- *   Jul 01, 2005  Created.  (Jorrit N. Herder)	
+ *   Jul 01, 2005	Created.  (Jorrit N. Herder)	
  */
 #include <minix/com.h>
-#include <minix/const.h>
-#include <minix/priv.h>
 #include "const.h"
 #include "type.h"
 
+/* Max. number of I/O ranges that can be assigned to a process */
+#define NR_IO_RANGE	32
+
+/* Max. number of device memory ranges that can be assigned to a process */
+#define NR_MEM_RANGE	10
+
+/* Max. number of IRQs that can be assigned to a process */
+#define NR_IRQ	4
+ 
 struct priv {
   proc_nr_t s_proc_nr;		/* number of associated process */
   sys_id_t s_id;		/* index of this system structure */
   short s_flags;		/* PREEMTIBLE, BILLABLE, etc. */
 
-  /* Asynchronous sends */
-  vir_bytes s_asyntab;		/* addr. of table in process' address space */
-  size_t s_asynsize;		/* number of elements in table. 0 when not in
-				 * use
-				 */
-
   short s_trap_mask;		/* allowed system call traps */
+  sys_map_t s_ipc_from;		/* allowed callers to receive from */
   sys_map_t s_ipc_to;		/* allowed destination processes */
 
   /* allowed kernel calls */
-  bitchunk_t s_k_call_mask[SYS_CALL_MASK_SIZE];
+#define CALL_MASK_SIZE BITMAP_CHUNKS(NR_SYS_CALLS)
+  bitchunk_t s_k_call_mask[CALL_MASK_SIZE];  
 
-  endpoint_t s_sig_mgr;		/* signal manager for system signals */
-  endpoint_t s_bak_sig_mgr;	/* backup signal manager for system signals */
   sys_map_t s_notify_pending;  	/* bit map with pending notifications */
   irq_id_t s_int_pending;	/* pending hardware interrupts */
   sigset_t s_sig_pending;	/* pending signals */
@@ -60,13 +60,18 @@ struct priv {
 /* Guard word for task stacks. */
 #define STACK_GUARD	((reg_t) (sizeof(reg_t) == 2 ? 0xBEEF : 0xDEADBEEF))
 
+/* Bits for the system property flags. */
+#define PREEMPTIBLE	0x02	/* kernel tasks are not preemptible */
+#define BILLABLE	0x04	/* some processes are not billable */
+
+#define SYS_PROC	0x10	/* system processes have own priv structure */
+#define CHECK_IO_PORT	0x20	/* check if I/O request is allowed */
+#define CHECK_IRQ	0x40	/* check if IRQ can be used */
+#define CHECK_MEM	0x80	/* check if (VM) mem map request is allowed */
+
 /* Magic system structure table addresses. */
-#define BEG_PRIV_ADDR              (&priv[0])
-#define END_PRIV_ADDR              (&priv[NR_SYS_PROCS])
-#define BEG_STATIC_PRIV_ADDR       BEG_PRIV_ADDR
-#define END_STATIC_PRIV_ADDR       (BEG_STATIC_PRIV_ADDR + NR_STATIC_PRIV_IDS)
-#define BEG_DYN_PRIV_ADDR          END_STATIC_PRIV_ADDR
-#define END_DYN_PRIV_ADDR          END_PRIV_ADDR
+#define BEG_PRIV_ADDR (&priv[0])
+#define END_PRIV_ADDR (&priv[NR_SYS_PROCS])
 
 #define priv_addr(i)      (ppriv_addr)[(i)]
 #define priv_id(rp)	  ((rp)->p_priv->s_id)
@@ -75,8 +80,6 @@ struct priv {
 #define id_to_nr(id)	priv_addr(id)->s_proc_nr
 #define nr_to_id(nr)    priv(proc_addr(nr))->s_id
 
-#define may_send_to(rp, nr) (get_sys_bit(priv(rp)->s_ipc_to, nr_to_id(nr)))
-
 /* The system structures table and pointers to individual table slots. The 
  * pointers allow faster access because now a process entry can be found by 
  * indexing the psys_addr array, while accessing an element i requires a 
@@ -84,6 +87,11 @@ struct priv {
  */
 EXTERN struct priv priv[NR_SYS_PROCS];		/* system properties table */
 EXTERN struct priv *ppriv_addr[NR_SYS_PROCS];	/* direct slot pointers */
+
+/* Unprivileged user processes all share the same privilege structure.
+ * This id must be fixed because it is used to check send mask entries.
+ */
+#define USER_PRIV_ID	0
 
 /* Make sure the system can boot. The following sanity check verifies that
  * the system privileges table is large enough for the number of processes

@@ -1,44 +1,42 @@
 /* This file contains a collection of miscellaneous procedures:
- *   panic:    abort MINIX due to a fatal error
- *   kputc:          buffered putc used by kernel printf
+ *   panic:	    abort MINIX due to a fatal error
+ *   kprintf:       (from lib/sysutil/kprintf.c)
+ *   kputc:         buffered putc used by kernel kprintf
  */
 
 #include "kernel.h"
 #include "proc.h"
 
-#include <minix/syslib.h>
 #include <unistd.h>
-#include <stdarg.h>
 #include <signal.h>
 
-#include <minix/sys_config.h>
-
-#define ARE_PANICING 0xDEADC0FF
-
 /*===========================================================================*
- *			panic                                          *
+ *				panic                                        *
  *===========================================================================*/
-PUBLIC void panic(const char *fmt, ...)
+PUBLIC void panic(mess,nr)
+_CONST char *mess;
+int nr;
 {
-  va_list arg;
-  /* The system has run aground of a fatal kernel error. Terminate execution. */
-  if (minix_panicing == ARE_PANICING) {
-	arch_monitor();
-  }
-  minix_panicing = ARE_PANICING;
-  if (fmt != NULL) {
-	printf("kernel panic: ");
-  	va_start(arg, fmt);
-	vprintf(fmt, arg);
-	printf("\n");
-  }
+/* The system has run aground of a fatal kernel error. Terminate execution. */
+  static int panicking = 0;
+  if (panicking ++) return;		/* prevent recursive panics */
 
-  printf("kernel: ");
-  util_stacktrace();
+  if (mess != NULL) {
+	kprintf("\nKernel panic: %s", mess);
+	if (nr != NO_NUM) kprintf(" %d", nr);
+	kprintf("\n");
+  }
 
   /* Abort MINIX. */
-  minix_shutdown(NULL);
+  prepare_shutdown(RBT_PANIC);
 }
+
+
+/* Include system printf() implementation named kprintf() */
+
+#define printf kprintf
+#include "../lib/sysutil/kprintf.c"
+#define END_OF_KMESS 	0
 
 /*===========================================================================*
  *				kputc				     	     *
@@ -54,29 +52,19 @@ int c;					/* character to append */
 	if(c == '\n')
       		ser_putc('\r');
       	ser_putc(c);
+
       }
       kmess.km_buf[kmess.km_next] = c;	/* put normal char in buffer */
-      if (kmess.km_size < sizeof(kmess.km_buf))
+      if (kmess.km_size < KMESS_BUF_SIZE)
           kmess.km_size += 1;		
-      kmess.km_next = (kmess.km_next + 1) % _KMESS_BUF_SIZE;
+      kmess.km_next = (kmess.km_next + 1) % KMESS_BUF_SIZE;
   } else {
-      int p;
-      endpoint_t outprocs[] = OUTPUT_PROCS_ARRAY;
-      if(!(minix_panicing || do_serial_debug)) {
-	      for(p = 0; outprocs[p] != NONE; p++) {
-		 if(isokprocn(outprocs[p]) && !isemptyn(outprocs[p])) {
-       	    send_sig(outprocs[p], SIGKMESS);
-		 }
-      	}
-     }
+      int p, outprocs[] = OUTPUT_PROCS_ARRAY;
+      for(p = 0; outprocs[p] != NONE; p++) {
+	 if(isokprocn(outprocs[p]) && !isemptyn(outprocs[p])) {
+           send_sig(outprocs[p], SIGKMESS);
+	 }
+      }
   }
-  return;
 }
 
-PUBLIC void cpu_print_freq(unsigned cpu)
-{
-	u64_t freq;
-
-	freq = cpu_get_freq(cpu);
-	printf("CPU %d freq %lu MHz\n", cpu, div64u(freq, 1000000));
-}

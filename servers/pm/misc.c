@@ -5,7 +5,8 @@
  *   do_procstat: request process status  (Jorrit N. Herder)
  *   do_getsysinfo: request copy of PM data structure  (Jorrit N. Herder)
  *   do_getprocnr: lookup process slot number  (Jorrit N. Herder)
- *   do_getepinfo: get the pid/uid/gid of a process given its endpoint
+ *   do_allocmem: allocate a chunk of memory  (Jorrit N. Herder)
+ *   do_freemem: deallocate a chunk of memory  (Jorrit N. Herder)
  *   do_getsetpriority: get/set process priority
  *   do_svrctl: process manager control
  */
@@ -22,14 +23,13 @@
 #include <minix/config.h>
 #include <minix/sysinfo.h>
 #include <minix/type.h>
-#include <minix/vm.h>
 #include <string.h>
-#include <machine/archtypes.h>
+#include <archconst.h>
+#include <archtypes.h>
 #include <lib.h>
-#include <assert.h>
 #include "mproc.h"
 #include "param.h"
-#include "kernel/proc.h"
+#include "../../kernel/proc.h"
 
 PUBLIC struct utsname uts_val = {
   "Minix",		/* system name */
@@ -60,7 +60,54 @@ PRIVATE char *uts_tbl[] = {
 PUBLIC unsigned long calls_stats[NCALLS];
 #endif
 
-FORWARD _PROTOTYPE( int getpciinfo, (struct pciinfo *pciinfo)		);
+/*===========================================================================*
+ *				do_allocmem				     *
+ *===========================================================================*/
+PUBLIC int do_allocmem()
+{
+  vir_clicks mem_clicks;
+  phys_clicks mem_base;
+
+  /* This call is dangerous. Memory will be lost of the requesting process
+   * forgets about it.
+   */
+  if (mp->mp_effuid != 0)
+  {
+	printf("PM: unauthorized call of do_allocmem by proc %d\n",
+		mp->mp_endpoint);
+	return EPERM;
+  }
+
+  mem_clicks = (m_in.memsize + CLICK_SIZE -1 ) >> CLICK_SHIFT;
+  mem_base = alloc_mem(mem_clicks);
+  if (mem_base == NO_MEM) return(ENOMEM);
+  mp->mp_reply.membase =  (phys_bytes) (mem_base << CLICK_SHIFT);
+  return(OK);
+}
+
+/*===========================================================================*
+ *				do_freemem				     *
+ *===========================================================================*/
+PUBLIC int do_freemem()
+{
+  vir_clicks mem_clicks;
+  phys_clicks mem_base;
+
+  /* This call is dangerous. Even memory belonging to other processes can
+   * be freed.
+   */
+  if (mp->mp_effuid != 0)
+  {
+	printf("PM: unauthorized call of do_freemem by proc %d\n",
+		mp->mp_endpoint);
+	return EPERM;
+  }
+
+  mem_clicks = (m_in.memsize + CLICK_SIZE -1 ) >> CLICK_SHIFT;
+  mem_base = (m_in.membase + CLICK_SIZE -1 ) >> CLICK_SHIFT;
+  free_mem(mem_base, mem_clicks);
+  return(OK);
+}
 
 /*===========================================================================*
  *				do_procstat				     *
@@ -70,16 +117,21 @@ PUBLIC int do_procstat()
   /* For the moment, this is only used to return pending signals to 
    * system processes that request the PM for their own status. 
    *
-   * Future use might include the VFS requesting for process status of
+   * Future use might include the FS requesting for process status of
    * any user process. 
    */
   
   /* This call should be removed, or made more general. */
+  if (mp->mp_effuid != 0)
+  {
+	printf("PM: unauthorized call of do_procstat by proc %d\n",
+		mp->mp_endpoint);
+	return EPERM;
+  }
 
   if (m_in.stat_nr == SELF) {
       mp->mp_reply.sig_set = mp->mp_sigpending;
-      (void) sigemptyset(&mp->mp_sigpending);
-      (void) sigemptyset(&mp->mp_ksigpending);
+      sigemptyset(&mp->mp_sigpending);
   } 
   else {
       return(ENOSYS);
@@ -160,17 +212,20 @@ PUBLIC int do_getsysinfo()
   vir_bytes src_addr, dst_addr;
   struct kinfo kinfo;
   struct loadinfo loadinfo;
-  struct pciinfo pciinfo;
   static struct proc proctab[NR_PROCS+NR_TASKS];
   size_t len;
+  static struct pm_mem_info pmi;
   int s, r;
+  size_t holesize;
 
-  /* This call leaks important information (the contents of registers). */
+  /* This call leaks important information (the contents of registers).
+   * harmless data (such as the load should get their own calls)
+   */
   if (mp->mp_effuid != 0)
   {
 	printf("PM: unauthorized call of do_getsysinfo by proc %d '%s'\n",
 		mp->mp_endpoint, mp->mp_name);
-	sys_sysctl_stacktrace(mp->mp_endpoint);
+	sig_proc(mp, SIGEMT);
 	return EPERM;
   }
 
@@ -195,16 +250,18 @@ PUBLIC int do_getsysinfo()
 	src_addr = (vir_bytes) proctab;
 	len = sizeof(proctab);
         break;
+  case SI_MEM_ALLOC:
+  	holesize = sizeof(pmi.pmi_holes);
+	if((r=mem_holes_copy(pmi.pmi_holes, &holesize,
+	   &pmi.pmi_hi_watermark)) != OK)
+		return r;
+	src_addr = (vir_bytes) &pmi;
+	len = sizeof(pmi);
+	break;
   case SI_LOADINFO:			/* loadinfo is obtained via PM */
         sys_getloadinfo(&loadinfo);
         src_addr = (vir_bytes) &loadinfo;
         len = sizeof(struct loadinfo);
-        break;
-  case SI_PCI_INFO:			/* PCI info is obtained via PM */
-        if ((r=getpciinfo(&pciinfo)) != OK)
-			return r;
-        src_addr = (vir_bytes) &pciinfo;
-        len = sizeof(struct pciinfo);
         break;
 #if ENABLE_SYSCALL_STATS
   case SI_CALL_STATS:
@@ -230,26 +287,14 @@ PUBLIC int do_getsysinfo_up()
   vir_bytes src_addr, dst_addr;
   struct loadinfo loadinfo;
   size_t len, real_len;
-  u64_t idle_tsc;
   int s;
 
   switch(m_in.SIU_WHAT) {
   case SIU_LOADINFO:			/* loadinfo is obtained via PM */
-        if ((s = sys_getloadinfo(&loadinfo)) != OK)
-        	return s;
+        sys_getloadinfo(&loadinfo);
         src_addr = (vir_bytes) &loadinfo;
         real_len = sizeof(struct loadinfo);
         break;
-  case SIU_SYSTEMHZ:
-        src_addr = (vir_bytes) &system_hz;
-        real_len = sizeof(system_hz);
-	break;
-  case SIU_IDLETSC:
-	if ((s = sys_getidletsc(&idle_tsc)) != OK)
-		return s;
-	src_addr = (vir_bytes) &idle_tsc;
-	real_len = sizeof(idle_tsc);
-	break;
   default:
   	return(EINVAL);
   }
@@ -278,87 +323,39 @@ PUBLIC int do_getprocnr()
   /* This call should be moved to DS. */
   if (mp->mp_effuid != 0)
   {
-	/* For now, allow non-root processes to request their own endpoint. */
-	if (m_in.pid < 0 && m_in.namelen == 0) {
-		mp->mp_reply.PM_ENDPT = who_e;
-		mp->mp_reply.PM_PENDPT = NONE;
-		return OK;
-	}
-
-	printf("PM: unauthorized call of do_getprocnr by proc %d\n",
+	printf("PM: unauthorized call of do_procstat by proc %d\n",
 		mp->mp_endpoint);
-	sys_sysctl_stacktrace(mp->mp_endpoint);
 	return EPERM;
   }
 
-#if 0
-  printf("PM: do_getprocnr(%d) call from endpoint %d, %s\n",
-	m_in.pid, mp->mp_endpoint, mp->mp_name);
-#endif
-
   if (m_in.pid >= 0) {			/* lookup process by pid */
-	if ((rmp = find_proc(m_in.pid)) != NULL) {
-		mp->mp_reply.PM_ENDPT = rmp->mp_endpoint;
-#if 0
-		printf("PM: pid result: %d\n", rmp->mp_endpoint);
-#endif
-		return(OK);
+  	for (rmp = &mproc[0]; rmp < &mproc[NR_PROCS]; rmp++) {
+		if ((rmp->mp_flags & IN_USE) && (rmp->mp_pid==m_in.pid)) {
+  			mp->mp_reply.endpt = rmp->mp_endpoint;
+  			return(OK);
+		} 
 	}
   	return(ESRCH);			
   } else if (m_in.namelen > 0) {	/* lookup process by name */
   	key_len = MIN(m_in.namelen, PROC_NAME_LEN);
- 	if (OK != (s=sys_datacopy(who_e, (vir_bytes) m_in.PMBRK_ADDR, 
+ 	if (OK != (s=sys_datacopy(who_e, (vir_bytes) m_in.addr, 
  			SELF, (vir_bytes) search_key, key_len))) 
  		return(s);
  	search_key[key_len] = '\0';	/* terminate for safety */
   	for (rmp = &mproc[0]; rmp < &mproc[NR_PROCS]; rmp++) {
-		if (((rmp->mp_flags & (IN_USE | EXITING)) == IN_USE) && 
+		if (((rmp->mp_flags & (IN_USE | ZOMBIE)) == IN_USE) && 
 			strncmp(rmp->mp_name, search_key, key_len)==0) {
-  			mp->mp_reply.PM_ENDPT = rmp->mp_endpoint;
+  			mp->mp_reply.endpt = rmp->mp_endpoint;
   			return(OK);
 		} 
 	}
   	return(ESRCH);			
   } else {			/* return own/parent process number */
-#if 0
-	printf("PM: endpt result: %d\n", mp->mp_reply.PM_ENDPT);
-#endif
-  	mp->mp_reply.PM_ENDPT = who_e;
-	mp->mp_reply.PM_PENDPT = mproc[mp->mp_parent].mp_endpoint;
+  	mp->mp_reply.endpt = who_e;
+	mp->mp_reply.pendpt = mproc[mp->mp_parent].mp_endpoint;
   }
 
   return(OK);
-}
-
-/*===========================================================================*
- *				do_getepinfo			             *
- *===========================================================================*/
-PUBLIC int do_getepinfo()
-{
-  register struct mproc *rmp;
-  endpoint_t ep;
-
-  /* This call should be moved to DS. */
-  if (mp->mp_effuid != 0)
-  {
-	printf("PM: unauthorized call of do_getepinfo by proc %d\n",
-		mp->mp_endpoint);
-	sys_sysctl_stacktrace(mp->mp_endpoint);
-	return EPERM;
-  }
-
-  ep= m_in.PM_ENDPT;
-
-  for (rmp = &mproc[0]; rmp < &mproc[NR_PROCS]; rmp++) {
-	if ((rmp->mp_flags & IN_USE) && (rmp->mp_endpoint == ep)) {
-		mp->mp_reply.reply_res2 = rmp->mp_effuid;
-		mp->mp_reply.reply_res3 = rmp->mp_effgid;
-		return(rmp->mp_pid);
-	}
-  } 
-
-  /* Process not found */
-  return(ESRCH);
 }
 
 /*===========================================================================*
@@ -366,7 +363,7 @@ PUBLIC int do_getepinfo()
  *===========================================================================*/
 PUBLIC int do_reboot()
 {
-  message m;
+  int r;
 
   /* Check permission to abort the system. */
   if (mp->mp_effuid != SUPER_USER) return(EPERM);
@@ -386,19 +383,18 @@ PUBLIC int do_reboot()
   else
 	monitor_code[0] = '\0';
 
-  /* Order matters here. When VFS is told to reboot, it exits all its
+  /* Order matters here. When FS is told to reboot, it exits all its
    * processes, and then would be confused if they're exited again by
    * SIGKILL. So first kill, then reboot. 
    */
 
-  check_sig(-1, SIGKILL, FALSE /* ksig*/); /* kill all users except init */
-  sys_stop(INIT_PROC_NR);		   /* stop init, but keep it around */
+  check_sig(-1, SIGKILL); 		/* kill all users except init */
+  sys_nice(INIT_PROC_NR, PRIO_STOP);	/* stop init, but keep it around */
 
-  /* Tell VFS to reboot */
-  m.m_type = PM_REBOOT;
-
-  tell_vfs(&mproc[VFS_PROC_NR], &m);
-
+  report_reboot= 1;
+  r= notify(FS_PROC_NR);
+  if (r != OK) panic("pm", "do_reboot: unable to notify FS", r);
+  
   return(SUSPEND);			/* don't reply to caller */
 }
 
@@ -407,7 +403,8 @@ PUBLIC int do_reboot()
  *===========================================================================*/
 PUBLIC int do_getsetpriority()
 {
-	int r, arg_which, arg_who, arg_pri;
+	int arg_which, arg_who, arg_pri;
+	int rmp_nr;
 	struct mproc *rmp;
 
 	arg_which = m_in.m1_i1;
@@ -421,10 +418,12 @@ PUBLIC int do_getsetpriority()
 		return(EINVAL);
 
 	if (arg_who == 0)
-		rmp = mp;
+		rmp_nr = who_p;
 	else
-		if ((rmp = find_proc(arg_who)) == NULL)
+		if ((rmp_nr = proc_from_pid(arg_who)) < 0)
 			return(ESRCH);
+
+	rmp = &mproc[rmp_nr];
 
 	if (mp->mp_effuid != SUPER_USER &&
 	   mp->mp_effuid != rmp->mp_effuid && mp->mp_effuid != rmp->mp_realuid)
@@ -439,19 +438,9 @@ PUBLIC int do_getsetpriority()
 	if (rmp->mp_nice > arg_pri && mp->mp_effuid != SUPER_USER)
 		return(EACCES);
 	
-	/* We're SET, and it's allowed.
-	 *
-	 * The value passed in is currently between PRIO_MIN and PRIO_MAX.
-	 * We have to scale this between MIN_USER_Q and MAX_USER_Q to match
-	 * the kernel's scheduling queues.
-	 */
-
-	if ((r = sched_nice(rmp, arg_pri)) != OK) {
-		return r;
-	}
-
+	/* We're SET, and it's allowed. Do it and tell kernel. */
 	rmp->mp_nice = arg_pri;
-	return(OK);
+	return sys_nice(rmp->mp_endpoint, arg_pri);
 }
 
 /*===========================================================================*
@@ -471,13 +460,13 @@ PUBLIC int do_svrctl()
   req = m_in.svrctl_req;
   ptr = (vir_bytes) m_in.svrctl_argp;
 
-  /* Is the request indeed for the PM? */
+  /* Is the request indeed for the MM? */
   if (((req >> 8) & 0xFF) != 'M') return(EINVAL);
 
   /* Control operations local to the PM. */
   switch(req) {
-  case PMSETPARAM:
-  case PMGETPARAM: {
+  case MMSETPARAM:
+  case MMGETPARAM: {
       struct sysgetenv sysgetenv;
       char search_key[64];
       char *val_start;
@@ -489,7 +478,7 @@ PUBLIC int do_svrctl()
               sizeof(sysgetenv)) != OK) return(EFAULT);  
 
       /* Set a param override? */
-      if (req == PMSETPARAM) {
+      if (req == MMSETPARAM) {
   	if (local_params >= MAX_LOCAL_PARAMS) return ENOSPC;
   	if (sysgetenv.keylen <= 0
   	 || sysgetenv.keylen >=
@@ -505,7 +494,7 @@ PUBLIC int do_svrctl()
                	return s;
           if ((s = sys_datacopy(who_e, (vir_bytes) sysgetenv.val,
             SELF, (vir_bytes) local_param_overrides[local_params].value,
-              sysgetenv.vallen)) != OK)
+              sysgetenv.keylen)) != OK)
                	return s;
             local_param_overrides[local_params].name[sysgetenv.keylen] = '\0';
             local_param_overrides[local_params].value[sysgetenv.vallen] = '\0';
@@ -555,6 +544,24 @@ PUBLIC int do_svrctl()
       return OK;
   }
 
+#if ENABLE_SWAP
+  case MMSWAPON: {
+	struct mmswapon swapon;
+
+	if (mp->mp_effuid != SUPER_USER) return(EPERM);
+
+	if (sys_datacopy(who_e, (phys_bytes) ptr,
+		PM_PROC_NR, (phys_bytes) &swapon,
+		(phys_bytes) sizeof(swapon)) != OK) return(EFAULT);
+
+	return(swap_on(swapon.file, swapon.offset, swapon.size)); }
+
+  case MMSWAPOFF: {
+	if (mp->mp_effuid != SUPER_USER) return(EPERM);
+
+	return(swap_off()); }
+#endif /* SWAP */
+
   default:
 	return(EINVAL);
   }
@@ -568,57 +575,11 @@ extern char *_brksize;
 PUBLIC int brk(brk_addr)
 char *brk_addr;
 {
-	int r;
 /* PM wants to call brk() itself. */
-	if((r=vm_brk(PM_PROC_NR, brk_addr)) != OK) {
-#if 0
-		printf("PM: own brk(%p) failed: vm_brk() returned %d\n",
-			brk_addr, r);
-#endif
+	if(real_brk(&mproc[PM_PROC_NR], (vir_bytes) brk_addr) != OK) {
 		return -1;
 	}
 	_brksize = brk_addr;
 	return 0;
 }
 
-/*===========================================================================*
- *				getpciinfo				     *
- *===========================================================================*/
-
-PRIVATE int getpciinfo(pciinfo)
-struct pciinfo *pciinfo;
-{
-	int devind, r;
-	struct pciinfo_entry *entry;
-	char *name;
-	u16_t vid, did;
-
-	/* look up PCI process number */
-	pci_init();
-
-	/* start enumerating devices */
-	entry = pciinfo->pi_entries;
-	r = pci_first_dev(&devind, &vid, &did);
-	while (r)
-	{
-		/* fetch device name */
-		name = pci_dev_name(vid, did);
-		if (!name)
-			name = "";
-
-		/* store device information in table */
-		assert((char *) entry < (char *) (pciinfo + 1));
-		entry->pie_vid = vid;
-		entry->pie_did = did;
-		strncpy(entry->pie_name, name, sizeof(entry->pie_name));
-		entry->pie_name[sizeof(entry->pie_name) - 1] = 0;
-		entry++;
-		
-		/* continue with the next device */
-		r = pci_next_dev(&devind, &vid, &did);
-	}
-	
-	/* store number of entries */
-	pciinfo->pi_count = entry - pciinfo->pi_entries;
-	return OK;
-}

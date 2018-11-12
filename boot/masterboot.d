@@ -1,2 +1,0 @@
-
-masterboot.o:	masterboot.s

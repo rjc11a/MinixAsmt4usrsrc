@@ -1,22 +1,48 @@
 # Makefile for terminal driver (TTY)
+DRIVER = tty
 
-.include <bsd.own.mk>
+include /etc/make.conf
 
-PROG=	tty
-SRCS=	tty.c console.c keyboard.c pty.c rs232.c
+# directories
+u = /usr
+i = $u/include
+s = $i/sys
+m = $i/minix
+b = $i/ibm
+d = ..
 
-DPADD+=	${LIBDRIVER} ${LIBSYS} ${LIBTIMERS}
-LDADD+=	-ldriver -lsys -ltimers
+# programs, flags, etc.
+MAKE = exec make
+CC =	exec cc
+CPPFLAGS = -I$i -I../../kernel/arch/$(ARCH)/include
+CFLAGS = $(CPPFLAGS)
+LDFLAGS = -i
+LIBS = -lsysutil -lsys -ltimers
 
-MAN=
+OBJ = tty.o console.o vidcopy.o keyboard.o pty.o rs232.o 
 
-BINDIR?= /usr/sbin
-INSTALLFLAGS+=	-S 16k
+# build local binary 
+all build:	$(DRIVER)
+$(DRIVER):	$(OBJ) 
+	$(CC) -o $@ $(LDFLAGS) $(OBJ) $(LIBS)
+	install -S 8k $(DRIVER)
 
-SUBDIR= keymaps
+# install with other drivers
+install:	
+	cd keymaps && $(MAKE) -$(MAKEFLAGS) install
 
-# Needs kernel/const.h, etc
-CPPFLAGS+=	-I${MINIXSRCDIR}
+#/sbin/$(DRIVER):	$(DRIVER)
+#	install -o root -cs $? $@
 
-.include <bsd.prog.mk>
-.include <bsd.subdir.mk>
+# clean up local files
+clean:
+	cd keymaps && $(MAKE) -$(MAKEFLAGS) $@
+	rm -f $(DRIVER) *.o *.bak 
+
+depend: 
+	mkdep "$(CC) -E $(CPPFLAGS)" *.c > .depend
+
+# Include generated dependencies.
+include .depend
+
+

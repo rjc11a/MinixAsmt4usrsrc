@@ -2,23 +2,17 @@
 set -e
 export SHELL=/bin/sh
 cd /usr/src 
-
-if [ $# -gt 0 ]
-then	make $@
-	exit $?
-fi
-
-make world
+make etcfiles
+su bin -c 'make world install' 
 cd tools 
 rm revision
 rm /boot/image/*
-make install
+make install 
 cp /boot/image/* /boot/image_big  # Make big image accessible by this name
 cp ../boot/boot /boot/boot 
 cd /usr/src 
-if [ $MAKEMAP -ne 0 ]; then
-	find . -type f -perm 755 | xargs nm -n 2> /dev/null > symbols.txt
-fi
 make clean
-make cleandepend
-find . -name obj-ack -type d|xargs rm -rf
+# Let man find the manpages
+su bin -c 'makewhatis /usr/man'
+su bin -c 'makewhatis /usr/local/man'
+binsizes normal

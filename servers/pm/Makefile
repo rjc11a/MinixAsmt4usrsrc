@@ -1,20 +1,43 @@
 # Makefile for Process Manager (PM)
-PROG=	pm
-SRCS=	main.c forkexit.c break.c exec.c time.c alarm.c \
-	signal.c utility.c table.c trace.c getset.c misc.c \
-	profile.c dma.c mcontext.c schedule.c
+SERVER = pm
 
-DPADD+=	${LIBSYS} ${LIBTIMERS}
-LDADD+=	-lsys -ltimers
+include /etc/make.conf
 
-MAN=
+# directories
+u = /usr
+i = $u/include
+s = $i/sys
+h = $i/minix
+k = $u/src/kernel
 
-BINDIR?= /usr/sbin
-INSTALLFLAGS+=	-S 32k
+# programs, flags, etc.
+CC =	exec cc
+CPPFLAGS=-I../../kernel/arch/$(ARCH)/include -I$i 
+CFLAGS = $(CPROFILE) $(CPPFLAGS)
+LDFLAGS = -i
 
-CPPFLAGS.main.c+=	-I${MINIXSRCDIR}
-CPPFLAGS.misc.c+=	-I${MINIXSRCDIR}
-CPPFLAGS.schedule.c+=	-I${MINIXSRCDIR}
-CPPFLAGS.utility.c+=	-I${MINIXSRCDIR}
+OBJ = 	main.o forkexit.o break.o exec.o time.o timers.o \
+	signal.o alloc.o utility.o table.o trace.o getset.o misc.o \
+	profile.o
 
-.include <bsd.prog.mk>
+# build local binary
+all build:	$(SERVER)
+$(SERVER):	$(OBJ)
+	$(CC) -o $@ $(LDFLAGS) $(OBJ) -lsysutil  -lsys -ltimers
+	install -S 8k $@
+
+# install with other servers
+install:	/usr/sbin/$(SERVER)
+/usr/sbin/$(SERVER):	$(SERVER)
+	install -o root -cs $? $@
+
+# clean up local files
+clean:
+	rm -f $(SERVER) *.o *.bak 
+
+depend: 
+	mkdep "$(CC) -E $(CPPFLAGS)" *.c > .depend
+
+# Include generated dependencies.
+include .depend
+

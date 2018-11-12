@@ -7,14 +7,14 @@
 #define _STAT_H
 
 #ifndef _TYPES_H
-#include <minix/types.h>
+#include <sys/types.h>
 #endif
 
 struct stat {
   dev_t st_dev;			/* major/minor device number */
   ino_t st_ino;			/* i-node number */
   mode_t st_mode;		/* file mode, protection bits, etc. */
-  nlink_t st_nlink;		/* # links; */
+  short int st_nlink;		/* # links; TEMPORARY HACK: should be nlink_t*/
   uid_t st_uid;			/* uid of the file's owner */
   short int st_gid;		/* gid; TEMPORARY HACK: should be gid_t */
   dev_t st_rdev;
@@ -25,17 +25,17 @@ struct stat {
 };
 
 /* Traditional mask definitions for st_mode. */
-#define S_IFMT   0170000	/* type of file */
-#define S_IFSOCK 0140000        /* socket */
-#define S_IFLNK  0120000	/* symbolic link */
-#define S_IFREG  0100000	/* regular */
-#define S_IFBLK  0060000	/* block special */
-#define S_IFDIR  0040000	/* directory */
-#define S_IFCHR  0020000	/* character special */
-#define S_IFIFO  0010000	/* this is a FIFO */
-#define S_ISUID  0004000	/* set user id on execution */
-#define S_ISGID  0002000	/* set group id on execution */
-#define S_ISVTX  0001000	/* save swapped text even after use */
+#define S_IFMT  0170000	/* type of file */
+#define S_IFLNK 0120000	/* symbolic link */
+#define S_IFREG 0100000	/* regular */
+#define S_IFBLK 0060000	/* block special */
+#define S_IFDIR 0040000	/* directory */
+#define S_IFCHR 0020000	/* character special */
+#define S_IFIFO 0010000	/* this is a FIFO */
+#define S_ISUID 0004000	/* set user id on execution */
+#define S_ISGID 0002000	/* set group id on execution */
+				/* next is reserved for future use */
+#define S_ISVTX   01000		/* save swapped text even after use */
 
 /* POSIX masks for st_mode. */
 #define S_IRWXU   00700		/* owner:  rwx------ */
@@ -65,19 +65,15 @@ struct stat {
 #define S_ISBLK(m)	(((m) & S_IFMT) == S_IFBLK)	/* is a block spec */
 #define S_ISLNK(m)	(((m) & S_IFMT) == S_IFLNK)	/* is a symlink */
 #define S_ISFIFO(m)	(((m) & S_IFMT) == S_IFIFO)	/* is a pipe/FIFO */
-#define S_ISSOCK(m)     (((m) & S_IFMT) == S_IFSOCK)	/* is a socket */
-
-#define DEFFILEMODE     (S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH)
-#define ALLPERMS        (S_ISUID|S_ISGID|S_ISVTX|S_IRWXU|S_IRWXG|S_IRWXO)
 
 /* Function Prototypes. */
-_PROTOTYPE( int chmod, (const char *_path, mode_t _mode)		);
-_PROTOTYPE( int fchmod, (int fd, mode_t _mode)			);
+_PROTOTYPE( int chmod, (const char *_path, _mnx_Mode_t _mode)		);
+_PROTOTYPE( int fchmod, (int fd, _mnx_Mode_t _mode)			);
 _PROTOTYPE( int fstat, (int _fildes, struct stat *_buf)			);
-_PROTOTYPE( int mkdir, (const char *_path, mode_t _mode)		);
-_PROTOTYPE( int mkfifo, (const char *_path, mode_t _mode)		);
+_PROTOTYPE( int mkdir, (const char *_path, _mnx_Mode_t _mode)		);
+_PROTOTYPE( int mkfifo, (const char *_path, _mnx_Mode_t _mode)		);
 _PROTOTYPE( int stat, (const char *_path, struct stat *_buf)		);
-_PROTOTYPE( mode_t umask, (mode_t _cmask)				);
+_PROTOTYPE( mode_t umask, (_mnx_Mode_t _cmask)				);
 
 /* Open Group Base Specifications Issue 6 (not complete) */
 _PROTOTYPE( int lstat, (const char *_path, struct stat *_buf)		);

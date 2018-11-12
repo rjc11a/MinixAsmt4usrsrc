@@ -1,19 +1,45 @@
 # Makefile for all device drivers.
 #
+MAKE = exec make -$(MAKEFLAGS)
 
-.include <bsd.own.mk>
+usage:
+	@echo "" >&2
+	@echo "Makefile for all device drivers." >&2
+	@echo "Usage:" >&2
+	@echo "	make build    # Compile all device drivers locally" >&2
+	@echo "	make image    # Compile drivers in boot image" >&2
+	@echo "	make clean    # Remove local compiler results" >&2
+	@echo "	make install  # Install drivers to /etc/drivers/" >&2
+	@echo "	                (requires root privileges)" >&2
+	@echo "" >&2
 
-# memory driver must be last for ramdisk image
-.if ${COMPILER_TYPE} == "gnu"
-SUBDIR = acpi
-.endif
+build: all
+all install depend clean:
+	cd ./libdriver && $(MAKE) $@
+	cd ./tty && $(MAKE) $@
+	cd ./at_wini && $(MAKE) $@
+	cd ./floppy && $(MAKE) $@
+	cd ./printer && $(MAKE) $@
+	cd ./rtl8139 && $(MAKE) $@
+	cd ./fxp && $(MAKE) $@
+	cd ./dpeth && $(MAKE) $@
+	cd ./log && $(MAKE) $@
+	cd ./bios_wini && $(MAKE) $@
+	cd ./random && $(MAKE) $@
+	cd ./readclock && $(MAKE) $@
+	cd ./dp8390 && $(MAKE) $@
+	cd ./sb16 && $(MAKE) $@
+	cd ./lance && $(MAKE) $@
+	cd ./pci && $(MAKE) $@
+	cd ./ti1225 && $(MAKE) $@
+	cd ./memory && $(MAKE) $@	# Must be last for ramdisk image
 
-SUBDIR+= ahci amddev atl2 at_wini audio bios_wini dec21140A dp8390 dpeth \
-	e1000 filter floppy fxp hello lance log orinoco pci printer \
-	random readclock rtl8139 rtl8169 sb16 ti1225 tty \
-	.WAIT ramdisk .WAIT memory
-
-# memory driver must be last for ramdisk image
-IMAGE_SUBDIR=	at_wini bios_wini floppy log tty pci .WAIT ramdisk .WAIT memory
-
-.include <bsd.subdir.mk>
+image:
+	cd ./libdriver && $(MAKE) build
+	cd ./tty && $(MAKE) build
+	cd ./at_wini && $(MAKE) build
+	cd ./floppy && $(MAKE) build
+	cd ./bios_wini && $(MAKE) build
+	cd ./log && $(MAKE) build
+	cd ./pci && $(MAKE) build
+	cd ./memory && $(MAKE) build	# Must be last for ramdisk image

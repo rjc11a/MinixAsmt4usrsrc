@@ -5,12 +5,7 @@
 #ifndef _STRING_H
 #define _STRING_H
 
-/* Not strictly necessary, but some sources, in particular
- * llvm, assume the defines in stdint.h are available when
- * string.h is include.
- */
-#include <stdint.h>
-#include <sys/null.h>
+#define NULL    ((void *)0)
 
 #ifndef _SIZE_T
 #define _SIZE_T
@@ -67,10 +62,6 @@ _PROTOTYPE( int strncasecmp, (const char *_s1, const char *_s2,
 _PROTOTYPE( size_t strnlen, (const char *_s, size_t _n)			);
 _PROTOTYPE( size_t strlcat, (char *_dst, const char *_src, size_t _siz) );
 _PROTOTYPE( size_t strlcpy, (char *_dst, const char *_src, size_t _siz) );
-_PROTOTYPE( char * strsep, (char **stringp, const char *delim) );
-_PROTOTYPE( char *strcasestr, (const char *, const char *));
-_PROTOTYPE( char *strnstr, (const char *, const char *, size_t));
-
 #endif
 
 #endif /* _STRING_H */

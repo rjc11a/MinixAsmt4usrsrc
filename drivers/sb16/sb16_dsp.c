@@ -24,18 +24,19 @@
  *  May 20 1995			Author: Michel R. Prevenier 
  */
 
-#include <minix/endpoint.h>
 #include "sb16.h"
 
 
+_PROTOTYPE(void main, (void));
 FORWARD _PROTOTYPE( int dsp_open, (void) );
 FORWARD _PROTOTYPE( int dsp_close, (void) );
-FORWARD _PROTOTYPE( int dsp_ioctl, (const message *m_ptr) );
-FORWARD _PROTOTYPE( void dsp_write, (const message *m_ptr) );
+FORWARD _PROTOTYPE( int dsp_ioctl, (message *m_ptr) );
+FORWARD _PROTOTYPE( void dsp_write, (message *m_ptr) );
 FORWARD _PROTOTYPE( void dsp_hardware_msg, (void) );
 FORWARD _PROTOTYPE( void dsp_status, (message *m_ptr) );
 
 FORWARD _PROTOTYPE( void reply, (int code, int replyee, int process, int status) );
+FORWARD _PROTOTYPE( void init_buffer, (void) );
 FORWARD _PROTOTYPE( int dsp_init, (void) );
 FORWARD _PROTOTYPE( int dsp_reset, (void) );
 FORWARD _PROTOTYPE( int dsp_command, (int value) );
@@ -75,48 +76,26 @@ PRIVATE int reviveProcNr;
 
 #define dprint (void)
 
-/* SEF functions and variables. */
-FORWARD _PROTOTYPE( void sef_local_startup, (void) );
-FORWARD _PROTOTYPE( int sef_cb_init_fresh, (int type, sef_init_info_t *info) );
-EXTERN _PROTOTYPE( int sef_cb_lu_prepare, (int state) );
-EXTERN _PROTOTYPE( int sef_cb_lu_state_isvalid, (int state) );
-EXTERN _PROTOTYPE( void sef_cb_lu_state_dump, (int state) );
-PUBLIC int is_processing = FALSE;
-PUBLIC int is_status_msg_expected = FALSE;
 
 /*===========================================================================*
  *				main
  *===========================================================================*/
-PUBLIC int main(int argc, char *argv[]) 
+PUBLIC void main() 
 {	
-	int r;
-	endpoint_t caller;
-	int proc_nr;
+	int r, caller, proc_nr, s;
 	message mess;
-	int ipc_status;
 
-	/* SEF local startup. */
-	sef_local_startup();
+	dprint("sb16_dsp.c: main()\n");
+
+	/* Get a DMA buffer. */
+	init_buffer();
 
 	while(TRUE) {
 		/* Wait for an incoming message */
-		driver_receive(ANY, &mess, &ipc_status);
+		receive(ANY, &mess);
 
 		caller = mess.m_source;
 		proc_nr = mess.IO_ENDPT;
-
-		if (is_ipc_notify(ipc_status)) {
-			switch (_ENDPOINT_P(mess.m_source)) {
-				case HARDWARE:
-					dsp_hardware_msg();
-					continue; /* don't reply */
-				default:
-					r = EINVAL;
-			}
-
-			/* dont with this message */
-			goto send_reply;
-		}
 
 		/* Now carry out the work. */
 		switch(mess.m_type) {
@@ -132,69 +111,22 @@ PUBLIC int main(int argc, char *argv[])
 #endif
 			
 			case DEV_STATUS:	dsp_status(&mess); continue; /* don't reply */
+			case HARD_INT:		dsp_hardware_msg(); continue; /* don't reply */
+			case SYS_SIG:		continue; /* don't reply */
 			default:			r = EINVAL;
 		}
 
-send_reply:
 		/* Finally, prepare and send the reply message. */
 		reply(TASK_REPLY, caller, proc_nr, r);
 	}
 
 }
 
-/*===========================================================================*
- *			       sef_local_startup			     *
- *===========================================================================*/
-PRIVATE void sef_local_startup(void)
-{
-  /* Register init callbacks. */
-  sef_setcb_init_fresh(sef_cb_init_fresh);
-  sef_setcb_init_lu(sef_cb_init_fresh);
-  sef_setcb_init_restart(sef_cb_init_fresh);
-
-  /* Register live update callbacks. */
-  sef_setcb_lu_prepare(sef_cb_lu_prepare);
-  sef_setcb_lu_state_isvalid(sef_cb_lu_state_isvalid);
-  sef_setcb_lu_state_dump(sef_cb_lu_state_dump);
-
-  /* Let SEF perform startup. */
-  sef_startup();
-}
-
-/*===========================================================================*
- *		            sef_cb_init_fresh                                *
- *===========================================================================*/
-PRIVATE int sef_cb_init_fresh(int UNUSED(type), sef_init_info_t *UNUSED(info))
-{
-/* Initialize the rtl8169 driver. */
-	unsigned left;
-
-	/* Select a buffer that can safely be used for dma transfers.  
-	 * Its absolute address is 'DmaPhys', the normal address is 'DmaPtr'.
-	 */
-#if (CHIP == INTEL)
-	DmaPtr = DmaBuffer;
-	sys_umap(SELF, D, (vir_bytes)DmaBuffer, sizeof(DmaBuffer), &DmaPhys);
-
-	if((left = dma_bytes_left(DmaPhys)) < DMA_SIZE) {
-		/* First half of buffer crosses a 64K boundary, can't DMA into that */
-		DmaPtr += left;
-		DmaPhys += left;
-	}
-#else /* CHIP != INTEL */
-	panic("initialization failed: CHIP != INTEL: %d", 0);
-#endif /* CHIP == INTEL */
-
-	/* Announce we are up! */
-	driver_announce();
-
-	return(OK);
-}
 
 /*===========================================================================*
  *				dsp_open
  *===========================================================================*/
-PRIVATE int dsp_open(void)
+PRIVATE int dsp_open()
 {
 	dprint("sb16_dsp.c: dsp_open()\n");
 	
@@ -223,7 +155,7 @@ PRIVATE int dsp_open(void)
 /*===========================================================================*
  *				dsp_close
  *===========================================================================*/
-PRIVATE int dsp_close(void)
+PRIVATE int dsp_close()
 {
 	dprint("sb16_dsp.c: dsp_close()\n");
 
@@ -236,9 +168,11 @@ PRIVATE int dsp_close(void)
 /*===========================================================================*
  *				dsp_ioctl
  *===========================================================================*/
-PRIVATE int dsp_ioctl(const message *m_ptr)
+PRIVATE int dsp_ioctl(m_ptr)
+message *m_ptr;
 {
 	int status;
+	phys_bytes user_phys;
 	unsigned int val;
 
 	dprint("sb16_dsp.c: dsp_ioctl()\n");
@@ -275,10 +209,11 @@ PRIVATE int dsp_ioctl(const message *m_ptr)
 /*===========================================================================*
  *				dsp_write
  *===========================================================================*/
-PRIVATE void dsp_write(const message *m_ptr)
+PRIVATE void dsp_write(m_ptr)
+message *m_ptr;
 {
+	int s;
 	message mess;
-	int ipc_status;
 	
 	dprint("sb16_dsp.c: dsp_write()\n");
 
@@ -292,7 +227,6 @@ PRIVATE void dsp_write(const message *m_ptr)
 	}
 	
 	reply(TASK_REPLY, m_ptr->m_source, m_ptr->IO_ENDPT, SUSPEND);
-	is_processing = TRUE;
 
 	if(DmaBusy < 0) { /* Dma tranfer not yet started */
 
@@ -320,7 +254,7 @@ PRIVATE void dsp_write(const message *m_ptr)
 	} else { /* Dma buffer is full, filling second buffer */ 
 
 		while(BufReadNext == BufFillNext) { /* Second buffer also full, wait for space to become available */ 
-			driver_receive(HARDWARE, &mess, &ipc_status);
+			receive(HARDWARE, &mess);
 			dsp_hardware_msg();
 		}
 		sys_datacopy(m_ptr->IO_ENDPT, (vir_bytes)m_ptr->ADDRESS, SELF, (vir_bytes)Buffer + BufFillNext * DspFragmentSize, (phys_bytes)DspFragmentSize);
@@ -329,7 +263,6 @@ PRIVATE void dsp_write(const message *m_ptr)
 
 	} 
 	
-	is_status_msg_expected = TRUE;
 	revivePending = 1;
 	reviveStatus = DspFragmentSize;
 	reviveProcNr = m_ptr->IO_ENDPT;
@@ -381,8 +314,8 @@ PRIVATE void dsp_hardware_msg()
 /*===========================================================================*
  *				dsp_status				     *
  *===========================================================================*/
-PRIVATE void dsp_status(message *m_ptr)
-/* m_ptr	pointer to the newly arrived message */
+PRIVATE void dsp_status(m_ptr)
+message *m_ptr;	/* pointer to the newly arrived message */
 {
 	if(revivePending) {
 		m_ptr->m_type = DEV_REVIVE;			/* build message */
@@ -390,11 +323,8 @@ PRIVATE void dsp_status(message *m_ptr)
 		m_ptr->REP_STATUS = reviveStatus;
 
 		revivePending = 0;					/* unmark event */
-		is_processing = FALSE;
 	} else {
 		m_ptr->m_type = DEV_NO_STATUS;
-
-		is_status_msg_expected = FALSE;
 	}
 
 	send(m_ptr->m_source, m_ptr);			/* send the message */
@@ -404,7 +334,11 @@ PRIVATE void dsp_status(message *m_ptr)
 /*===========================================================================*
  *				reply					     *
  *===========================================================================*/
-PRIVATE void reply(int code, int replyee, int process, int status)
+PRIVATE void reply(code, replyee, process, status)
+int code;
+int replyee;
+int process;
+int status;
 {
 	message m;
 
@@ -414,6 +348,33 @@ PRIVATE void reply(int code, int replyee, int process, int status)
 
 	send(replyee, &m);
 }
+
+
+/*===========================================================================*
+ *				init_buffer
+ *===========================================================================*/
+PRIVATE void init_buffer()
+{
+/* Select a buffer that can safely be used for dma transfers.  
+ * Its absolute address is 'DmaPhys', the normal address is 'DmaPtr'.
+ */
+
+#if (CHIP == INTEL)
+	unsigned left;
+
+	DmaPtr = DmaBuffer;
+	sys_umap(SELF, D, (vir_bytes)DmaBuffer, (phys_bytes)sizeof(DmaBuffer), &DmaPhys);
+
+	if((left = dma_bytes_left(DmaPhys)) < DMA_SIZE) {
+		/* First half of buffer crosses a 64K boundary, can't DMA into that */
+		DmaPtr += left;
+		DmaPhys += left;
+	}
+#else /* CHIP != INTEL */
+	panic("SB16DSP","init_buffer() failed, CHIP != INTEL", 0);
+#endif /* CHIP == INTEL */
+}
+
 
 /*===========================================================================*
  *				dsp_init
@@ -454,9 +415,9 @@ PRIVATE int dsp_init()
 
 	/* register interrupt vector and enable irq */
 	if ((s=sys_irqsetpolicy(SB_IRQ, IRQ_REENABLE, &irq_hook_id )) != OK)
-  		panic("Couldn't set IRQ policy: %d", s);
+  		panic("SB16DSP", "Couldn't set IRQ policy", s);
 	if ((s=sys_irqenable(&irq_hook_id)) != OK)
-  		panic("Couldn't enable IRQ: %d", s);
+  		panic("SB16DSP", "Couldn't enable IRQ", s);
 
 	DspAvail = 1;
 	return OK;
@@ -487,9 +448,10 @@ PRIVATE int dsp_reset()
 /*===========================================================================*
  *				dsp_command
  *===========================================================================*/
-PRIVATE int dsp_command(int value)
+PRIVATE int dsp_command(value)
+int value;
 {
-	int i;
+	int i, status;
 
 	for (i = 0; i < SB_TIMEOUT; i++) {
 		if((sb16_inb(DSP_STATUS) & 0x80) == 0) {
@@ -506,7 +468,8 @@ PRIVATE int dsp_command(int value)
 /*===========================================================================*
  *				dsp_set_size
  *===========================================================================*/
-static int dsp_set_size(unsigned int size)
+static int dsp_set_size(size)
+unsigned int size;
 {
 	dprint("dsp_set_size(): set fragment size to %u\n", size);
 
@@ -524,7 +487,8 @@ static int dsp_set_size(unsigned int size)
 /*===========================================================================*
  *				dsp_set_speed
  *===========================================================================*/
-static int dsp_set_speed(unsigned int speed)
+static int dsp_set_speed(speed)
+unsigned int speed;
 {
 	dprint("sb16: setting speed to %u, stereo = %d\n", speed, DspStereo);
 
@@ -555,7 +519,8 @@ static int dsp_set_speed(unsigned int speed)
 /*===========================================================================*
  *				dsp_set_stereo
  *===========================================================================*/
-static int dsp_set_stereo(unsigned int stereo)
+static int dsp_set_stereo(stereo)
+unsigned int stereo;
 {
 	if(stereo) { 
 		DspStereo = 1;
@@ -570,7 +535,8 @@ static int dsp_set_stereo(unsigned int stereo)
 /*===========================================================================*
  *				dsp_set_bits
  *===========================================================================*/
-static int dsp_set_bits(unsigned int bits)
+static int dsp_set_bits(bits)
+unsigned int bits;
 {
 	/* Sanity checks */
 	if(bits != 8 && bits != 16) {
@@ -586,7 +552,8 @@ static int dsp_set_bits(unsigned int bits)
 /*===========================================================================*
  *				dsp_set_sign
  *===========================================================================*/
-static int dsp_set_sign(unsigned int sign)
+static int dsp_set_sign(sign)
+unsigned int sign;
 {
 	dprint("sb16: set sign to %u\n", sign);
 
@@ -599,7 +566,9 @@ static int dsp_set_sign(unsigned int sign)
 /*===========================================================================*
  *				dsp_dma_setup
  *===========================================================================*/
-PRIVATE void dsp_dma_setup(phys_bytes address, int count)
+PRIVATE void dsp_dma_setup(address, count)
+phys_bytes address;
+int count;
 {
 	pvb_pair_t pvb[9];
 

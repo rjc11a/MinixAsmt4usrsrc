@@ -1,2 +1,0 @@
-
-doshead.o:	doshead.s

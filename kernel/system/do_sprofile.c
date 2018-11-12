@@ -13,19 +13,19 @@
  *   14 Aug, 2006   Created (Rogier Meurs)
  */
 
-#include "kernel/system.h"
+#include "../system.h"
 
 #if SPROFILE
-
-/* user address to write info struct */
-PRIVATE vir_bytes sprof_info_addr_vir;
 
 /*===========================================================================*
  *				do_sprofile				     *
  *===========================================================================*/
-PUBLIC int do_sprofile(struct proc * caller, message * m_ptr)
+PUBLIC int do_sprofile(m_ptr)
+register message *m_ptr;    /* pointer to request message */
 {
-  int proc_nr;
+  int proc_nr, i;
+  vir_bytes vir_dst;
+  phys_bytes length;
 
   switch(m_ptr->PROF_ACTION) {
 
@@ -37,18 +37,19 @@ PUBLIC int do_sprofile(struct proc * caller, message * m_ptr)
 	 * Turn on profiling.
 	 */
 	if (sprofiling) {
-		printf("SYSTEM: start s-profiling: already started\n");
+		kprintf("SYSTEM: start s-profiling: already started\n");
 		return EBUSY;
 	}
 
-	/* Test endpoint number. */
-	if(!isokendpt(m_ptr->PROF_ENDPT, &proc_nr))
-		return EINVAL;
+	isokendpt(m_ptr->PROF_ENDPT, &proc_nr);
 
-	/* Set parameters for statistical profiler. */
-	sprof_ep = m_ptr->PROF_ENDPT;
-	sprof_info_addr_vir = (vir_bytes) m_ptr->PROF_CTL_PTR;
-	sprof_data_addr_vir = (vir_bytes) m_ptr->PROF_MEM_PTR;
+	vir_dst = (vir_bytes) m_ptr->PROF_CTL_PTR;
+	length = (phys_bytes) sizeof (int *);
+	sprof_info_addr = numap_local(proc_nr, vir_dst, length);
+
+	vir_dst = (vir_bytes) m_ptr->PROF_MEM_PTR;
+	length = (phys_bytes) sizeof (char *);
+	sprof_data_addr = numap_local(proc_nr, vir_dst, length);
 
 	sprof_info.mem_used = 0;
 	sprof_info.total_samples = 0;
@@ -71,7 +72,7 @@ PUBLIC int do_sprofile(struct proc * caller, message * m_ptr)
 	 * Stop CMOS timer.  Copy info struct to user process.
 	 */
 	if (!sprofiling) {
-		printf("SYSTEM: stop s-profiling: not started\n");
+		kprintf("SYSTEM: stop s-profiling: not started\n");
 		return EBUSY;
 	}
 
@@ -79,8 +80,8 @@ PUBLIC int do_sprofile(struct proc * caller, message * m_ptr)
 
 	stop_profile_clock();
 
-	data_copy(KERNEL, (vir_bytes) &sprof_info,
-		sprof_ep, sprof_info_addr_vir, sizeof(sprof_info));
+	phys_copy(vir2phys((vir_bytes) &sprof_info),
+		sprof_info_addr, (phys_bytes) sizeof(sprof_info));
 
   	return OK;
 

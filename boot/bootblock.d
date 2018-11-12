@@ -1,2 +1,0 @@
-
-bootblock.o:	bootblock.s

@@ -23,13 +23,12 @@
 #define MAX_ERROR	4
 #define ITERATIONS      2
 
-#include "common.c"
-
 #define DIRENT0		((struct dirent *) NULL)
 
 #define System(cmd)	if (system(cmd) != 0) printf("``%s'' failed\n", cmd)
 #define Chdir(dir)	if (chdir(dir) != 0) printf("Can't goto %s\n", dir)
 
+int errct = 0;
 int subtest = 1;
 int superuser;
 char MaxName[NAME_MAX + 1];	/* Name of maximum length */
@@ -37,20 +36,29 @@ char MaxPath[PATH_MAX];
 char ToLongName[NAME_MAX + 2];	/* Name of maximum +1 length */
 char ToLongPath[PATH_MAX + 1];
 
+_PROTOTYPE(void main, (int argc, char *argv[]));
 _PROTOTYPE(void test28a, (void));
 _PROTOTYPE(void test28c, (void));
 _PROTOTYPE(void test28b, (void));
 _PROTOTYPE(void makelongnames, (void));
+_PROTOTYPE(void e, (int n));
+_PROTOTYPE(void quit, (void));
 
-int main(int argc, char *argv[])
+void main(argc, argv)
+int argc;
+char *argv[];
 {
   int i, m = 0xFFFF;
 
   sync();
   if (argc == 2) m = atoi(argv[1]);
-  start(28);
+  printf("Test 28 ");
+  fflush(stdout);
   superuser = (getuid() == 0);
   makelongnames();
+  system("chmod 777 DIR_28/* DIR_28/*/* > /dev/null 2>&1");
+  System("rm -rf DIR_28; mkdir DIR_28");
+  Chdir("DIR_28");
   umask(0000);			/* no umask */
 
   for (i = 0; i < ITERATIONS; i++) {
@@ -59,7 +67,6 @@ int main(int argc, char *argv[])
 	if (m & 0004) test28c();
   }
   quit();
-  return 1;
 }
 
 void test28a()
@@ -163,11 +170,10 @@ void test28b()
   struct dirent *dep;
   int fd;			/* file descriptor */
   int other = 0, dot = 0, dotdot = 0;	/* dirent counters */
-  int r;			/* Intermediate result */
   int rmdir_result;		/* tmp var */
   nlink_t nlink;
   static char bar[20];
-  int stat_loc, does_truncate;
+  int stat_loc;
 
   subtest = 2;
 
@@ -191,25 +197,16 @@ void test28b()
   if (rmdir(MaxPath) != 0) e(12);	/* ok */
 
   /* Test too long path ed. */
-  does_truncate = does_fs_truncate();
-  r =  mkdir(ToLongName, 0777);
-  if (does_truncate ) {
-  	/* FS truncates names, mkdir should've worked */
-  	if (r != 0) e(13);	/* Try ToLongName */
-	if (rmdir(ToLongName) != 0) e(14);	/* and remove it */
-  } else {
-  	/* Too long, should've failed with ENAMETOOLONG */
-  	if (r == 0) e(15);
-  	if (errno != ENAMETOOLONG) e(16);
-  }
+  if (mkdir(ToLongName, 0777) != 0) e(17);	/* Try ToLongName */
+  if (rmdir(ToLongName) != 0) e(18);	/* and remove it */
   ToLongPath[strlen(ToLongPath) - 2] = '/';	/* make ToLongPath */
   ToLongPath[strlen(ToLongPath) - 1] = 'a';	/* contain ././.../a */
-  if (mkdir(ToLongPath, 0777) != -1) e(17);	/* it should */
-  if (errno != ENAMETOOLONG) e(18);	/* not be ok */
-  if (rmdir(ToLongPath) != -1) e(19);
-  if (errno != ENAMETOOLONG) e(20);
+  if (mkdir(ToLongPath, 0777) != -1) e(19);	/* it should */
+  if (errno != ENAMETOOLONG) e(20);	/* not be ok */
+  if (rmdir(ToLongPath) != -1) e(21);
+  if (errno != ENAMETOOLONG) e(22);
 
-  if (mkdir("foo", 0777) != 0) e(21);
+  if (mkdir("foo", 0777) != 0) e(23);
   System("touch foo/xyzzy");
 #if 0
   /* Test what happens if the parent link count > LINK_MAX. */
@@ -237,14 +234,12 @@ void test28b()
   if (unlink("foo/empty") != 0) e(34);	/* rm empty */
 
   /* See what happens if foo is linked. */
-#if 0
   if (superuser) {
 	if (link("foo", "footoo") != 0) e(35);	/* foo still */
 	if (rmdir("footoo") != 0) e(36);	/* exist */
 	if (chdir("footoo") != -1) e(37);	/* footoo */
 	if (errno != ENOENT) e(38);	/* is gone */
   }
-#endif
 #ifdef _MINIX
   /* Some implementations might allow users to link directories. */
   if (!superuser) {
@@ -411,3 +406,33 @@ void makelongnames()
   ToLongPath[PATH_MAX] = '\0';	/* inc ToLongPath by one */
 }
 
+void e(n)
+int n;
+{
+  int err_num = errno;		/* Save in case printf clobbers it. */
+
+  printf("Subtest %d,  error %d  errno=%d: ", subtest, n, errno);
+  errno = err_num;
+  perror("");
+  if (errct++ > MAX_ERROR) {
+	printf("Too many errors; test aborted\n");
+	chdir("..");
+	system("rm -rf DIR*");
+	exit(1);
+  }
+  errno = 0;
+}
+
+void quit()
+{
+  Chdir("..");
+  System("rm -rf DIR_28");
+
+  if (errct == 0) {
+	printf("ok\n");
+	exit(0);
+  } else {
+	printf("%d errors\n", errct);
+	exit(1);
+  }
+}

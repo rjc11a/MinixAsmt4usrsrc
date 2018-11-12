@@ -1,13 +1,40 @@
 # Makefile for log driver
-PROG=	log
-SRCS=	log.c diag.c liveupdate.c
+DRIVER = log
 
-DPADD+=	${LIBDRIVER} ${LIBSYS}
-LDADD+=	-ldriver -lsys
+# directories
+u = /usr
+i = $u/include
+s = $i/sys
+m = $i/minix
+d = ..
 
-MAN=
+# programs, flags, etc.
+MAKE = exec make
+CC =	exec cc
+CFLAGS = -I$i $(CPROFILE)
+LDFLAGS = -i -L../libdriver
+LIBS = -lsysutil -ldriver  -lsys
 
-BINDIR?= /usr/sbin
-INSTALLFLAGS+=	-S 32k
+OBJ = log.o diag.o kputc.o
 
-.include <bsd.prog.mk>
+# build local binary
+all build:	$(DRIVER)
+$(DRIVER):	$(OBJ)
+	$(CC) -o $@ $(LDFLAGS) $(OBJ) $(LIBS)
+	install -S 16kb $(DRIVER)
+
+# install with other drivers
+install:	$(DRIVER)
+	install -o root -cs $? /sbin/$(DRIVER) 
+
+# clean up local files
+clean:
+	rm -f $(DRIVER) *.o *.bak 
+
+
+depend: 
+	mkdep "$(CC) -E $(CPPFLAGS)" *.c ../libdriver/*.c > .depend
+
+# Include generated dependencies.
+include .depend
+

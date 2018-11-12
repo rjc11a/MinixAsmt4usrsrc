@@ -4,18 +4,21 @@
  * corresponding dump procedure is called.  
  *
  * The entry points into this file are
- *   map_unmap_fkeys:	register or unregister function key maps with TTY
- *   do_fkey_pressed:	handle a function key pressed notification
+ *   handle_fkey:	handle a function key pressed notification
  */
 
 #include "inc.h"
-#include <minix/vm.h>
+
+/* Define hooks for the debugging dumps. This table maps function keys
+ * onto a specific dump and provides a description for it.
+ */
+#define NHOOKS 18
 
 struct hook_entry {
 	int key;
 	void (*function)(void);
 	char *name;
-} hooks[] = {
+} hooks[NHOOKS] = {
 	{ F1, 	proctab_dmp, "Kernel process table" },
 	{ F2,   memmap_dmp, "Process memory maps" },
 	{ F3,	image_dmp, "System image" },
@@ -23,7 +26,7 @@ struct hook_entry {
 	{ F5,	monparams_dmp, "Boot monitor parameters" },
 	{ F6,	irqtab_dmp, "IRQ hooks and policies" },
 	{ F7,	kmessages_dmp, "Kernel messages" },
-	{ F8,	vm_dmp, "VM status and process maps" },
+	{ F9,	sched_dmp, "Scheduling queues" },
 	{ F10,	kenv_dmp, "Kernel parameters" },
 	{ F11,	timing_dmp, "Timing details (if enabled)" },
 	{ SF1,	mproc_dmp, "Process manager process table" },
@@ -32,39 +35,9 @@ struct hook_entry {
 	{ SF4,	dtab_dmp, "Device/Driver mapping" },
 	{ SF5,	mapping_dmp, "Print key mappings" },
 	{ SF6,	rproc_dmp, "Reincarnation server process table" },
+	{ SF7,  holes_dmp, "Memory free list" },
 	{ SF8,  data_store_dmp, "Data store contents" },
-	{ SF9,  procstack_dmp, "Processes with stack traces" },
 };
-
-/* Define hooks for the debugging dumps. This table maps function keys
- * onto a specific dump and provides a description for it.
- */
-#define NHOOKS (sizeof(hooks)/sizeof(hooks[0]))
-
-/*===========================================================================*
- *				map_unmap_keys				     *
- *===========================================================================*/
-PUBLIC void map_unmap_fkeys(map)
-int map;
-{
-  int fkeys, sfkeys;
-  int h, s;
-
-  fkeys = sfkeys = 0;
-
-  for (h = 0; h < NHOOKS; h++) {
-      if (hooks[h].key >= F1 && hooks[h].key <= F12) 
-          bit_set(fkeys, hooks[h].key - F1 + 1);
-      else if (hooks[h].key >= SF1 && hooks[h].key <= SF12)
-          bit_set(sfkeys, hooks[h].key - SF1 + 1);
-  }
-
-  if (map) s = fkey_map(&fkeys, &sfkeys);
-  else s = fkey_unmap(&fkeys, &sfkeys);
-
-  if (s != OK)
-	printf("IS: warning, fkey_ctl failed: %d\n", s);
-}
 
 /*===========================================================================*
  *				handle_fkey				     *
@@ -82,7 +55,7 @@ message *m;					/* notification message */
   m->m_type = FKEY_CONTROL;
   m->FKEY_REQUEST = FKEY_EVENTS;
   if (OK != (s=sendrec(TTY_PROC_NR, m)))
-      printf("IS: warning, sendrec to TTY failed: %d\n", s);
+      report("IS", "warning, sendrec to TTY failed", s);
 
   /* Now check which keys were pressed: F1-F12, SF1-SF12. */
   for(h=0; h < NHOOKS; h++)
@@ -126,3 +99,4 @@ PUBLIC void mapping_dmp(void)
       printf(" %10s.  %s\n", key_name(hooks[h].key), hooks[h].name);
   printf("\n");
 }
+

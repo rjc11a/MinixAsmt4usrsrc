@@ -7,7 +7,7 @@ specific code, the rest is in dp8390.c
 Created:	March 15, 1994 by Philip Homburg <philip@f-mnx.phicoh.com>
 */
 
-#include <minix/drivers.h>
+#include "../drivers.h"
 
 #include <net/gen/ether.h>
 #include <net/gen/eth_io.h>
@@ -23,16 +23,14 @@ Created:	March 15, 1994 by Philip Homburg <philip@f-mnx.phicoh.com>
 
 #define N 100
 
-extern u32_t system_hz;
-
-#define MILLIS_TO_TICKS(m)  (((m)*system_hz/1000)+1)
+#define MILLIS_TO_TICKS(m)  (((m)*HZ/1000)+1)
 
 _PROTOTYPE( typedef int (*testf_t), (dpeth_t *dep, int pos, u8_t *pat)	);
 
-PRIVATE u8_t	pat0[]= { 0x00, 0x00, 0x00, 0x00 };
-PRIVATE u8_t	pat1[]= { 0xFF, 0xFF, 0xFF, 0xFF };
-PRIVATE u8_t	pat2[]= { 0xA5, 0x5A, 0x69, 0x96 };
-PRIVATE u8_t	pat3[]= { 0x96, 0x69, 0x5A, 0xA5 };
+u8_t	pat0[]= { 0x00, 0x00, 0x00, 0x00 };
+u8_t	pat1[]= { 0xFF, 0xFF, 0xFF, 0xFF };
+u8_t	pat2[]= { 0xA5, 0x5A, 0x69, 0x96 };
+u8_t	pat3[]= { 0x96, 0x69, 0x5A, 0xA5 };
 
 _PROTOTYPE( static int test_8, (dpeth_t *dep, int pos, u8_t *pat)	);
 _PROTOTYPE( static int test_16, (dpeth_t *dep, int pos, u8_t *pat)	);
@@ -42,7 +40,8 @@ _PROTOTYPE( static void milli_delay, (unsigned long millis)		);
 /*===========================================================================*
  *				ne_probe				     *
  *===========================================================================*/
-int ne_probe(dpeth_t *dep)
+int ne_probe(dep)
+dpeth_t *dep;
 {
 	int byte;
 	int i;

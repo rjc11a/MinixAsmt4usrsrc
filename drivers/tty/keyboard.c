@@ -6,7 +6,7 @@
  *   Feb 04, 1994   loadable keymaps  (Marcus Hampel)
  */
 
-#include <minix/drivers.h>
+#include "../drivers.h"
 #include <sys/ioctl.h>
 #include <sys/kbdio.h>
 #include <sys/time.h>
@@ -14,26 +14,19 @@
 #include <termios.h>
 #include <signal.h>
 #include <unistd.h>
-#include <machine/archtypes.h>
+#include <archtypes.h>
 #include <minix/callnr.h>
 #include <minix/com.h>
 #include <minix/keymap.h>
 #include "tty.h"
-#include "kernel/const.h"
-#include "kernel/config.h"
-#include "kernel/type.h"
-#include "kernel/proc.h"
-
-PRIVATE u16_t keymap[NR_SCAN_CODES * MAP_COLS] = {
 #include "keymaps/us-std.src"
-};
+#include "../../kernel/const.h"
+#include "../../kernel/config.h"
+#include "../../kernel/type.h"
+#include "../../kernel/proc.h"
 
-PRIVATE u16_t keymap_escaped[NR_SCAN_CODES * MAP_COLS] = {
-#include "keymaps/us-std-esc.src"
-};
-
-PRIVATE int irq_hook_id = -1;
-PRIVATE int aux_irq_hook_id = -1;
+int irq_hook_id = -1;
+int aux_irq_hook_id = -1;
 
 /* Standard and AT keyboard.  (PS/2 MCA implies AT throughout.) */
 #define KEYBD		0x60	/* I/O port for keyboard data */
@@ -72,6 +65,8 @@ PRIVATE int aux_irq_hook_id = -1;
 				 * keyboard.
 				 */
 
+#define MICROS_TO_TICKS(m)  (((m)*HZ/1000000)+1)
+
 #define CONSOLE		   0	/* line number for console */
 #define KB_IN_BYTES	  32	/* size of keyboard input buffer */
 PRIVATE char ibuf[KB_IN_BYTES];	/* input buffer */
@@ -92,21 +87,15 @@ PRIVATE int shift;		/* either shift key */
 PRIVATE int num_down;		/* num lock key depressed */
 PRIVATE int caps_down;		/* caps lock key depressed */
 PRIVATE int scroll_down;	/* scroll lock key depressed */
-PRIVATE int alt_down;	        /* alt key depressed */
 PRIVATE int locks[NR_CONS];	/* per console lock keys state */
 
 /* Lock key active bits.  Chosen to be equal to the keyboard LED bits. */
 #define SCROLL_LOCK	0x01
 #define NUM_LOCK	0x02
 #define CAPS_LOCK	0x04
-#define ALT_LOCK	0x08
 
 PRIVATE char numpad_map[] =
 		{'H', 'Y', 'A', 'B', 'D', 'C', 'V', 'U', 'G', 'S', 'T', '@'};
-
-PRIVATE char *fkey_map[] =
-		{"11", "12", "13", "14", "15", "17",	/* F1-F6 */
-		 "18", "19", "20", "21", "23", "24"};	/* F7-F12 */
 
 /* Variables and definition for observed function keys. */
 typedef struct observer { int proc_nr; int events; } obs_t;
@@ -143,8 +132,6 @@ PRIVATE struct kbd_outack
 
 PRIVATE int kbd_watchdog_set= 0;
 PRIVATE int kbd_alive= 1;
-PRIVATE long sticky_alt_mode = 0;
-PRIVATE long debug_fkeys = 1;
 PRIVATE timer_t tmr_kbd_wd;
 
 FORWARD _PROTOTYPE( void handle_req, (struct kbd *kbdp, message *m)	);
@@ -162,14 +149,8 @@ FORWARD _PROTOTYPE( void set_leds, (void) 				);
 FORWARD _PROTOTYPE( void show_key_mappings, (void) 			);
 FORWARD _PROTOTYPE( int kb_read, (struct tty *tp, int try) 		);
 FORWARD _PROTOTYPE( unsigned map_key, (int scode) 			);
+FORWARD _PROTOTYPE( void micro_delay, (unsigned long usecs)		);
 FORWARD _PROTOTYPE( void kbd_watchdog, (timer_t *tmrp)			);
-
-int micro_delay(u32_t usecs)
-{
-	/* TTY can't use the library micro_delay() as that calls PM. */
-	tickdelay(micros_to_ticks(usecs));
-	return OK;
-}
 
 /*===========================================================================*
  *				do_kbd					     *
@@ -259,7 +240,7 @@ message *m;
 		if (kbdp->offset + n > KBD_BUFSZ)
 			n= KBD_BUFSZ-kbdp->offset;
 		if (n <= 0)
-			panic("do_kbd(READ): bad n: %d", n);
+			panic("TTY", "do_kbd(READ): bad n", n);
 		if(safecopy) {
 		  r= sys_safecopyto(m->IO_ENDPT, (vir_bytes) m->ADDRESS, 0, 
 			(vir_bytes) &kbdp->buf[kbdp->offset], n, D);
@@ -388,8 +369,8 @@ message *m;
 			if (r != OK)
 				break;
 
-			ticks= bell.kb_duration.tv_usec * system_hz / 1000000;
-			ticks += bell.kb_duration.tv_sec * system_hz;
+			ticks= bell.kb_duration.tv_usec * HZ / 1000000;
+			ticks += bell.kb_duration.tv_sec * HZ;
 			if (!ticks)
 				ticks++;
 			beep_x(bell.kb_pitch, ticks);
@@ -427,7 +408,7 @@ message *m;
 		if (kbdp->offset + n > KBD_BUFSZ)
 			n= KBD_BUFSZ-kbdp->offset;
 		if (n <= 0)
-			panic("kbd_status: bad n: %d", n);
+			panic("TTY", "kbd_status: bad n", n);
 		kbdp->req_size= 0;
 		if(kbdp->req_safe) {
 		  r= sys_safecopyto(kbdp->req_proc, kbdp->req_addr_g, 0,
@@ -465,6 +446,13 @@ message *m;
 
 
 /*===========================================================================*
+ *				map_key0				     *
+ *===========================================================================*/
+/* Map a scan code to an ASCII code ignoring modifiers. */
+#define map_key0(scode)	 \
+	((unsigned) keymap[(scode) * MAP_COLS])
+
+/*===========================================================================*
  *				map_key					     *
  *===========================================================================*/
 PRIVATE unsigned map_key(scode)
@@ -475,10 +463,9 @@ int scode;
   int caps, column, lk;
   u16_t *keyrow;
 
-  if(esc)
-	  keyrow = &keymap_escaped[scode * MAP_COLS];
-  else
-	  keyrow = &keymap[scode * MAP_COLS];
+  if (scode == SLASH_SCAN && esc) return '/';	/* don't map numeric slash */
+
+  keyrow = &keymap[scode * MAP_COLS];
 
   caps = shift;
   lk = locks[ccurrent];
@@ -490,14 +477,9 @@ int scode;
 	if (ctrl || alt_r) column = 3;	/* Ctrl + Alt == AltGr */
 	if (caps) column = 4;
   } else {
-	if (sticky_alt_mode && (lk & ALT_LOCK)) {
-		column = 2;
-		if (caps) column = 4;
-        } else {
-		column = 0;
-		if (caps) column = 1;
-		if (ctrl) column = 5;
-        }
+	column = 0;
+	if (caps) column = 1;
+	if (ctrl) column = 5;
   }
   return keyrow[column] & ~HASCAPS;
 }
@@ -512,6 +494,7 @@ message *m_ptr;
   int o, isaux;
   unsigned char scode;
   struct kbd *kbdp;
+  static timer_t timer;		/* timer must be static! */
 
   /* Fetch the character from the keyboard hardware and acknowledge it. */
   if (!scan_keyboard(&scode, &isaux))
@@ -519,7 +502,7 @@ message *m_ptr;
 
   if (isaux)
 	kbdp= &kbdaux;
-  else if (kbd.nr_open)
+  else if (kbd.nr_open && !panicing)
 	kbdp= &kbd;
   else
 	kbdp= NULL;
@@ -566,7 +549,7 @@ tty_t *tp;
 int try;
 {
 /* Process characters from the circular keyboard buffer. */
-  char buf[7], *p, suffix;
+  char buf[3];
   int scode;
   unsigned ch;
 
@@ -582,8 +565,8 @@ int try;
 	if (itail == ibuf + KB_IN_BYTES) itail = ibuf;
 	icount--;
 
-	/* Function keys are being used for debug dumps (if enabled). */
-	if (debug_fkeys && func_key(scode)) continue;
+	/* Function keys are being used for debug dumps. */
+	if (func_key(scode)) continue;
 
 	/* Perform make/break processing. */
 	ch = make_break(scode);
@@ -591,42 +574,14 @@ int try;
 	if (ch <= 0xFF) {
 		/* A normal character. */
 		buf[0] = ch;
-		(void) in_process(tp, buf, 1, scode);
+		(void) in_process(tp, buf, 1);
 	} else
 	if (HOME <= ch && ch <= INSRT) {
 		/* An ASCII escape sequence generated by the numeric pad. */
 		buf[0] = ESC;
 		buf[1] = '[';
 		buf[2] = numpad_map[ch - HOME];
-		(void) in_process(tp, buf, 3, scode);
-	} else
-	if ((F1 <= ch && ch <= F12) || (SF1 <= ch && ch <= SF12) ||
-				(CF1 <= ch && ch <= CF12 && !debug_fkeys)) {
-		/* An escape sequence generated by function keys. */
-		if (F1 <= ch && ch <= F12) {
-			ch -= F1;
-			suffix = 0;
-		} else
-		if (SF1 <= ch && ch <= SF12) {
-			ch -= SF1;
-			suffix = '2';
-		} else
-		if (CF1 <= ch && ch <= CF12) {
-			ch -= CF1;
-			suffix = shift ? '6' : '5';
-		}
-		/* ^[[11~ for F1, ^[[24;5~ for CF12 etc */
-		buf[0] = ESC;
-		buf[1] = '[';
-		buf[2] = fkey_map[ch][0];
-		buf[3] = fkey_map[ch][1];
-		p = &buf[4];
-		if (suffix) {
-			*p++ = ';';
-			*p++ = suffix;
-		}
-		*p++ = '~';
-		(void) in_process(tp, buf, p - buf, scode);
+		(void) in_process(tp, buf, 3);
 	} else
 	if (ch == ALEFT) {
 		/* Choose lower numbered console as current console. */
@@ -647,13 +602,10 @@ int try;
 	    switch(ch) {
   		case CF1: show_key_mappings(); break; 
   		case CF3: toggle_scroll(); break; /* hardware <-> software */	
-  		case CF7: sigchar(&tty_table[CONSOLE], SIGQUIT, 1); break;
-  		case CF8: sigchar(&tty_table[CONSOLE], SIGINT, 1); break;
-  		case CF9: sigchar(&tty_table[CONSOLE], SIGKILL, 1); break;
+  		case CF7: sigchar(&tty_table[CONSOLE], SIGQUIT); break;
+  		case CF8: sigchar(&tty_table[CONSOLE], SIGINT); break;
+  		case CF9: sigchar(&tty_table[CONSOLE], SIGKILL); break;
   	    }
-	} else {
-		/* pass on scancode even though there is no character code */
-		(void) in_process(tp, NULL, 0, scode);
 	}
   }
 
@@ -679,7 +631,7 @@ PRIVATE void kbd_send()
 	}
 	if (sb & (KB_OUT_FULL|KB_IN_FULL))
 	{
-		printf("not sending 1: sb = 0x%lx\n", sb);
+		printf("not sending 1: sb = 0x%x\n", sb);
 		return;
 	}
 	micro_delay(KBC_IN_DELAY);
@@ -688,7 +640,7 @@ PRIVATE void kbd_send()
 	}
 	if (sb & (KB_OUT_FULL|KB_IN_FULL))
 	{
-		printf("not sending 2: sb = 0x%lx\n", sb);
+		printf("not sending 2: sb = 0x%x\n", sb);
 		return;
 	}
 
@@ -706,9 +658,18 @@ PRIVATE void kbd_send()
 	kbd_alive= 1;
 	if (kbd_watchdog_set)
 	{
-		/* Set a watchdog timer for one second. */
-		set_timer(&tmr_kbd_wd, system_hz, kbd_watchdog, 0);
-
+		/* Add a timer to the timers list. Possibly reschedule the
+		 * alarm.
+		 */
+		if ((r= getuptime(&now)) != OK)
+			panic("TTY","Keyboard couldn't get clock's uptime.", r);
+		tmrs_settimer(&tty_timers, &tmr_kbd_wd, now+HZ, kbd_watchdog,
+			NULL);
+		if (tty_timers->tmr_exp_time != tty_next_timeout) {
+			tty_next_timeout = tty_timers->tmr_exp_time;
+			if ((r= sys_setalarm(tty_next_timeout, 1)) != OK)
+				panic("TTY","Keyboard couldn't set alarm.", r);
+		}
 		kbd_watchdog_set= 1;
 	 }
 }
@@ -725,7 +686,6 @@ int scode;			/* scan code of key just struck or released */
  */
   int ch, make, escape;
   static int CAD_count = 0;
-  static int rebooting = 0;
 
   /* Check for CTRL-ALT-DEL, and if found, halt the computer. This would
    * be better done in keyboard() in case TTY is hung, except control and
@@ -735,14 +695,11 @@ int scode;			/* scan code of key just struck or released */
   {
 	if (++CAD_count == 3) {
 		cons_stop();
-		sys_abort(RBT_DEFAULT);
+		sys_abort(RBT_HALT);
 	}
 	sys_kill(INIT_PROC_NR, SIGABRT);
-	rebooting = 1;
+	return -1;
   }
-  
-   if(rebooting)
-  	return -1;
 
   /* High-order bit set on key release. */
   make = (scode & KEY_RELEASE) == 0;		/* true if pressed */
@@ -764,10 +721,6 @@ int scode;			/* scan code of key just struck or released */
   	case ALT:		/* Left or right alt key */
 		*(escape ? &alt_r : &alt_l) = make;
 		alt = alt_l | alt_r;
-		if (sticky_alt_mode && (alt_r && (alt_down < make))) {
-			locks[ccurrent] ^= ALT_LOCK;
-		}
-		alt_down = make;
 		break;
   	case CALOCK:		/* Caps lock - toggle on 0 -> 1 transition */
 		if (caps_down < make) {
@@ -794,27 +747,7 @@ int scode;			/* scan code of key just struck or released */
 		esc = 1;		/* Next key is escaped */
 		return(-1);
   	default:		/* A normal key */
-		if(!make)
-			return -1;
-		if(ch)
-			return ch;
-		{
-			static char seen[2][NR_SCAN_CODES];
-			int notseen = 0, ei;
-			ei = escape ? 1 : 0;
-			if(scode >= 0 && scode < NR_SCAN_CODES) {
-				notseen = !seen[ei][scode];
-				seen[ei][scode] = 1;
-			} else {
-				printf("tty: scode %d makes no sense\n", scode);
-			}
-			if(notseen) {
-		  		printf("tty: ignoring unrecognized %s "
-					"scancode 0x%x\n",
-  				escape ? "escaped" : "straight", scode);
-			}
-		}
-  		return -1;
+		if (make) return(ch);
   }
 
   /* Key release, or a shift type key. */
@@ -888,7 +821,7 @@ PRIVATE int kbc_read()
 	/* Wait at most 1 second for a byte from the keyboard or
 	* the kbd controller, return -1 on a timeout.
 	*/
-	for (i= 0; i<1000000; i++)
+	for (i= 0; i<1000; i++)
  #if 0
 	micro_start(&ms);
 	do
@@ -902,7 +835,14 @@ PRIVATE int kbc_read()
 			if(sys_inb(KEYBD, &byte) != OK)
 				printf("kbc_read: 2 sys_inb failed\n");
 			if (st & KB_AUX_BYTE)
-				printf("kbc_read: aux byte 0x%x\n", byte);
+			{
+#if DEBUG
+				printf(
+		"keyboard`kbc_read: ignoring byte (0x%x) from aux device.\n",
+					byte);
+#endif
+				continue;
+			}
 #if DEBUG
 			printf("keyboard`kbc_read: returning byte 0x%x\n",
 				byte);
@@ -913,9 +853,9 @@ PRIVATE int kbc_read()
 #if 0
 	while (micro_elapsed(&ms) < 1000000);
 #endif
-	panic("kbc_read failed to complete");
-	return EINVAL;
+	panic("TTY", "kbc_read failed to complete", NO_NUM);
 }
+
 
 
 /*===========================================================================*
@@ -926,7 +866,7 @@ PRIVATE int kb_wait()
 /* Wait until the controller is ready; return zero if this times out. */
 
   int retries;
-  unsigned long status;
+  unsigned long status, temp;
   int s, isaux;
   unsigned char byte;
 
@@ -991,9 +931,6 @@ PUBLIC void kb_init_once(void)
   int i;
   u8_t ccb;
 
-  env_parse("sticky_alt", "d", 0, &sticky_alt_mode, 0, 1);
-  env_parse("debug_fkeys", "d", 0, &debug_fkeys, 0, 1);
-
   set_leds();			/* turn off numlock led */
   scan_keyboard(NULL, NULL);	/* discard leftover keystroke */
 
@@ -1011,18 +948,18 @@ PUBLIC void kb_init_once(void)
       /* Set interrupt handler and enable keyboard IRQ. */
       irq_hook_id = KEYBOARD_IRQ;	/* id to be returned on interrupt */
       if ((i=sys_irqsetpolicy(KEYBOARD_IRQ, IRQ_REENABLE, &irq_hook_id)) != OK)
-          panic("Couldn't set keyboard IRQ policy: %d", i);
+          panic("TTY",  "Couldn't set keyboard IRQ policy", i);
       if ((i=sys_irqenable(&irq_hook_id)) != OK)
-          panic("Couldn't enable keyboard IRQs: %d", i);
+          panic("TTY", "Couldn't enable keyboard IRQs", i);
       kbd_irq_set |= (1 << KEYBOARD_IRQ);
 
       /* Set AUX interrupt handler and enable AUX IRQ. */
       aux_irq_hook_id = KBD_AUX_IRQ;	/* id to be returned on interrupt */
       if ((i=sys_irqsetpolicy(KBD_AUX_IRQ, IRQ_REENABLE,
 		&aux_irq_hook_id)) != OK)
-          panic("Couldn't set AUX IRQ policy: %d", i);
+          panic("TTY",  "Couldn't set AUX IRQ policy", i);
       if ((i=sys_irqenable(&aux_irq_hook_id)) != OK)
-          panic("Couldn't enable AUX IRQs: %d", i);
+          panic("TTY", "Couldn't enable AUX IRQs", i);
       kbd_irq_set |= (1 << KBD_AUX_IRQ);
 
 	/* Disable the keyboard and aux */
@@ -1073,7 +1010,7 @@ message *m_ptr;			/* pointer to the request message */
  * notifications if it is pressed. At most one binding per key can exist.
  */
   int i; 
-  int result = EINVAL;
+  int result;
 
   switch (m_ptr->FKEY_REQUEST) {	/* see what we must do */
   case FKEY_MAP:			/* request for new mapping */
@@ -1157,6 +1094,8 @@ message *m_ptr;			/* pointer to the request message */
           }
       }
       break;
+  default:
+          result =  EINVAL;		/* key cannot be observed */
   }
 
   /* Almost done, return result to caller. */
@@ -1176,8 +1115,10 @@ int scode;			/* scan code for a function key */
  * in kb_init, where NONE is set to indicate there is no interest in the key.
  * Returns FALSE on a key release or if the key is not observable.
  */
+  message m;
   int key;
   int proc_nr;
+  int i,s;
 
   /* Ignore key releases. If this is a key press, get full key code. */
   if (scode & KEY_RELEASE) return(FALSE);	/* key release */
@@ -1204,6 +1145,7 @@ int scode;			/* scan code for a function key */
 
   /* See if an observer is registered and send it a message. */
   if (proc_nr != NONE) { 
+      m.NOTIFY_TYPE = FKEY_PRESSED;
       notify(proc_nr);
   }
   return(TRUE);
@@ -1224,20 +1166,18 @@ PRIVATE void show_key_mappings()
 
       printf(" %sF%d: ", i+1<10? " ":"", i+1);
       if (fkey_obs[i].proc_nr != NONE) {
-          if ((s = sys_getproc(&proc, fkey_obs[i].proc_nr))!=OK)
-              printf("%-14.14s", "<unknown>");
-          else
-              printf("%-14.14s", proc.p_name);
+          if ((s=sys_getproc(&proc, fkey_obs[i].proc_nr))!=OK)
+              printf("sys_getproc: %d\n", s);
+          printf("%-14.14s", proc.p_name);
       } else {
           printf("%-14.14s", "<none>");
       }
 
       printf("    %sShift-F%d: ", i+1<10? " ":"", i+1);
       if (sfkey_obs[i].proc_nr != NONE) {
-          if ((s = sys_getproc(&proc, sfkey_obs[i].proc_nr))!=OK)
-              printf("%-14.14s", "<unknown>");
-          else
-              printf("%-14.14s", proc.p_name);
+          if ((s=sys_getproc(&proc, sfkey_obs[i].proc_nr))!=OK)
+              printf("sys_getproc: %d\n", s);
+          printf("%-14.14s", proc.p_name);
       } else {
           printf("%-14.14s", "<none>");
       }
@@ -1255,6 +1195,22 @@ PRIVATE int scan_keyboard(bp, isauxp)
 unsigned char *bp;
 int *isauxp;
 {
+#if 0	/* Is this old XT code? It doesn't match the PS/2 hardware */
+/* Fetch the character from the keyboard hardware and acknowledge it. */
+  pvb_pair_t byte_in[2], byte_out[2];
+  
+  byte_in[0].port = KEYBD;	/* get the scan code for the key struck */
+  byte_in[1].port = PORT_B;	/* strobe the keyboard to ack the char */
+  if(sys_vinb(byte_in, 2) != OK)	/* request actual input */
+	printf("scan_keyboard: sys_vinb failed\n");
+
+  pv_set(byte_out[0], PORT_B, byte_in[1].value | KBIT); /* strobe bit high */
+  pv_set(byte_out[1], PORT_B, byte_in[1].value);	/* then strobe low */
+  if(sys_voutb(byte_out, 2) != OK)	/* request actual output */
+	printf("scan_keyboard: sys_voutb failed\n");
+
+  return(byte_in[0].value);		/* return scan code */
+#else
   unsigned long b, sb;
 
   if(sys_inb(KB_STATUS, &sb) != OK)
@@ -1291,6 +1247,12 @@ int *isauxp;
 	kbd_send();
   }
   return 1;
+#endif
+}
+
+static void micro_delay(unsigned long usecs)
+{
+	tickdelay(MICROS_TO_TICKS(usecs));
 }
 
 /*===========================================================================*
@@ -1311,7 +1273,14 @@ timer_t *tmrp;
 	}
 	kbd_alive= 0;
 
-	set_timer(&tmr_kbd_wd, system_hz, kbd_watchdog, 0);
-
+	if ((r= getuptime(&now)) != OK)
+		panic("TTY","Keyboard couldn't get clock's uptime.", r);
+	tmrs_settimer(&tty_timers, &tmr_kbd_wd, now+HZ, kbd_watchdog,
+		NULL);
+	if (tty_timers->tmr_exp_time != tty_next_timeout) {
+		tty_next_timeout = tty_timers->tmr_exp_time;
+		if ((r= sys_setalarm(tty_next_timeout, 1)) != OK)
+			panic("TTY","Keyboard couldn't set alarm.", r);
+	}
 	kbd_watchdog_set= 1;
 }

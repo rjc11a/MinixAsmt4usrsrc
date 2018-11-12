@@ -121,13 +121,12 @@ tcp_port_t *tcp_port;
 					tcp_mtu_exceeded(tcp_conn);
 					continue;
 				}
-				if (r == EHOSTUNREACH || r == ENETUNREACH ||
-					r == ENETDOWN)
+				if (r == EDSTNOTRCH)
 				{
-					tcp_notreach(tcp_conn, r);
+					tcp_notreach(tcp_conn);
 					continue;
 				}
-				if (r == EAFNOSUPPORT)
+				if (r == EBADDEST)
 					continue;
 			}
 			assert(r == NW_OK ||
@@ -162,8 +161,8 @@ PRIVATE acc_t *make_pack(tcp_conn)
 tcp_conn_t *tcp_conn;
 {
 	acc_t *pack2write, *tmp_pack, *tcp_pack;
-	tcp_hdr_t *tcp_hdr = NULL;
-	ip_hdr_t *ip_hdr = NULL;
+	tcp_hdr_t *tcp_hdr;
+	ip_hdr_t *ip_hdr;
 	int tot_hdr_size, ip_hdr_len, no_push, head, more2write;
 	u32_t seg_seq, seg_lo_data, queue_lo_data, seg_hi, seg_hi_data;
 	u16_t seg_up, mss;
@@ -495,8 +494,6 @@ after_data:
 			return NULL;
 		}
 
-		assert( tcp_hdr != NULL );
-		assert( ip_hdr != NULL );
 		tcp_hdr->th_seq_nr= htonl(seg_seq);
 		tcp_hdr->th_ack_nr= htonl(tcp_conn->tc_RCV_NXT);
 		tcp_hdr->th_flags= seg_flags;
@@ -530,18 +527,17 @@ after_data:
 tcp_release_retrans
 */
 
-PUBLIC void tcp_release_retrans(
-  tcp_conn_t *tcp_conn,
-  u32_t seg_ack,
-  u16_t new_win
-)
+PUBLIC void tcp_release_retrans(tcp_conn, seg_ack, new_win)
+tcp_conn_t *tcp_conn;
+u32_t seg_ack;
+u16_t new_win;
 {
 	tcp_fd_t *tcp_fd;
 	size_t size, offset;
 	acc_t *pack;
 	clock_t retrans_time, curr_time, rtt, artt, drtt, srtt;
 	u32_t queue_lo, queue_hi;
-	u16_t mss, cthresh, new_cthresh;
+	u16_t mss, cthresh;
 	unsigned window;
 
 	DBLOCK(0x10, printf("tcp_release_retrans, conn[%d]: ack %lu, win %u\n",
@@ -641,11 +637,9 @@ PUBLIC void tcp_release_retrans(
 	cthresh= tcp_conn->tc_snd_cthresh;
 	if (window > cthresh)
 	{
-		new_cthresh= cthresh + tcp_conn->tc_snd_cinc;
-		if (new_cthresh < cthresh)
-			new_cthresh= cthresh;		/* overflow */
-		tcp_conn->tc_snd_cthresh= new_cthresh;
-		window= new_cthresh;
+		cthresh += tcp_conn->tc_snd_cinc;
+		tcp_conn->tc_snd_cthresh= cthresh;
+		window= cthresh;
 	}
 
 	/* If the window is larger than the window advertised by the

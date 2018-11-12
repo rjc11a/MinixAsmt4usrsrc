@@ -7,9 +7,9 @@
  *
  */
 
-#include "kernel/system.h"
+#include "../system.h"
 #include <string.h>
-#include <machine/cpu.h>
+#include <signal.h>
 #include <sys/sigcontext.h>
 
 #if USE_SIGRETURN 
@@ -17,34 +17,34 @@
 /*===========================================================================*
  *			      do_sigreturn				     *
  *===========================================================================*/
-PUBLIC int do_sigreturn(struct proc * caller, message * m_ptr)
+PUBLIC int do_sigreturn(m_ptr)
+message *m_ptr;			/* pointer to request message */
 {
 /* POSIX style signals require sys_sigreturn to put things in order before 
  * the signalled process can resume execution
  */
   struct sigcontext sc;
   register struct proc *rp;
-  int proc_nr, r;
+  phys_bytes src_phys;
+  int proc;
 
-  if (! isokendpt(m_ptr->SIG_ENDPT, &proc_nr)) return(EINVAL);
-  if (iskerneln(proc_nr)) return(EPERM);
-  rp = proc_addr(proc_nr);
+  if (! isokendpt(m_ptr->SIG_ENDPT, &proc)) return(EINVAL);
+  if (iskerneln(proc)) return(EPERM);
+  rp = proc_addr(proc);
 
   /* Copy in the sigcontext structure. */
-  if((r=data_copy(m_ptr->SIG_ENDPT, (vir_bytes) m_ptr->SIG_CTXT_PTR,
-	KERNEL, (vir_bytes) &sc, sizeof(struct sigcontext))) != OK)
-	return r;
+  src_phys = umap_local(rp, D, (vir_bytes) m_ptr->SIG_CTXT_PTR,
+      (vir_bytes) sizeof(struct sigcontext));
+  if (src_phys == 0) return(EFAULT);
+  phys_copy(src_phys, vir2phys(&sc), (phys_bytes) sizeof(struct sigcontext));
 
-  /* Restore user bits of psw from sc, maintain system bits from proc. */
-  sc.sc_psw  =  (sc.sc_psw & X86_FLAGS_USER) |
-                (rp->p_reg.psw & ~X86_FLAGS_USER);
+  sc.sc_psw  = rp->p_reg.psw;
 
 #if (_MINIX_CHIP == _CHIP_INTEL)
   /* Don't panic kernel if user gave bad selectors. */
   sc.sc_cs = rp->p_reg.cs;
   sc.sc_ds = rp->p_reg.ds;
   sc.sc_es = rp->p_reg.es;
-  sc.sc_ss = rp->p_reg.ss;
 #if _WORD_SIZE == 4
   sc.sc_fs = rp->p_reg.fs;
   sc.sc_gs = rp->p_reg.gs;
@@ -52,21 +52,11 @@ PUBLIC int do_sigreturn(struct proc * caller, message * m_ptr)
 #endif
 
   /* Restore the registers. */
-  memcpy(&rp->p_reg, &sc.sc_regs, sizeof(sigregs));
-#if (_MINIX_CHIP == _CHIP_INTEL)
-  if(sc.sc_flags & MF_FPU_INITIALIZED)
-  {
-	memcpy(rp->p_fpu_state.fpu_save_area_p, &sc.sc_fpu_state,
-		FPU_XFP_SIZE);
-	rp->p_misc_flags |=  MF_FPU_INITIALIZED; /* Restore math usage flag. */
-	/* force reloading FPU */
-	if (fpu_owner == rp)
-		release_fpu();
-  }
+#if _MINIX_CHIP == _CHIP_POWERPC
+  memcpy(&rp->p_reg, &sc.sc_regs, sizeof(struct stackframe_s));
+#else
+  memcpy(&rp->p_reg, &sc.sc_regs, sizeof(struct sigregs));
 #endif
-
-  rp->p_misc_flags |= MF_CONTEXT_SET;
-
   return(OK);
 }
 #endif /* USE_SIGRETURN */

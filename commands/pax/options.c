@@ -579,13 +579,6 @@ pax_options(int argc, char **argv)
 	}
 }
 
-static void
-tar_set_action(int op)
-{
-	if (act != ERROR && act != op)
-		tar_usage();
-	act = op;
-}
 
 /*
  * tar_options()
@@ -632,7 +625,7 @@ tar_options(int argc, char **argv)
 			/*
 			 * create an archive
 			 */
-			tar_set_action(ARCHIVE);
+			act = ARCHIVE;
 			break;
 		case 'e':
 			/*
@@ -698,7 +691,7 @@ tar_options(int argc, char **argv)
 			/*
 			 * append to the archive
 			 */
-			tar_set_action(APPND);
+			act = APPND;
 			break;
 		case 's':
 			/*
@@ -713,7 +706,7 @@ tar_options(int argc, char **argv)
 			/*
 			 * list contents of the tape
 			 */
-			tar_set_action(LIST);
+			act = LIST;
 			break;
 		case 'v':
 			/*
@@ -732,7 +725,7 @@ tar_options(int argc, char **argv)
 			 * extract an archive, preserving mode,
 			 * and mtime if possible.
 			 */
-			tar_set_action(EXTRACT);
+			act = EXTRACT;
 			pmtime = 1;
 			break;
 		case 'z':
@@ -818,10 +811,6 @@ tar_options(int argc, char **argv)
 	}
 	argc -= optind;
 	argv += optind;
-
-	/* Tar requires an action. */
-	if (act == ERROR)
-		tar_usage();
 
 	/* Traditional tar behaviour (pax uses stderr unless in list mode) */
 	if (fstdin == 1 && act == ARCHIVE)

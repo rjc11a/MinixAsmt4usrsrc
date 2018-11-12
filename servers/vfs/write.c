@@ -6,6 +6,7 @@
  */
 
 #include "fs.h"
+#include <string.h>
 #include "file.h"
 #include "fproc.h"
 

@@ -128,6 +128,10 @@ struct regex {
 typedef struct regex REGEX;
 
 /* NULL definitions */
+#define NIL_PTR		((char *) 0)
+#define NIL_LINE	((LINE *) 0)
+#define NIL_REG		((REGEX *) 0)
+#define NIL_INT		((int *) 0)
 
 /*
  * Forward declarations
@@ -206,7 +210,7 @@ extern long chars_saved;		/* Nr of chars saved in buffer */
 /*
  * Move to coordinates and set textp. (Don't use address)
  */
-#define move_to(nx, ny)			move((nx), NULL, (ny))
+#define move_to(nx, ny)			move((nx), NIL_PTR, (ny))
 
 /*
  * Move to coordinates on screen as indicated by textp.
@@ -217,12 +221,12 @@ extern long chars_saved;		/* Nr of chars saved in buffer */
  * Functions handling status_line. ON means in reverse video.
  */
 #define status_line(str1, str2)	(void) bottom_line(ON, (str1), \
-						    (str2), NULL, FALSE)
+						    (str2), NIL_PTR, FALSE)
 #define error(str1, str2)	(void) bottom_line(ON, (str1), \
-						    (str2), NULL, FALSE)
-#define get_string(str1,str2, fl) bottom_line(ON, (str1), NULL, (str2), fl)
-#define clear_status()		(void) bottom_line(OFF, NULL, NULL, \
-						    NULL, FALSE)
+						    (str2), NIL_PTR, FALSE)
+#define get_string(str1,str2, fl) bottom_line(ON, (str1), NIL_PTR, (str2), fl)
+#define clear_status()		(void) bottom_line(OFF, NIL_PTR, NIL_PTR, \
+						    NIL_PTR, FALSE)
 
 /*
  * Print info about current file and buffer.
@@ -280,7 +284,7 @@ _PROTOTYPE(char *basename, (char *path ));
 _PROTOTYPE(void load_file, (char *file ));
 _PROTOTYPE(int get_line, (int fd, char *buffer ));
 _PROTOTYPE(LINE *install_line, (char *buffer, int length ));
-_PROTOTYPE(int main, (int argc, char *argv []));
+_PROTOTYPE(void main, (int argc, char *argv []));
 _PROTOTYPE(void RD, (void));
 _PROTOTYPE(void I, (void));
 _PROTOTYPE(void XT, (void));

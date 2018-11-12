@@ -17,17 +17,17 @@ char version[]=		"2.20";
 #include <limits.h>
 #include <string.h>
 #include <errno.h>
-#include <machine/partition.h>
-#include <machine/bios.h>
+#include <ibm/partition.h>
 #include <minix/config.h>
 #include <minix/type.h>
+#include <minix/com.h>
 #include <minix/dmap.h>
 #include <minix/const.h>
 #include <minix/minlib.h>
 #include <minix/syslib.h>
 #if BIOS
 #include <kernel/const.h>
-#include <sys/video.h>
+#include <kernel/type.h>
 #endif
 #if UNIX
 #include <stdio.h>
@@ -46,12 +46,6 @@ char version[]=		"2.20";
 #define arraylimit(a)		((a) + arraysize(a))
 #define between(a, c, z)	((unsigned) ((c) - (a)) <= ((z) - (a)))
 
-int serial_line = -1;
-
-u16_t vid_port;		/* Video i/o port. */
-u32_t vid_mem_base;	/* Video memory base address. */
-u32_t vid_mem_size;	/* Video memory size. */
-
 int fsok= -1;		/* File system state.  Initially unknown. */
 
 static int block_size;
@@ -64,7 +58,7 @@ static int block_size;
  */
 unsigned char boot_spec[24];
 
-static const char *bios_err(int err)
+char *bios_err(int err)
 /* Translate BIOS error code to a readable string.  (This is a rare trait
  * known as error checking and reporting.  Take a good look at it, you won't
  * see it often.)
@@ -120,44 +114,6 @@ static const char *bios_err(int err)
 	return "Unknown error";
 }
 
-/* CD's are addressed in 2048-byte sectors.
- * In order to be able to read CD's but maintain the same interface of 512-byte
- * sector addressing, we check if the device is a CD in readsectors() and if so,
- * read it into our own buffer first 
- */
-int readsectors(u32_t bufaddr, u32_t sector, u8_t count)
-{
-#define CDSECTOR_SIZE 2048
-	static char cdbuf[CDSECTOR_SIZE];
-	static i32_t cdbuf_sec = -1;
-	i32_t cdsec;
-
-	if(device != cddevice) {
-		return biosreadsectors(bufaddr, sector, count);
-	}
-
-	while(count > 0) {
-		u32_t offset;
-#define FACTOR (CDSECTOR_SIZE/SECTOR_SIZE)
-		cdsec = sector / FACTOR;
-		offset = (sector % FACTOR) * SECTOR_SIZE;
-		if(cdsec != cdbuf_sec) {
-			int r;
-			if((r=biosreadsectors(mon2abs(cdbuf), cdsec, 1)) != 0) {
-				printf("error %d\n", r);
-				return r;
-			}
-			cdbuf_sec = cdsec;
-		}
-		raw_copy(bufaddr, mon2abs(cdbuf) + offset, SECTOR_SIZE);
-		bufaddr += SECTOR_SIZE;
-		count--;
-		sector++;
-	}
-
-	return 0;
-}
-
 char *unix_err(int err)
 /* Translate the few errors rawfs can give. */
 {
@@ -168,7 +124,7 @@ char *unix_err(int err)
 	}
 }
 
-static void rwerr(const char *rw, off_t sec, int err)
+void rwerr(char *rw, off_t sec, int err)
 {
 	printf("\n%s error 0x%02x (%s) at sector %ld absolute\n",
 		rw, err, bios_err(err), sec);
@@ -194,7 +150,7 @@ void readblock(off_t blk, char *buf, int block_size)
 }
 
 #define istty		(1)
-#define alarm(n)	do { } while(0)
+#define alarm(n)	(0)
 
 #endif /* BIOS */
 
@@ -208,8 +164,8 @@ struct biosdev {
 	int device;		/* Device to edit parameters. */
 } bootdev;
 
-static struct termios termbuf;
-static int istty;
+struct termios termbuf;
+int istty;
 
 void quit(int status)
 {
@@ -219,13 +175,13 @@ void quit(int status)
 
 #define exit(s)	quit(s)
 
-void report(const char *label)
+void report(char *label)
 /* edparams: label: No such file or directory */
 {
 	fprintf(stderr, "edparams: %s: %s\n", label, strerror(errno));
 }
 
-void fatal(const char *label)
+void fatal(char *label)
 {
 	report(label);
 	exit(1);
@@ -338,7 +294,7 @@ int getch(void)
 
 #endif /* UNIX */
 
-static char *readline(void)
+char *readline(void)
 /* Read a line including a newline with echoing. */
 {
 	char *line;
@@ -375,13 +331,13 @@ static char *readline(void)
 	return line;
 }
 
-static int sugar(const char *tok)
+int sugar(char *tok)
 /* Recognize special tokens. */
 {
 	return strchr("=(){};\n", tok[0]) != nil;
 }
 
-static char *onetoken(char **aline)
+char *onetoken(char **aline)
 /* Returns a string with one token for tokenize. */
 {
 	char *line= *aline;
@@ -429,7 +385,7 @@ typedef struct token {
 	char		*token;
 } token;
 
-static token **tokenize(token **acmds, char *line)
+token **tokenize(token **acmds, char *line)
 /* Takes a line apart to form tokens.  The tokens are inserted into a command
  * chain at *acmds.  Tokenize returns a reference to where another line could
  * be added.  Tokenize looks at spaces as token separators, and recognizes only
@@ -450,10 +406,10 @@ static token **tokenize(token **acmds, char *line)
 	return acmds;
 }
 
-static token *cmds;		/* String of commands to execute. */
-static int err;		/* Set on an error. */
+token *cmds;		/* String of commands to execute. */
+int err;		/* Set on an error. */
 
-static char *poptoken(void)
+char *poptoken(void)
 /* Pop one token off the command chain. */
 {
 	token *cmd= cmds;
@@ -465,7 +421,7 @@ static char *poptoken(void)
 	return tok;
 }
 
-static void voidtoken(void)
+void voidtoken(void)
 /* Remove one token from the command chain. */
 {
 	free(poptoken());
@@ -480,7 +436,7 @@ void parse_code(char *code)
 	(void) tokenize(&cmds, code);
 }
 
-static int interrupt(void)
+int interrupt(void)
 /* Clean up after an ESC has been typed. */
 {
 	if (escape()) {
@@ -493,14 +449,14 @@ static int interrupt(void)
 
 #if BIOS
 
-static int activate;
+int activate;
 
 struct biosdev {
 	char name[8];
 	int device, primary, secondary;
 } bootdev, tmpdev;
 
-static int get_master(char *master, struct part_entry **table, u32_t pos)
+int get_master(char *master, struct part_entry **table, u32_t pos)
 /* Read a master boot sector and its partition table. */
 {
 	int r, n;
@@ -526,7 +482,7 @@ static int get_master(char *master, struct part_entry **table, u32_t pos)
 	return 0;
 }
 
-static void initialize(void)
+void initialize(void)
 {
 	char master[SECTOR_SIZE];
 	struct part_entry *table[NR_PARTITIONS];
@@ -538,30 +494,11 @@ static void initialize(void)
 	 * done to get out of the way of Minix, and to put the data area
 	 * cleanly inside a 64K chunk if using BIOS I/O (no DMA problems).
 	 */
-	u32_t oldaddr;
-	u32_t memend;
-	u32_t newaddr;
+	u32_t oldaddr= caddr;
+	u32_t memend= mem[0].base + mem[0].size;
+	u32_t newaddr= (memend - runsize) & ~0x0000FL;
 #if !DOS
-	u32_t dma64k;
-#endif
-
-	if (mem_entries) {
-		int i, j;
-		j = 0;
-		for(i = 0; i < mem_entries ; i++) {
-			if (j < 3 && emem[i].type == 1 && !emem[i].base_hi) {
-				mem[j].base = emem[i].base_lo;
-				mem[j].size = emem[i].size_lo;
-				j++;
-			}
-		}
-	}
-
-	oldaddr= caddr;
-	memend= mem[0].base + mem[0].size;
-	newaddr= (memend - runsize) & ~0x0000FL;
-#if !DOS
-	dma64k= (memend - 1) & ~0x0FFFFL;
+	u32_t dma64k= (memend - 1) & ~0x0FFFFL;
 
 
 	/* Check if data segment crosses a 64K boundary. */
@@ -569,12 +506,6 @@ static void initialize(void)
 		newaddr= (dma64k - runsize) & ~0x0000FL;
 	}
 #endif
-
-	/* If we were booted from CD, remember what device it was. */
-	if(cdbooted)
-		cddevice = device;
-	else
-		cddevice = 0xff;	/* Invalid. */
 
 	/* Set the new caddr for relocate. */
 	caddr= newaddr;
@@ -591,7 +522,7 @@ static void initialize(void)
 	 * and also keep the BIOS data area safe (1.5K), plus a bit extra for
 	 * where we may have to put a.out headers for older kernels.
 	 */
-	if ((mon_return = (mem[1].size > 512*1024L))) mem[0].size = newaddr;
+	if (mon_return = (mem[1].size > 512*1024L)) mem[0].size = newaddr;
 	mem[0].base += 2048;
 	mem[0].size -= 2048;
 
@@ -625,14 +556,6 @@ static void initialize(void)
 			readerr(masterpos, r); exit(1);
 		}
 
-		/* If we're a CD, we know what we want. */
-		if(device == cddevice) {
-			p = 1;	/* We know this is the root FS. */
-			lowsec = table[p]->lowsec;
-			bootdev.primary = p;
-			break;	/* Found! */
-		}
-
 		/* See if you can find "lowsec" back. */
 		for (p= 0; p < NR_PARTITIONS; p++) {
 			if (lowsec - table[p]->lowsec < table[p]->size) break;
@@ -659,31 +582,13 @@ static void initialize(void)
 		bootdev.primary= p;
 		masterpos= table[p]->lowsec;
 	}
-
-	if(device == cddevice) {
-		strcpy(bootdev.name, CDNAME);
-	} else {
-		strcpy(bootdev.name, "d0p0");
-		bootdev.name[1] += (device - 0x80);
-		bootdev.name[3] += bootdev.primary;
-		if (bootdev.secondary >= 0) {
-			strcat(bootdev.name, "s0");
-			bootdev.name[5] += bootdev.secondary;
-		}
+	strcpy(bootdev.name, "d0p0");
+	bootdev.name[1] += (device - 0x80);
+	bootdev.name[3] += bootdev.primary;
+	if (bootdev.secondary >= 0) {
+		strcat(bootdev.name, "s0");
+		bootdev.name[5] += bootdev.secondary;
 	}
-
-	/* Find out about the video hardware. */
-        raw_copy(mon2abs(&vid_port), VDU_CRT_BASE_ADDR, sizeof(vid_port));
-	if(vid_port == C_6845) {
-		vid_mem_base = COLOR_BASE;
-		vid_mem_size = COLOR_SIZE;
-	} else {
-		vid_mem_base = MONO_BASE;
-		vid_mem_size = MONO_SIZE;
-	}
-
-	if(get_video() >= 3)
-		vid_mem_size = EGA_SIZE;
 
 #else /* DOS */
 	/* Take the monitor out of the memory map if we have memory to spare,
@@ -734,35 +639,35 @@ static void initialize(void)
 /* Reserved names: */
 enum resnames {
  	R_NULL, R_BOOT, R_CTTY, R_DELAY, R_ECHO, R_EXIT, R_HELP,
-	R_LS, R_MENU, R_OFF, R_SAVE, R_SET, R_TRAP, R_UNSET, R_RESET
+	R_LS, R_MENU, R_OFF, R_SAVE, R_SET, R_TRAP, R_UNSET
 };
 
-static char resnames[][6] = {
+char resnames[][6] = {
 	"", "boot", "ctty", "delay", "echo", "exit", "help",
-	"ls", "menu", "off", "save", "set", "trap", "unset", "reset",
+	"ls", "menu", "off", "save", "set", "trap", "unset",
 };
 
 /* Using this for all null strings saves a lot of memory. */
 #define null (resnames[0])
 
-static enum resnames reserved(const char *s)
+int reserved(char *s)
 /* Recognize reserved strings. */
 {
-	enum resnames r;
+	int r;
 
-	for (r= R_BOOT; r <= R_RESET; r++) {
+	for (r= R_BOOT; r <= R_UNSET; r++) {
 		if (strcmp(s, resnames[r]) == 0) return r;
 	}
 	return R_NULL;
 }
 
-static void sfree(char *s)
+void sfree(char *s)
 /* Free a non-null string. */
 {
 	if (s != nil && s != null) free(s);
 }
 
-static char *copystr(const char *s)
+char *copystr(char *s)
 /* Copy a non-null string using malloc. */
 {
 	char *c;
@@ -773,12 +678,12 @@ static char *copystr(const char *s)
 	return c;
 }
 
-static int is_default(const environment *e)
+int is_default(environment *e)
 {
 	return (e->flags & E_SPECIAL) && e->defval == nil;
 }
 
-static environment **searchenv(const char *name)
+environment **searchenv(char *name)
 {
 	environment **aenv= &env;
 
@@ -792,7 +697,7 @@ static environment **searchenv(const char *name)
 #define b_getenv(name)	(*searchenv(name))
 /* Return the environment *structure* belonging to name, or nil if not found. */
 
-char *b_value(const char *name)
+char *b_value(char *name)
 /* The value of a variable. */
 {
 	environment *e= b_getenv(name);
@@ -800,7 +705,7 @@ char *b_value(const char *name)
 	return e == nil || !(e->flags & E_VAR) ? nil : e->value;
 }
 
-static char *b_body(const char *name)
+char *b_body(char *name)
 /* The value of a function. */
 {
 	environment *e= b_getenv(name);
@@ -808,8 +713,7 @@ static char *b_body(const char *name)
 	return e == nil || !(e->flags & E_FUNCTION) ? nil : e->value;
 }
 
-static int b_setenv(int flags, const char *name, const char *arg,
-  const char *value)
+int b_setenv(int flags, char *name, char *arg, char *value)
 /* Change the value of an environment variable.  Returns the flags of the
  * variable if you are not allowed to change it, 0 otherwise.
  */
@@ -858,7 +762,7 @@ int b_setvar(int flags, char *name, char *value)
 	return r;
 }
 
-void b_unset(const char *name)
+void b_unset(char *name)
 /* Remove a variable from the environment.  A special variable is reset to
  * its default value.
  */
@@ -884,7 +788,7 @@ void b_unset(const char *name)
 	}
 }
 
-long a2l(const char *a)
+long a2l(char *a)
 /* Cheap atol(). */
 {
 	int sign= 1;
@@ -914,7 +818,7 @@ char *ul2a10(u32_t n)
 	return ul2a(n, 10);
 }
 
-unsigned a2x(const char *a)
+unsigned a2x(char *a)
 /* Ascii to hex. */
 {
 	unsigned n= 0;
@@ -935,11 +839,11 @@ unsigned a2x(const char *a)
 	return n;
 }
 
-static void get_parameters(void)
+void get_parameters(void)
 {
 	char params[SECTOR_SIZE + 1];
 	token **acmds;
-	int r, processor;
+	int r, bus, processor;
 	memory *mp;
 	static char bus_type[][4] = {
 		"xt", "at", "mca"
@@ -955,9 +859,6 @@ static void get_parameters(void)
 	b_setvar(E_SPECIAL|E_VAR|E_DEV, "rootdev", "ram");
 	b_setvar(E_SPECIAL|E_VAR|E_DEV, "ramimagedev", "bootdev");
 	b_setvar(E_SPECIAL|E_VAR, "ramsize", "0");
-#define STRINGIT2(x) #x
-#define STRINGIT1(x) STRINGIT2(x)
-	b_setvar(E_SPECIAL|E_VAR, "hz", STRINGIT1(DEFAULT_HZ));
 #if BIOS
 	processor = getprocessor();
 	if(processor == 1586) processor = 686;
@@ -1017,14 +918,14 @@ static void get_parameters(void)
 #endif
 }
 
-static char *addptr;
+char *addptr;
 
-static void addparm(const char *n)
+void addparm(char *n)
 {
 	while (*n != 0 && *addptr != 0) *addptr++ = *n++;
 }
 
-static void save_parameters(void)
+void save_parameters(void)
 /* Save nondefault environment variables to the bootparams sector. */
 {
 	environment *e;
@@ -1065,7 +966,7 @@ static void save_parameters(void)
 	}
 }
 
-static void show_env(void)
+void show_env(void)
 /* Show the environment settings. */
 {
 	environment *e;
@@ -1136,6 +1037,7 @@ dev_t name2dev(char *name)
 {
 	dev_t dev;
 	ino_t ino;
+	int drive;
 	struct stat st;
 	char *n, *s;
 
@@ -1161,8 +1063,11 @@ dev_t name2dev(char *name)
 	n= name;
 	if (strncmp(n, "/dev/", 5) == 0) n+= 5;
 
-	if (strcmp(n, "ram") == 0 || strcmp(n, CDNAME) == 0) {
+	if (strcmp(n, "ram") == 0) {
 		dev= DEV_RAM;
+	} else
+	if (strcmp(n, "boot") == 0) {
+		dev= DEV_BOOT;
 	} else
 	if (n[0] == 'f' && n[1] == 'd' && numeric(n+2)) {
 		/* Floppy. */
@@ -1270,10 +1175,10 @@ static void apm_perror(char *label, u16_t ax)
 	printf("%s: %s\n", label, str);
 }
 
-#define apm_printf(args) printf args
+#define apm_printf printf
 #else
 #define apm_perror(label, ax) ((void)0)
-#define apm_printf(args)
+#define apm_printf
 #endif
 
 static void off(void)
@@ -1295,7 +1200,7 @@ static void off(void)
 	}
 	if (be.bx != (('P' << 8) | 'M'))
 	{
-		apm_printf(("APM signature not found (got 0x%04x)\n", be.bx));
+		apm_printf("APM signature not found (got 0x%04x)\n", be.bx);
 		return;
 	}
 
@@ -1305,13 +1210,13 @@ static void off(void)
 	al= be.ax & 0xff;
 	if (al > 9)
 		al= (al >> 4)*10 + (al & 0xf);
-	apm_printf(("APM version %u.%u%s%s%s%s%s\n",
+	apm_printf("APM version %u.%u%s%s%s%s%s\n",
 		ah, al,
 		(be.cx & 0x1) ? ", 16-bit PM" : "",
 		(be.cx & 0x2) ? ", 32-bit PM" : "",
 		(be.cx & 0x4) ? ", CPU-Idle" : "",
 		(be.cx & 0x8) ? ", APM-disabled" : "",
-		(be.cx & 0x10) ? ", APM-disengaged" : ""));
+		(be.cx & 0x10) ? ", APM-disengaged" : "");
 
 	/* Connect */
 	be.ax= 0x5301;	/* APM, Real mode interface connect */
@@ -1343,7 +1248,7 @@ static void off(void)
 	al= be.ax & 0xff;
 	if (al > 9)
 		al= (al >> 4)*10 + (al & 0xf);
-	apm_printf(("Got APM connection version %u.%u\n", ah, al));
+	apm_printf("Got APM connection version %u.%u\n", ah, al);
 
 	/* Enable */
 	be.ax= 0x5308;	/* APM, Enable/disable power management */
@@ -1373,8 +1278,8 @@ static void off(void)
 		goto disco;
 	}
 
-	apm_printf(("Power off sequence successfully completed.\n\n"));
-	apm_printf(("Ha, ha, just kidding!\n"));
+	apm_printf("Power off sequence successfully completed.\n\n");
+	apm_printf("Ha, ha, just kidding!\n");
 
 disco:
 	/* Disconnect */
@@ -1434,19 +1339,17 @@ int exec_bootstrap(void)
 		return r;
 
 	bootstrap(device, active);
-	return 0;
 }
 
-static void boot_device(char *devname)
+void boot_device(char *devname)
 /* Boot the device named by devname. */
 {
 	dev_t dev= name2dev(devname);
 	int save_dev= device;
 	int r;
-	const char *err;
+	char *err;
 
 	if (tmpdev.device < 0) {
-                /* FIXME: clearer error message. */
 		if (dev != -1) printf("Can't boot from %s\n", devname);
 		return;
 	}
@@ -1464,42 +1367,36 @@ static void boot_device(char *devname)
 	(void) dev_open();
 }
 
-static void ctty(char *line)
+void ctty(char *line)
 {
 	if (line == nil) {
-		serial_line = -1;
-	} else if (between('0', line[0], '3') && line[1] == 0) {
-		serial_line = line[0] - '0';
+		serial_init(-1);
+	} else
+	if (between('0', line[0], '3') && line[1] == 0) {
+		serial_init(line[0] - '0');
 	} else {
 		printf("Bad serial line number: %s\n", line);
-		return;
 	}
-	serial_init(serial_line);
 }
 
 #else /* DOS */
 
-static void boot_device(char *devname)
+void boot_device(char *devname)
 /* No booting of other devices under DOS. */
 {
 	printf("Can't boot devices under DOS\n");
 }
 
-static void ctty(char *line)
+void ctty(char *line)
 /* Don't know how to handle serial lines under DOS. */
 {
 	printf("No serial line support under DOS\n");
 }
 
-reset()
-{
-	printf("No reset support under DOS\n");
-}
-
 #endif /* DOS */
 #endif /* BIOS */
 
-static void ls(char *dir)
+void ls(char *dir)
 /* List the contents of a directory. */
 {
 	ino_t ino;
@@ -1518,24 +1415,24 @@ static void ls(char *dir)
 	}
 	(void) r_readdir(name);	/* Skip ".." too. */
 
-	while (r_readdir(name) != 0) printf("%s/%s\n", dir, name);
+	while ((ino= r_readdir(name)) != 0) printf("%s/%s\n", dir, name);
 }
 
-static u32_t milli_time(void)
+u32_t milli_time(void)
 {
 	return get_tick() * MSEC_PER_TICK;
 }
 
-static u32_t milli_since(u32_t base)
+u32_t milli_since(u32_t base)
 {
 	return (milli_time() + (TICKS_PER_DAY*MSEC_PER_TICK) - base)
 			% (TICKS_PER_DAY*MSEC_PER_TICK);
 }
 
-static char *Thandler;
-static u32_t Tbase, Tcount;
+char *Thandler;
+u32_t Tbase, Tcount;
 
-static void unschedule(void)
+void unschedule(void)
 /* Invalidate a waiting command. */
 {
 	alarm(0);
@@ -1546,7 +1443,7 @@ static void unschedule(void)
 	}
 }
 
-static void schedule(long msec, char *cmd)
+void schedule(long msec, char *cmd)
 /* Schedule command at a certain time from now. */
 {
 	unschedule();
@@ -1562,7 +1459,7 @@ int expired(void)
 	return (Thandler != nil && milli_since(Tbase) >= Tcount);
 }
 
-void delay(const char *msec)
+void delay(char *msec)
 /* Delay for a given time. */
 {
 	u32_t base, count;
@@ -1577,7 +1474,7 @@ void delay(const char *msec)
 	} while (!interrupt() && !expired() && milli_since(base) < count);
 }
 
-static enum whatfun { NOFUN, SELECT, DEFFUN, USERFUN } menufun(const environment *e)
+enum whatfun { NOFUN, SELECT, DEFFUN, USERFUN } menufun(environment *e)
 {
 	if (!(e->flags & E_FUNCTION) || e->arg[0] == 0) return NOFUN;
 	if (e->arg[1] != ',') return SELECT;
@@ -1612,7 +1509,6 @@ void menu(void)
 		case SELECT:
 			printf("    %c  Select %s kernel\n", e->arg[0],e->name);
 			break;
-                case NOFUN:
 		default:;
 		}
 	}
@@ -1631,8 +1527,6 @@ void menu(void)
 			case USERFUN:
 			case SELECT:
 				if (c == e->arg[0]) choice= e->value;
-			case NOFUN:
-				break;
 			}
 		}
 	} while (choice == nil);
@@ -1683,12 +1577,12 @@ void help(void)
 	}
 }
 
-static void execute(void)
+void execute(void)
 /* Get one command from the command chain and execute it. */
 {
 	token *second, *third, *fourth, *sep;
 	char *name;
-	enum resnames res;
+	int res;
 	size_t n= 0;
 
 	if (err) {
@@ -1831,7 +1725,7 @@ static void execute(void)
 						putch('\n');
 						break;
 					case 'v':
-						printf("%s", version);
+						printf(version);
 						break;
 					case 'c':
 						clear_screen();
@@ -1903,14 +1797,6 @@ static void execute(void)
 		case R_EXIT:	exit(0);
 		case R_OFF:	off();		ok= 1;	break;
 		case R_CTTY:	ctty(nil);	ok= 1;	break;
-		case R_RESET:	reset();	ok= 1;  break;
-
-		case R_NULL:
-		case R_ECHO:
-		case R_TRAP:
-		case R_UNSET:
-			/* Handled after the switch. */
-			break;
 		}
 
 		/* Command to check bootparams: */
@@ -1951,7 +1837,7 @@ int run_trailer(void)
 	return !err;
 }
 
-static void monitor(void)
+void monitor(void)
 /* Read a line and tokenize it. */
 {
 	char *line;
@@ -1968,9 +1854,13 @@ static void monitor(void)
 
 #if BIOS
 
+unsigned char cdspec[25];
+void bootcdinfo(u32_t, int *, int drive);
+
 void boot(void)
 /* Load Minix and start it, among other things. */
 {
+
 	/* Initialize tables. */
 	initialize();
 
@@ -1990,7 +1880,7 @@ void boot(void)
 
 #if UNIX
 
-int main(int argc, char **argv)
+void main(int argc, char **argv)
 /* Do not load or start anything, just edit parameters. */
 {
 	int i;
@@ -2019,7 +1909,8 @@ int main(int argc, char **argv)
 		fatal(bootdev.name);
 
 	/* Check if it is a bootable Minix device. */
-	if (readsectors(mon2abs(bootcode), lowsec, 1) != 0) {
+	if (readsectors(mon2abs(bootcode), lowsec, 1) != 0
+		|| memcmp(bootcode, boot_magic, sizeof(boot_magic)) != 0) {
 		fprintf(stderr, "edparams: %s: not a bootable Minix device\n",
 			bootdev.name);
 		exit(1);
@@ -2062,14 +1953,9 @@ int main(int argc, char **argv)
 		monitor();
 	}
 	exit(0);
-	return 0;
 }
-
-reset() { }
-
 #endif /* UNIX */
 
 /*
  * $PchId: boot.c,v 1.14 2002/02/27 19:46:14 philip Exp $
  */
-

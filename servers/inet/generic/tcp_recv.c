@@ -1447,8 +1447,11 @@ tcp_fd_t *tcp_fd;
 int *bytesp;
 {
 	tcp_conn_t *tcp_conn;
-	size_t data_size;
-	int fin_recv, urg, push;
+	size_t data_size, read_size;
+	acc_t *data;
+	int fin_recv, urg, push, result;
+	i32_t old_window, new_window;
+	u16_t mss;
 
 	*bytesp= 0;	/* The default is that nothing is available */
 

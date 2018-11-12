@@ -79,6 +79,8 @@
 **
 **  Revision 1.3  2005/09/16 10:10:12  lsodgf0
 **  Rework for Minix 3.  Adds kernel logs from /dev/klogd
+**
+**  $Id$
 */
 
 #include <sys/types.h>
@@ -231,8 +233,7 @@ void fprintlog(struct filed * fLog, int flags, char *message)
 	} else
 		message = fLog->f_prevline;
   }
-  snprintf(line, sizeof(line), "%s %s %s",
-	fLog->f_lasttime, fLog->f_prevhost, message);
+  sprintf(line, "%s %s %s", fLog->f_lasttime, fLog->f_prevhost, message);
   DEBUG(dprintf("Logging to %s", TypeNames[fLog->f_type]);)
   fLog->f_time = now;
   switch (fLog->f_type) {
@@ -639,7 +640,7 @@ void printkline(char *hname, char *msg)
   int ch, pri = DEFUPRI;
 
   /* Copies message to local buffer, adding source program tag */
-  snprintf(line, sizeof(line), "kernel: %s", msg);
+  sprintf(line, "kernel: %s", msg);
 
   logmsg(LOG_KERN | LOG_INFO, line, hname, ADDDATE);
   return;
@@ -898,11 +899,7 @@ int main(int argc, char **argv)
 
 		} else if (len < 0) {	/* Got an error or signal while reading */
 			if (errno != EINTR)	/* */
-			{
 				logerror("Receive error from UDP channel");
-				close(nfd);
-				nfd= -1;
-			}
 
 		} else {	/* (len == 0) Channel has been closed */
 			logerror("UDP channel has closed");

@@ -1,21 +1,20 @@
 # Makefile for the kernel image.
 
 u=/usr
+CC=	exec cc
+CFLAGS=	-O -D_MINIX -D_POSIX_SOURCE
 MDEC=	/usr/mdec
 
 # Specify the programs that are part of the system image.
-PROGRAMS=	kernel \
-	../servers/ds/ds \
-	../servers/rs/rs \
+PROGRAMS=	../kernel/kernel \
 	../servers/pm/pm \
-	../servers/sched/sched \
 	../servers/vfs/vfs \
+	../servers/rs/rs \
+	../servers/ds/ds \
+	../drivers/tty/tty \
 	../drivers/memory/memory \
 	../drivers/log/log \
-	../drivers/tty/tty \
 	../servers/mfs/mfs \
-	../servers/vm/vm \
-	../servers/pfs/pfs \
 	../servers/init/init
 
 usage:	
@@ -28,6 +27,7 @@ usage:
 	@echo "	make depend     # Generate dependency files" >&2
 	@echo "	make libraries  # Make system libraries" >&2
 	@echo "	make services   # Compile and install all services" >&2
+	@echo "	make fresh      # Make clean, libraries, and services" >&2
 	@echo "	make image      # Make needed services and create boot image" >&2
 	@echo "	make install    # Make image, and install to hard disk" >&2
 	@echo "	make hdboot     # Make image, and install to hard disk" >&2
@@ -40,47 +40,43 @@ usage:
 	@echo "	make fresh install      # new everything" >&2
 	@echo " " >&2
 
+# create a fresh configuration or system image
+fresh: 
+	cd ../lib && $(MAKE) clean
+	$(MAKE) clean 
+	$(MAKE) libraries services
+
 all: services image
 
-# Pad the kernel text only if ACK compiler is used. padtext does not work for
-# gnu-like compilers as they generate common I&D and a linker script can do the
-# same in a nicer way
-.if ${COMPILER_TYPE} == "gnu"
-PAD_KERNEL_TEXT := cp ../kernel/kernel kernel
-.else
-PAD_KERNEL_TEXT := padtext ../kernel/kernel kernel
-.endif
-
-# for fast complie kernel and generate image, skip servers and drivers
-image_mb: includes
-	cd ../kernel && $(MAKE)
-	${PAD_KERNEL_TEXT}
+image:  includes
+	cd ../kernel && $(MAKE) EXTRA_OPTS=$(EXTRA_OPTS)
+	cd ../servers && $(MAKE) image
+	cd ../drivers && $(MAKE) image
 	installboot -image $@ $(PROGRAMS)
-	
-image:  includes services
-	${PAD_KERNEL_TEXT}
+
+image_small:  includes
+	cd ../kernel && $(MAKE) EXTRA_OPTS=$(EXTRA_OPTS)
+	cd ../servers && $(MAKE) EXTRA_OPTS=-D_MINIX_SMALL=1 image
+	cd ../drivers && $(MAKE) EXTRA_OPTS=$(EXTRA_OPTS) image
 	installboot -image $@ $(PROGRAMS)
 
 # rebuild the program or system libraries
 includes:
-	$(MAKE) -C .. includes
+	cd ../include && $(MAKE) install
 
 depend: includes
-	$(MAKE) -C ../ depend
+	cd ../ && $(MAKE) depend
 
-services: includes kernel servers .WAIT drivers
-
-kernel: includes
-	$(MAKE) -C ../kernel 
-
-servers: includes
-	$(MAKE) -C ../servers all install
-
-drivers: includes servers
-	$(MAKE) -C ../drivers all install
+services: includes 
+	cd ../kernel && $(MAKE) 
+	cd ../servers && $(MAKE) install
+	cd ../drivers && $(MAKE) install
 
 libraries: includes
-	cd ../lib && sh ack_build.sh clean obj depend all install
+	cd ../lib && $(MAKE) clean
+	cd ../lib && $(MAKE) all
+	cd ../lib && $(MAKE) install
+
 
 # make bootable and place system images
 bootable:
@@ -98,12 +94,8 @@ install: includes services hdboot
 
 # clean up compile results
 clean:
-	$(MAKE) -C ../kernel $@
-	$(MAKE) -C ../servers $@
-	$(MAKE) -C ../drivers $@
-	rm -rf *.bak image kernel *.iso *.iso.gz cdfdimage rootimage src
+	cd ../kernel && $(MAKE) $@
+	cd ../servers && $(MAKE) $@
+	cd ../drivers && $(MAKE) $@
+	rm -rf *.bak image image_small *.iso *.iso.gz cdfdimage rootimage src
 
-cleandepend::
-	$(MAKE) -C ../kernel $@
-	$(MAKE) -C ../servers  $@
-	$(MAKE) -C ../drivers  $@

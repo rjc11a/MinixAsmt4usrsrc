@@ -29,18 +29,10 @@ _PROTOTYPE( uint16_t htons, (uint16_t _hostval)				);
 _PROTOTYPE( char *inet_ntoa, (struct in_addr _in)			);
 _PROTOTYPE( uint32_t ntohl, (uint32_t _netval)				);
 _PROTOTYPE( uint16_t ntohs, (uint16_t _netval)				);
-_PROTOTYPE( char *inet_ntop, (int af, const void *src, char *dst, 
-							uint32_t size)	);
-_PROTOTYPE( int inet_pton, (int af, const char *src, void *dst)		);
 
 #ifdef _MINIX
 /* Additional functions */
 _PROTOTYPE( int inet_aton, (const char *_cp, struct in_addr *_pin)	);
 #endif
 
-#ifdef _POSIX_SOURCE
-in_addr_t inet_addr(const char *cp);
-#endif
-
 #endif /* _ARPA__INET_H */
-

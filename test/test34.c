@@ -23,8 +23,6 @@
 #define ITERATIONS      4
 #define N 100
 
-#include "common.c" 
-
 #define ALL_RWXB	(S_IRWXU | S_IRWXG | S_IRWXO)
 #define ALL_SETB	(S_ISUID | S_ISGID)
 #define ALL_BITS	(ALL_RWXB | ALL_SETB)
@@ -39,6 +37,7 @@
 /* This program uses /etc/passwd and assumes things about it's contents. */
 #define PASSWD_FILE	"/etc/passwd"
 
+int errct = 0;
 int subtest = 1;
 int superuser;
 int I_can_chown;
@@ -47,21 +46,33 @@ char MaxPath[PATH_MAX];		/* Same for path */
 char NameTooLong[NAME_MAX + 2];	/* Name of maximum +1 length */
 char PathTooLong[PATH_MAX + 1];	/* Same for path, both too long */
 
+_PROTOTYPE(void main, (int argc, char *argv[]));
 _PROTOTYPE(void test34a, (void));
 _PROTOTYPE(void test34b, (void));
 _PROTOTYPE(void test34c, (void));
 _PROTOTYPE(mode_t mode, (char *file_name));
 _PROTOTYPE(void makelongnames, (void));
+_PROTOTYPE(void e, (int number));
+_PROTOTYPE(void quit, (void));
 _PROTOTYPE(void getids, (uid_t * uid, gid_t * gid));
 
-int main(int argc, char *argv[])
+void main(argc, argv)
+int argc;
+char *argv[];
 {
   int i, m = 0xFFFF;
 
   sync();
   if (argc == 2) m = atoi(argv[1]);
-  umask(0000);
-  start(34);
+  printf("Test 34 ");
+  fflush(stdout);
+  (void) system("chmod 777 DIR_34/* > /dev/null 2> /dev/null");
+  System("rm -rf DIR_34; mkdir DIR_34");
+  if (chdir("DIR_34") != 0) {
+	fprintf(stderr, "Can't go to DIR_34\n");
+	system("rm -rf DIR_34");
+	exit(1);
+  }
   makelongnames();
   superuser = (geteuid() == (uid_t) 0);
 
@@ -71,6 +82,7 @@ int main(int argc, char *argv[])
   I_can_chown = 1;
 #endif
 
+  umask(0000);
 
   for (i = 1; i < ITERATIONS; i++) {
 	if (m & 0001) test34a();
@@ -386,7 +398,7 @@ void test34c()
   struct stat st;
   uid_t uid, uid2;
   gid_t gid, gid2;
-  int fd, does_truncate, stat_loc;
+  int stat_loc;
 
   subtest = 3;
 
@@ -512,18 +524,9 @@ void test34c()
   }
 
   /* Check too long path ed. */
-  does_truncate = does_fs_truncate();
-  fd = creat(NameTooLong, 0777);
-  if (does_truncate) {
-  	if (fd == -1) e(53);
-	if (close(fd) != 0) e(54);
-	if (chmod(NameTooLong, 0777) != 0) e(55);
-	if (chown(NameTooLong, geteuid(), getegid()) != 0) e(56);
-  } else {
-  	if (fd != -1) e(57);
-  	if (errno != ENAMETOOLONG) e(58);
-  	(void) close(fd);		/* Just in case */
-  }
+  Creat(NameTooLong);
+  if (chmod(NameTooLong, 0777) != 0) e(57);
+  if (chown(NameTooLong, geteuid(), getegid()) != 0) e(58);
 
   /* Make PathTooLong contain ././.../a */
   PathTooLong[strlen(PathTooLong) - 2] = '/';
@@ -557,6 +560,39 @@ void makelongnames()
   NameTooLong[NAME_MAX + 1] = '\0';	/* extend NameTooLong by one too many*/
   PathTooLong[PATH_MAX - 1] = '/';
   PathTooLong[PATH_MAX] = '\0';	/* inc PathTooLong by one */
+}
+
+void e(n)
+int n;
+{
+  int err_num = errno;		/* Save in case printf clobbers it. */
+
+  printf("Subtest %d,  error %d  errno=%d: ", subtest, n, errno);
+  errno = err_num;
+  perror("");
+  if (errct++ > MAX_ERROR) {
+	printf("Too many errors; test aborted\n");
+	chdir("..");
+	system("rm -rf DIR*");
+	system("rm -rf DIR_34");
+	exit(1);
+  }
+  errno = 0;
+}
+
+void quit()
+{
+  Chdir("..");
+  (void) system("chmod 777 DIR_34/* > /dev/null 2> /dev/null");
+  System("rm -rf DIR_34");
+
+  if (errct == 0) {
+	printf("ok\n");
+	exit(0);
+  } else {
+	printf("%d errors\n", errct);
+	exit(1);
+  }
 }
 
 /* Getids returns a valid uid and gid. Is used PASSWD FILE.

@@ -4,6 +4,8 @@
  * reads information from 'core' file
  * Partly derived from 'adb' by D. Dugger.
  */
+#include <pm/const.h>
+
 #include "mdb.h"
 
 #include <signal.h>
@@ -14,7 +16,10 @@
 #include <string.h>
 #include <sys/ptrace.h>
 
-#include <machine/archtypes.h>
+#include <pm/type.h>
+#include <pm/mproc.h>
+
+#include <kernel/arch/i386/include/archtypes.h>
 #include <kernel/const.h>
 #include <kernel/type.h>
 #include <kernel/proc.h>
@@ -31,9 +36,9 @@ PRIVATE struct file {
   int fid;
   char *name;
   long cblock;
-  unsigned long tmap[3];
-  unsigned long dmap[3];
-  unsigned long smap[3];
+  long tmap[3];
+  long dmap[3];
+  long smap[3];
   char buf[BSIZE + BSIZE];
 } Core_File, *core_file;
 
@@ -94,7 +99,7 @@ long h = (long) h_size;
 	end_addr = fp->e2;
 
 	fp->b1 = 0;
-	fp->e1 = 0;
+	fp->e1 = -1;
 	fp->f1 = 0;
   }
 #endif
@@ -244,14 +249,16 @@ PRIVATE unsigned long c_status()
 PRIVATE void read_info(fp)
 struct file *fp;
 {
-  struct mem_map seg[NR_LOCAL_SEGS];
+  struct mproc mm_info;
+  struct mproc *rmp;
   int r;
   int i;
 
+  rmp = &mm_info;
   lseek(fp->fid, 0L, 0L);
 
   /* First read memory map of all segments. */
-  if (read(fp->fid, (char *) seg, (int) SIZE_MP_SEG) < 0) {
+  if (read(fp->fid, (char *) rmp->mp_seg, (int) SIZE_MP_SEG) < 0) {
 	close(fp->fid);
 	Printf("mdb: cannot read core header\n");
 	fp->fid = -1;
@@ -271,20 +278,20 @@ struct file *fp;
 
   /* copy info */ 	
   for (i = T; i <= S; i++)
-	cnt[i] = (long) seg[i].mem_len << CLICK_SHIFT;
+	cnt[i] = (long) rmp->mp_seg[i].mem_len << CLICK_SHIFT;
 
   /* This needs to be set for map_addr() below */
   if(coreonly && cnt[T] != 0) is_separate = TRUE;
 
-  st_addr = (long) seg[T].mem_vir << CLICK_SHIFT;
-  et_addr = st_addr + ((long) seg[T].mem_len << CLICK_SHIFT);
+  st_addr = (long) rmp->mp_seg[T].mem_vir << CLICK_SHIFT;
+  et_addr = st_addr + ((long) rmp->mp_seg[T].mem_len << CLICK_SHIFT);
 
-  sd_addr = (long) seg[D].mem_vir << CLICK_SHIFT;
+  sd_addr = (long) rmp->mp_seg[D].mem_vir << CLICK_SHIFT;
   end_addr = ed_addr = 
-	sd_addr + ((long) seg[D].mem_len << CLICK_SHIFT);
+	sd_addr + ((long) rmp->mp_seg[D].mem_len << CLICK_SHIFT);
 
-  sk_addr = (long) seg[S].mem_vir << CLICK_SHIFT;
-  sk_size = (long) seg[S].mem_len << CLICK_SHIFT;
+  sk_addr = (long) rmp->mp_seg[S].mem_vir << CLICK_SHIFT;
+  sk_size = (long) rmp->mp_seg[S].mem_len << CLICK_SHIFT;
 
   setmap(fp);
 }
@@ -305,7 +312,7 @@ char *filename;
   }
 
   core_file->b1 = core_file->b2 = core_file->b3 = 0;
-  core_file->e1 = core_file->e2 = core_file->e3 = 0;
+  core_file->e1 = core_file->e2 = core_file->e3 = -1;
   core_file->f1 = core_file->f2 = core_file->f3 = 0;
   core_file->cblock = -1;
 
@@ -334,7 +341,7 @@ char *filename;
   }
 
   core_file->b1 = core_file->b2 = core_file->b3 = 0;
-  core_file->e1 = core_file->e2 = core_file->e3 = 0;
+  core_file->e1 = core_file->e2 = core_file->e3 = -1;
   core_file->f1 = core_file->f2 = core_file->f3 = 0;
   core_file->cblock = -1;
 

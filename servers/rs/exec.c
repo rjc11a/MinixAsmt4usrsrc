@@ -3,7 +3,7 @@
 
 #define BLOCK_SIZE	1024
 
-static int do_exec(int proc_e, char *exec, size_t exec_len, char *progname,
+static void do_exec(int proc_e, char *exec, size_t exec_len, char *progname,
 	char *frame, int frame_len);
 FORWARD _PROTOTYPE( int read_header, (char *exec, size_t exec_len, int *sep_id,
 	vir_bytes *text_bytes, vir_bytes *data_bytes,
@@ -12,17 +12,18 @@ FORWARD _PROTOTYPE( int read_header, (char *exec, size_t exec_len, int *sep_id,
 FORWARD _PROTOTYPE( int exec_newmem, (int proc_e, vir_bytes text_bytes,
 	vir_bytes data_bytes, vir_bytes bss_bytes, vir_bytes tot_bytes,
 	vir_bytes frame_len, int sep_id,
-	dev_t st_dev, ino_t st_ino, time_t st_ctime, char *progname,
+	Dev_t st_dev, ino_t st_ino, time_t st_ctime, char *progname,
 	int new_uid, int new_gid,
 	vir_bytes *stack_topp, int *load_textp, int *allow_setuidp)	);
-FORWARD _PROTOTYPE( int exec_restart, (int proc_e, int result,
-				       vir_bytes pc)    		);
+FORWARD _PROTOTYPE( int exec_restart, (int proc_e, int result)		);
 FORWARD _PROTOTYPE( void patch_ptr, (char stack[ARG_MAX],
 							vir_bytes base)	);
 FORWARD _PROTOTYPE( int read_seg, (char *exec, size_t exec_len, off_t off,
 	int proc_e, int seg, phys_bytes seg_bytes)			);
 
-int srv_execve(int proc_e, char *exec, size_t exec_len, char **argv,
+static int self_e= NONE;
+
+int dev_execve(int proc_e, char *exec, size_t exec_len, char **argv,
 	char **Xenvp)
 {
 	char * const *ap;
@@ -35,7 +36,7 @@ int srv_execve(int proc_e, char *exec, size_t exec_len, char **argv,
 	size_t string_off;
 	size_t n;
 	int ov;
-	int r;
+	message m;
 
 	/* Assumptions: size_t and char *, it's all the same thing. */
 
@@ -56,6 +57,16 @@ int srv_execve(int proc_e, char *exec, size_t exec_len, char **argv,
 		argc++;
 	}
 
+#if 0
+printf("here: %s, %d\n", __FILE__, __LINE__);
+	for (ep= envp; *ep != NULL; ep++) {
+		n = sizeof(*ep) + strlen(*ep) + 1;
+		frame_size+= n;
+		if (frame_size < n) ov= 1;
+		string_off+= sizeof(*ap);
+	}
+#endif
+
 	/* Add an argument count and two terminating nulls. */
 	frame_size+= sizeof(argc) + sizeof(*ap) + sizeof(*ep);
 	string_off+= sizeof(argc) + sizeof(*ap) + sizeof(*ep);
@@ -70,8 +81,7 @@ int srv_execve(int proc_e, char *exec, size_t exec_len, char **argv,
 	}
 
 	/* Allocate space for the stack frame. */
-	frame = (char *) malloc(frame_size);
-	if (!frame) {
+	if ((frame = (char *) sbrk(frame_size)) == (char *) -1) {
 		errno = E2BIG;
 		return -1;
 	}
@@ -105,14 +115,14 @@ int srv_execve(int proc_e, char *exec, size_t exec_len, char **argv,
 	while (sp < frame + frame_size) *sp++= 0;
 
 	(progname=strrchr(argv[0], '/')) ? progname++ : (progname=argv[0]);
-	r = do_exec(proc_e, exec, exec_len, progname, frame, frame_size);
+	do_exec(proc_e, exec, exec_len, progname, frame, frame_size);
 
-	/* Return the memory used for the frame and exit. */
-	free(frame);
-	return r;
+	/* Failure, return the memory used for the frame and exit. */
+	(void) sbrk(-frame_size);
+	return -1;
 }
 
-static int do_exec(int proc_e, char *exec, size_t exec_len, char *progname,
+static void do_exec(int proc_e, char *exec, size_t exec_len, char *progname,
 	char *frame, int frame_len)
 {
 	int r;
@@ -128,6 +138,8 @@ static int do_exec(int proc_e, char *exec, size_t exec_len, char *progname,
 	need_restart= 0;
 	error= 0;
 
+	self_e = getnprocnr(getpid());
+
 	/* Read the file header and extract the segment sizes. */
 	r = read_header(exec, exec_len, &sep_id,
 		&text_bytes, &data_bytes, &bss_bytes, 
@@ -135,7 +147,6 @@ static int do_exec(int proc_e, char *exec, size_t exec_len, char *progname,
 	if (r != OK)
 	{
 		printf("do_exec: read_header failed\n");
-		error= r;
 		goto fail;
 	}
 	need_restart= 1;
@@ -154,19 +165,13 @@ static int do_exec(int proc_e, char *exec, size_t exec_len, char *progname,
 		goto fail;
 	}
 
-	/* Patch up stack and copy it from RS to new core image. */
+	/* Patch up stack and copy it from FS to new core image. */
 	vsp = stack_top;
 	vsp -= frame_len;
 	patch_ptr(frame, vsp);
 	r = sys_datacopy(SELF, (vir_bytes) frame,
 		proc_e, (vir_bytes) vsp, (phys_bytes)frame_len);
-	if (r != OK) {
-		printf("RS: stack_top is 0x%lx; tried to copy to 0x%lx in %d\n",
-			stack_top, vsp, proc_e);
-		printf("do_exec: copying out new stack failed: %d\n", r);
-		error= r;
-		goto fail;
-	}
+	if (r != OK) panic(__FILE__,"pm_exec stack copy err on", proc_e);
 
 	off = hdrlen;
 
@@ -192,37 +197,38 @@ static int do_exec(int proc_e, char *exec, size_t exec_len, char *progname,
 		goto fail;
 	}
 
-	return exec_restart(proc_e, OK, pc);
+	exec_restart(proc_e, OK);
+
+	return;
 
 fail:
 	printf("do_exec(fail): error = %d\n", error);
 	if (need_restart)
-               exec_restart(proc_e, error, pc);
-
-	return error;
+		exec_restart(proc_e, error);
 }
 
 /*===========================================================================*
  *				exec_newmem				     *
  *===========================================================================*/
-PRIVATE int exec_newmem(
-  int proc_e,
-  vir_bytes text_bytes,
-  vir_bytes data_bytes,
-  vir_bytes bss_bytes,
-  vir_bytes tot_bytes,
-  vir_bytes frame_len,
-  int sep_id,
-  dev_t st_dev,
-  ino_t st_ino,
-  time_t st_ctime,
-  char *progname,
-  int new_uid,
-  int new_gid,
-  vir_bytes *stack_topp,
-  int *load_textp,
-  int *allow_setuidp
-)
+PRIVATE int exec_newmem(proc_e, text_bytes, data_bytes, bss_bytes, tot_bytes,
+	frame_len, sep_id, st_dev, st_ino, st_ctime, progname,
+	new_uid, new_gid, stack_topp, load_textp, allow_setuidp)
+int proc_e;
+vir_bytes text_bytes;
+vir_bytes data_bytes;
+vir_bytes bss_bytes;
+vir_bytes tot_bytes;
+vir_bytes frame_len;
+int sep_id;
+dev_t st_dev;
+ino_t st_ino;
+time_t st_ctime;
+int new_uid;
+int new_gid;
+char *progname;
+vir_bytes *stack_topp;
+int *load_textp;
+int *allow_setuidp;
 {
 	int r;
 	struct exec_newmem e;
@@ -255,8 +261,8 @@ PRIVATE int exec_newmem(
 	*load_textp= !!(m.m1_i2 & EXC_NM_RF_LOAD_TEXT);
 	*allow_setuidp= !!(m.m1_i2 & EXC_NM_RF_ALLOW_SETUID);
 #if 0
-	printf("RS: exec_newmem: stack_top = 0x%x\n", *stack_topp);
-	printf("RS: exec_newmem: load_text = %d\n", *load_textp);
+	printf("exec_newmem: stack_top = 0x%x\n", *stack_topp);
+	printf("exec_newmem: load_text = %d\n", *load_textp);
 #endif
 	return m.m_type;
 }
@@ -265,10 +271,9 @@ PRIVATE int exec_newmem(
 /*===========================================================================*
  *				exec_restart				     *
  *===========================================================================*/
-PRIVATE int exec_restart(proc_e, result, pc)
+PRIVATE int exec_restart(proc_e, result)
 int proc_e;
 int result;
-vir_bytes pc;
 {
 	int r;
 	message m;
@@ -276,7 +281,6 @@ vir_bytes pc;
 	m.m_type= EXEC_RESTART;
 	m.EXC_RS_PROC= proc_e;
 	m.EXC_RS_RESULT= result;
-	m.EXC_RS_PC= (void*)pc;
 	r= sendrec(PM_PROC_NR, &m);
 	if (r != OK)
 		return r;
@@ -300,6 +304,8 @@ vir_bytes *pc;			/* program entry point (initial PC) */
 int *hdrlenp;
 {
 /* Read the header and extract the text, data, bss and total sizes from it. */
+  off_t pos;
+  block_t b;
   struct exec hdr;		/* a.out header is read in here */
 
   /* Read the header and check the magic number.  The standard MINIX header 
@@ -328,6 +334,10 @@ int *hdrlenp;
    * used here only. The symbol table is for the benefit of a debugger and 
    * is ignored here.
    */
+  int r;
+
+  pos= 0;	/* Read from the start of the file */
+
   if (exec_len < sizeof(hdr)) return(ENOEXEC);
 
   memcpy(&hdr, exec, sizeof(hdr));
@@ -412,6 +422,7 @@ phys_bytes seg_bytes;		/* how much is to be transferred? */
  */
 
   int r;
+  off_t n, o, b_off, seg_off;
 
   if (off+seg_bytes > exec_len) return ENOEXEC;
   r= sys_vircopy(SELF, D, (vir_bytes)exec+off, proc_e, seg, 0, seg_bytes);

@@ -2,7 +2,6 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -37,10 +36,14 @@ int main(argc, argv)
 int argc;
 char *argv[];
 {
-  char buffer[PATH_MAX + 1];
   int i, m;
 
   m = (argc == 2 ? atoi(argv[1]) : 0xFFFF);
+
+  if (geteuid() == 0 || getuid() == 0) {
+	printf("Test 19 cannot run as root; test aborted\n");
+	exit(1);
+  }
 
   system("rm -rf DIR_19; mkdir DIR_19");
   chdir("DIR_19");

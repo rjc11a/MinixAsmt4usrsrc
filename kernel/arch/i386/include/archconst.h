@@ -2,8 +2,8 @@
 #ifndef _I386_ACONST_H
 #define _I386_ACONST_H 1
 
-#include <machine/interrupt.h>
-#include <machine/memory.h>
+#include <ibm/interrupt.h>
+#include <ibm/memory.h>
 
 #define NR_REMOTE_SEGS     3    /* # remote memory regions (variable) */
 
@@ -12,7 +12,7 @@
 /* Table sizes. */
 #define GDT_SIZE (FIRST_LDT_INDEX + NR_TASKS + NR_PROCS) 
 					/* spec. and LDT's */
-#define IDT_SIZE 256	/* the table is set to it's maximal size */
+#define IDT_SIZE (IRQ8_VECTOR + 8)	/* only up to the highest vector */
 
 /* Fixed global descriptors.  1 to 7 are prescribed by the BIOS. */
 #define GDT_INDEX            1	/* GDT descriptor */
@@ -23,33 +23,30 @@
 #define CS_INDEX             6	/* kernel CS */
 #define MON_CS_INDEX         7	/* temp for BIOS (386: monitor CS at startup) */
 #define TSS_INDEX            8	/* kernel TSS */
-#define FIRST_LDT_INDEX      9	/* rest of descriptors are LDT's */
+#define DS_286_INDEX         9	/* scratch 16-bit source segment */
+#define ES_286_INDEX        10	/* scratch 16-bit destination segment */
+#define A_INDEX             11	/* 64K memory segment at A0000 */
+#define B_INDEX             12	/* 64K memory segment at B0000 */
+#define C_INDEX             13	/* 64K memory segment at C0000 */
+#define D_INDEX             14	/* 64K memory segment at D0000 */
+#define FIRST_LDT_INDEX     15	/* rest of descriptors are LDT's */
 
-/* Descriptor structure offsets. */
-#define DESC_BASE            2	/* to base_low */
-#define DESC_BASE_MIDDLE     4	/* to base_middle */
-#define DESC_ACCESS          5	/* to access byte */
-#define DESC_SIZE            8	/* sizeof (struct segdesc_s) */
-
-/*
- * WARNING no () around the macros, be careful. This is because of ACK assembler
- * and will be fixed after switching to GAS
- */
-#define GDT_SELECTOR		GDT_INDEX * DESC_SIZE
-#define IDT_SELECTOR		IDT_INDEX * DESC_SIZE
-#define DS_SELECTOR		DS_INDEX * DESC_SIZE
-#define ES_SELECTOR		ES_INDEX * DESC_SIZE
-/* flat DS is less privileged ES */
-#define FLAT_DS_SELECTOR	ES_SELECTOR
-#define SS_SELECTOR		SS_INDEX * DESC_SIZE
-#define CS_SELECTOR		CS_INDEX * DESC_SIZE
-#define MON_CS_SELECTOR		MON_CS_INDEX * DESC_SIZE
-#define TSS_SELECTOR		TSS_INDEX * DESC_SIZE
+#define GDT_SELECTOR      0x08	/* (GDT_INDEX * DESC_SIZE) bad for asld */
+#define IDT_SELECTOR      0x10	/* (IDT_INDEX * DESC_SIZE) */
+#define DS_SELECTOR       0x18	/* (DS_INDEX * DESC_SIZE) */
+#define ES_SELECTOR       0x20	/* (ES_INDEX * DESC_SIZE) */
+#define FLAT_DS_SELECTOR  0x21	/* less privileged ES */
+#define SS_SELECTOR       0x28	/* (SS_INDEX * DESC_SIZE) */
+#define CS_SELECTOR       0x30	/* (CS_INDEX * DESC_SIZE) */
+#define MON_CS_SELECTOR   0x38	/* (MON_CS_INDEX * DESC_SIZE) */
+#define TSS_SELECTOR      0x40	/* (TSS_INDEX * DESC_SIZE) */
+#define DS_286_SELECTOR   0x49	/* (DS_286_INDEX*DESC_SIZE+TASK_PRIVILEGE) */
+#define ES_286_SELECTOR   0x51	/* (ES_286_INDEX*DESC_SIZE+TASK_PRIVILEGE) */
 
 /* Privileges. */
 #define INTR_PRIVILEGE       0	/* kernel and interrupt handlers */
+#define TASK_PRIVILEGE       1	/* kernel tasks */
 #define USER_PRIVILEGE       3	/* servers and user processes */
-#define RPL_MASK             0x03	/* bits in selector RPL */
 
 /* 286 hardware constants. */
 
@@ -67,6 +64,12 @@
 /* Selector bits. */
 #define TI                0x04	/* table indicator */
 #define RPL               0x03	/* requester privilege level */
+
+/* Descriptor structure offsets. */
+#define DESC_BASE            2	/* to base_low */
+#define DESC_BASE_MIDDLE     4	/* to base_middle */
+#define DESC_ACCESS          5	/* to access byte */
+#define DESC_SIZE            8	/* sizeof (struct segdesc_s) */
 
 /* Base and limit sizes and shifts. */
 #define BASE_MIDDLE_SHIFT   16	/* shift for base --> base_middle */
@@ -95,18 +98,11 @@
 #define INT_286_GATE         6	/* interrupt gate, used for all vectors */
 #define TRAP_286_GATE        7	/* not used */
 
-#define INT_GATE_TYPE	(INT_286_GATE | DESC_386_BIT)
-#define TSS_TYPE	(AVL_286_TSS  | DESC_386_BIT)
-
-
 /* Extra 386 hardware constants. */
 
 /* Exception vector numbers. */
 #define PAGE_FAULT_VECTOR   14
 #define COPROC_ERR_VECTOR   16	/* coprocessor error */
-#define ALIGNMENT_CHECK_VECTOR	17
-#define MACHINE_CHECK_VECTOR	18
-#define SIMD_EXCEPTION_VECTOR	19     /* SIMD Floating-Point Exception (#XM) */
 
 /* Descriptor structure offsets. */
 #define DESC_GRANULARITY     6	/* to granularity byte */
@@ -139,21 +135,12 @@
 #define IF_MASK 0x00000200
 #define IOPL_MASK 0x003000
 
-#define vir2phys(vir)   ((phys_bytes)((kinfo.data_base + (vir_bytes) (vir))))
-#define phys2vir(ph)   ((vir_bytes)((vir_bytes) (ph) - kinfo.data_base))
+/* Sizes of memory tables. The boot monitor distinguishes three memory areas,
+ * namely low mem below 1M, 1M-16M, and mem after 16M. More chunks are needed
+ * for DOS MINIX.
+ */
+#define NR_MEMS            8
 
-#define INTEL_CPUID_GEN_EBX	0x756e6547 /* ASCII value of "Genu" */
-#define INTEL_CPUID_GEN_EDX	0x49656e69 /* ASCII value of "ineI" */
-#define INTEL_CPUID_GEN_ECX	0x6c65746e /* ASCII value of "ntel" */
-
-#define AMD_CPUID_GEN_EBX	0x68747541 /* ASCII value of "Auth" */
-#define AMD_CPUID_GEN_EDX	0x69746e65 /* ASCII value of "enti" */
-#define AMD_CPUID_GEN_ECX	0x444d4163 /* ASCII value of "cAMD" */
-
-/* fpu context should be saved in 16-byte aligned memory */
-#define FPUALIGN		16
-
-/* Poweroff 16-bit code address */
-#define BIOS_POWEROFF_ENTRY 0x1000
+#define vir2phys(vir)   (kinfo.data_base + (vir_bytes) (vir))
 
 #endif /* _I386_ACONST_H */

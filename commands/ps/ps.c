@@ -54,8 +54,6 @@
  */
 
 #include <minix/config.h>
-#include <minix/com.h>
-#include <minix/sysinfo.h>
 #include <minix/endpoint.h>
 #include <limits.h>
 #include <timers.h>
@@ -78,16 +76,14 @@
 #include <stdio.h>
 #include <ttyent.h>
 
-#include <machine/archtypes.h>
-#include "kernel/const.h"
-#include "kernel/type.h"
-#include "kernel/proc.h"
+#include "../../kernel/arch/i386/include/archtypes.h"
+#include "../../kernel/const.h"
+#include "../../kernel/type.h"
+#include "../../kernel/proc.h"
 
-#include "pm/mproc.h"
-#include "pm/const.h"
-#include "vfs/fproc.h"
-#include "vfs/const.h"
-#include "mfs/const.h"
+#include "../../servers/pm/mproc.h"
+#include "../../servers/vfs/fproc.h"
+#include "../../servers/mfs/const.h"
 
 
 /*----- ps's local stuff below this line ------*/
@@ -113,9 +109,10 @@ size_t n_ttyinfo;		/* Number of tty info slots */
 
 /* Number of tasks and processes and addresses of the main process tables. */
 int nr_tasks, nr_procs;		
+vir_bytes proc_addr, mproc_addr, fproc_addr;	
 extern int errno;
 
-/* Process tables of the kernel, PM, and VFS. */
+/* Process tables of the kernel, MM, and FS. */
 struct proc *ps_proc;
 struct mproc *ps_mproc;
 struct fproc *ps_fproc;
@@ -152,8 +149,7 @@ struct pstat {			/* structure filled by pstat() */
   int ps_pgrp;			/* process group id */
   int ps_flags;			/* kernel flags */
   int ps_mflags;		/* mm flags */
-  int ps_ftask;			/* fs suspend task */
-  int ps_blocked_on;		/* what is the process blocked on */
+  int ps_ftask;			/* (possibly pseudo) fs suspend task */
   char ps_state;		/* process state */
   vir_bytes ps_tsize;		/* text size (in bytes) */
   vir_bytes ps_dsize;		/* data size (in bytes) */
@@ -168,7 +164,7 @@ struct pstat {			/* structure filled by pstat() */
   time_t ps_utime;		/* accumulated user time */
   time_t ps_stime;		/* accumulated system time */
   char *ps_args;		/* concatenated argument string */
-  vir_bytes ps_procargs;	/* initial stack frame from PM */
+  vir_bytes ps_procargs;	/* initial stack frame from MM */
 };
 
 /* Ps_state field values in pstat struct above */
@@ -178,14 +174,17 @@ struct pstat {			/* structure filled by pstat() */
 #define	R_STATE		'R'	/* Runnable */
 #define	T_STATE		'T'	/* stopped (Trace) */
 
+_PROTOTYPE(char *tname, (Dev_t dev_nr ));
+_PROTOTYPE(char *taskname, (int p_nr ));
+_PROTOTYPE(char *prrecv, (struct pstat *bufp ));
 _PROTOTYPE(void disaster, (int sig ));
 _PROTOTYPE(int main, (int argc, char *argv []));
 _PROTOTYPE(char *get_args, (struct pstat *bufp ));
 _PROTOTYPE(int pstat, (int p_nr, struct pstat *bufp, int Eflag ));
 _PROTOTYPE(int addrread, (int fd, phys_clicks base, vir_bytes addr, 
 						    char *buf, int nbytes ));
-_PROTOTYPE(void usage, (const char *pname ));
-_PROTOTYPE(void err, (const char *s ));
+_PROTOTYPE(void usage, (char *pname ));
+_PROTOTYPE(void err, (char *s ));
 _PROTOTYPE(int gettynames, (void));
 
 
@@ -195,7 +194,8 @@ _PROTOTYPE(int gettynames, (void));
  * Tname assumes that the first three letters of the tty's name can be omitted
  * and returns the rest (except for the console, which yields "co").
  */
-PRIVATE char *tname(dev_t dev_nr)
+char *tname(dev_nr)
+Dev_t dev_nr;
 {
   int i;
 
@@ -209,20 +209,17 @@ PRIVATE char *tname(dev_t dev_nr)
 }
 
 /* Return canonical task name of task p_nr; overwritten on each call (yucch) */
-PRIVATE char *taskname(int p_nr)
+char *taskname(p_nr)
+int p_nr;
 {
-  int n;
-  n = _ENDPOINT_P(p_nr) + nr_tasks;
-  if(n < 0 || n >= nr_tasks + nr_procs) {
-	return "OUTOFRANGE";
-  }
-  return ps_proc[n].p_name;
+  return ps_proc[_ENDPOINT_P(p_nr) + nr_tasks].p_name;
 }
 
 /* Prrecv prints the RECV field for process with pstat buffer pointer bufp.
  * This is either "ANY", "taskname", or "(blockreason) taskname".
  */
-PRIVATE char *prrecv(struct pstat *bufp)
+char *prrecv(bufp)
+struct pstat *bufp;
 {
   char *blkstr, *task;		/* reason for blocking and task */
   static char recvstr[20];
@@ -239,31 +236,20 @@ PRIVATE char *prrecv(struct pstat *bufp)
 	else if (bufp->ps_mflags & WAITING)
 		blkstr = "wait";
 	else if (bufp->ps_mflags & SIGSUSPENDED)
-		blkstr = "sigsusp";
-  } else if (bufp->ps_recv == VFS_PROC_NR) {
-	  switch(bufp->ps_blocked_on) {
-		  case FP_BLOCKED_ON_PIPE:
-			  blkstr = "pipe";
-			  break;
-		  case FP_BLOCKED_ON_POPEN:
-			  blkstr = "popen";
-			  break;
-		  case FP_BLOCKED_ON_DOPEN:
-			  blkstr = "dopen";
-			  break;
-		  case FP_BLOCKED_ON_LOCK:
-			  blkstr = "flock";
-			  break;
-		  case FP_BLOCKED_ON_SELECT:
-			  blkstr = "select";
-			  break;
-		  case FP_BLOCKED_ON_OTHER:
-			  blkstr = taskname(bufp->ps_ftask);
-			  break;
-		  case FP_BLOCKED_ON_NONE:
-			  blkstr = "??";
-			  break;
-	  }
+		blkstr = "ssusp";
+  } else if (bufp->ps_recv == FS_PROC_NR) {
+	if (-bufp->ps_ftask == XPIPE)
+		blkstr = "pipe";
+	else if (-bufp->ps_ftask == XPOPEN)
+		blkstr = "popen";
+	else if (-bufp->ps_ftask == XLOCK)
+		blkstr = "flock";
+	else if(-bufp->ps_ftask == XSELECT)
+		blkstr = "select";
+	else if(-bufp->ps_ftask >= 0)
+		blkstr = taskname(-bufp->ps_ftask);
+	else
+		blkstr = "??";
   }
   (void) sprintf(recvstr, "(%s) %s", blkstr, task);
   return recvstr;
@@ -304,11 +290,6 @@ char *argv[];
   char cpu[sizeof(clock_t) * 3 + 1 + 2];
   struct kinfo kinfo;
   int s;
-  u32_t system_hz;
-
-  if(getsysinfo_up(PM_PROC_NR, SIU_SYSTEMHZ, sizeof(system_hz), &system_hz) < 0) {
-	exit(1);
-  }
 
   (void) signal(SIGSEGV, disaster);	/* catch a common crash */
 
@@ -332,8 +313,10 @@ char *argv[];
   if ((memfd = open(MEM_PATH, O_RDONLY)) == -1) err(MEM_PATH);
   if (gettynames() == -1) err("Can't get tty names");
 
+  getsysinfo(PM_PROC_NR, SI_PROC_ADDR, &mproc_addr);
+  getsysinfo(FS_PROC_NR, SI_PROC_ADDR, &fproc_addr);
   getsysinfo(PM_PROC_NR, SI_KINFO, &kinfo);
-
+  proc_addr = kinfo.proc_addr;
   nr_tasks = kinfo.nr_tasks;	
   nr_procs = kinfo.nr_procs;
 
@@ -344,23 +327,27 @@ char *argv[];
   if (ps_proc == NULL || ps_mproc == NULL || ps_fproc == NULL)
 	err("Out of memory");
 
-	if(minix_getkproctab(ps_proc, nr_tasks + nr_procs, 1) < 0) {
-		fprintf(stderr, "minix_getkproctab failed.\n");
-		exit(1);
-	}
+  /* Get kernel process table */
+  if (addrread(kmemfd, (phys_clicks) 0,
+		proc_addr, (char *) ps_proc,
+		(nr_tasks + nr_procs) * sizeof(ps_proc[0]))
+			!= (nr_tasks + nr_procs) * sizeof(ps_proc[0]))
+	err("Can't get kernel proc table from /dev/kmem");
 
-	if(getsysinfo(PM_PROC_NR, SI_PROC_TAB, ps_mproc) < 0) {
-		fprintf(stderr, "getsysinfo() for PM SI_PROC_TAB failed.\n");
-		exit(1);
-	}
-
-	if(getsysinfo(VFS_PROC_NR, SI_PROC_TAB, ps_fproc) < 0) {
-		fprintf(stderr, "getsysinfo() for VFS SI_PROC_TAB failed.\n");
-		exit(1);
-	}
+  /* Get mm/fs process tables */
+  if (addrread(memfd, ps_proc[nr_tasks + PM_PROC_NR].p_memmap[D].mem_phys,
+		mproc_addr, (char *) ps_mproc,
+		nr_procs * sizeof(ps_mproc[0]))
+			!= nr_procs * sizeof(ps_mproc[0]))
+	err("Can't get mm proc table from /dev/mem");
+  if (addrread(memfd, ps_proc[nr_tasks + FS_PROC_NR].p_memmap[D].mem_phys,
+		fproc_addr, (char *) ps_fproc,
+		nr_procs * sizeof(ps_fproc[0]))
+			!= nr_procs * sizeof(ps_fproc[0]))
+	err("Can't get fs proc table from /dev/mem");
 
   /* We need to know where INIT hangs out. */
-  for (i = VFS_PROC_NR; i < nr_procs; i++) {
+  for (i = FS_PROC_NR; i < nr_procs; i++) {
 	if (strcmp(ps_proc[nr_tasks + i].p_name, "init") == 0) break;
   }
   init_proc_nr = i;
@@ -377,7 +364,7 @@ char *argv[];
 			sprintf(pid, "%d", buf.ps_pid);
 		}
 
-		ustime = (buf.ps_utime + buf.ps_stime) / system_hz;
+		ustime = (buf.ps_utime + buf.ps_stime) / HZ;
 		if (ustime < 60 * 60) {
 			sprintf(cpu, "%2lu:%02lu", ustime / 60, ustime % 60);
 		} else
@@ -392,23 +379,19 @@ char *argv[];
 			       buf.ps_flags, buf.ps_state,
 			       buf.ps_euid, pid, buf.ps_ppid, 
 			       buf.ps_pgrp,
-#if 0
 			       off_to_k((buf.ps_tsize
 					 + buf.ps_stack - buf.ps_data
 					 + buf.ps_ssize)),
-#else
-				0,
-#endif
-			       (buf.ps_flags & RTS_RECEIVING ?
+			       (buf.ps_flags & RECEIVING ?
 				prrecv(&buf) :
 				""),
-			       tname((dev_t) buf.ps_dev),
+			       tname((Dev_t) buf.ps_dev),
 			       cpu,
 			       i <= init_proc_nr || buf.ps_args == NULL
 				       ? taskname(i) : buf.ps_args);
 		else
 			printf(S_FORMAT,
-			       pid, tname((dev_t) buf.ps_dev),
+			       pid, tname((Dev_t) buf.ps_dev),
 			       cpu,
 			       i <= init_proc_nr || buf.ps_args == NULL
 				       ? taskname(i) : buf.ps_args);
@@ -478,30 +461,27 @@ struct pstat *bufp;
 /* Pstat collects info on process number p_nr and returns it in buf.
  * It is assumed that tasks do not have entries in fproc/mproc.
  */
-int pstat(int p_nr, struct pstat *bufp, int endpoints)
+int pstat(p_nr, bufp, endpoints)
+int p_nr;
+struct pstat *bufp;
+int endpoints;
 {
   int p_ki = p_nr + nr_tasks;	/* kernel proc index */
 
-  if (p_nr < -nr_tasks || p_nr >= nr_procs) {
-	fprintf(stderr, "pstat: %d out of range\n", p_nr);
-	return -1;
-  }
+  if (p_nr < -nr_tasks || p_nr >= nr_procs) return -1;
 
-  if (isemptyp(&ps_proc[p_ki])
-  				&& !(ps_mproc[p_nr].mp_flags & IN_USE)) {
+  if ((ps_proc[p_ki].p_rts_flags == SLOT_FREE)
+  				&& !(ps_mproc[p_nr].mp_flags & IN_USE))
 	return -1;
-  }
 
   bufp->ps_flags = ps_proc[p_ki].p_rts_flags;
 
   if (p_nr >= low_user) {
 	bufp->ps_dev = ps_fproc[p_nr].fp_tty;
 	bufp->ps_ftask = ps_fproc[p_nr].fp_task;
-	bufp->ps_blocked_on = ps_fproc[p_nr].fp_blocked_on;
   } else {
 	bufp->ps_dev = 0;
 	bufp->ps_ftask = 0;
-	bufp->ps_blocked_on = FP_BLOCKED_ON_NONE;
   }
 
   if (p_nr >= 0) {
@@ -510,18 +490,12 @@ int pstat(int p_nr, struct pstat *bufp, int endpoints)
 	if(endpoints) bufp->ps_pid = ps_proc[p_ki].p_endpoint;
 	else bufp->ps_pid = ps_mproc[p_nr].mp_pid;
 	bufp->ps_ppid = ps_mproc[ps_mproc[p_nr].mp_parent].mp_pid;
-	/* Assume no parent when the parent and the child share the same pid.
-	 * This is what PM currently assumes.
-	 */
-	if(bufp->ps_ppid == bufp->ps_pid) {
-	    bufp->ps_ppid = NO_PID;
-	}
 	bufp->ps_pgrp = ps_mproc[p_nr].mp_procgrp;
 	bufp->ps_mflags = ps_mproc[p_nr].mp_flags;
   } else {
 	if(endpoints) bufp->ps_pid = ps_proc[p_ki].p_endpoint;
-	else bufp->ps_pid = NO_PID;
-	bufp->ps_ppid = NO_PID;
+	else bufp->ps_pid = 0;
+	bufp->ps_ppid = 0;
 	bufp->ps_ruid = bufp->ps_euid = 0;
 	bufp->ps_pgrp = 0;
 	bufp->ps_mflags = 0;
@@ -536,7 +510,7 @@ int pstat(int p_nr, struct pstat *bufp, int endpoints)
 	else if (ps_proc[p_ki].p_rts_flags == 0)
 		bufp->ps_state = R_STATE;	/* in run-queue */
 	else if (ps_mproc[p_nr].mp_flags & (WAITING | PAUSED | SIGSUSPENDED) ||
-			fp_is_blocked(&ps_fproc[p_nr]))
+		 ps_fproc[p_nr].fp_suspended == SUSPENDED)
 		bufp->ps_state = S_STATE;	/* sleeping */
 	else
 		bufp->ps_state = W_STATE;	/* a short wait */
@@ -573,7 +547,12 @@ int pstat(int p_nr, struct pstat *bufp, int endpoints)
 }
 
 /* Addrread reads nbytes from offset addr to click base of fd into buf. */
-int addrread(int fd, phys_clicks base, vir_bytes addr, char *buf, int nbytes)
+int addrread(fd, base, addr, buf, nbytes)
+int fd;
+phys_clicks base;
+vir_bytes addr;
+char *buf;
+int nbytes;
 {
   if (lseek(fd, ((off_t) base << CLICK_SHIFT) + addr, 0) < 0)
 	return -1;
@@ -581,13 +560,15 @@ int addrread(int fd, phys_clicks base, vir_bytes addr, char *buf, int nbytes)
   return read(fd, buf, nbytes);
 }
 
-void usage(const char *pname)
+void usage(pname)
+char *pname;
 {
   fprintf(stderr, "Usage: %s [-][aeflx]\n", pname);
   exit(1);
 }
 
-void err(const char *s)
+void err(s)
+char *s;
 {
   extern int errno;
 
@@ -600,7 +581,7 @@ void err(const char *s)
 }
 
 /* Fill ttyinfo by fstatting character specials in /dev. */
-int gettynames(void)
+int gettynames()
 {
   static char dev_path[] = "/dev/";
   struct stat statbuf;

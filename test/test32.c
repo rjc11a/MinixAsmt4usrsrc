@@ -28,6 +28,7 @@ char MaxPath[PATH_MAX];		/* Same for path */
 char ToLongName[NAME_MAX + 2];	/* Name of maximum +1 length */
 char ToLongPath[PATH_MAX + 1];	/* Same for path, both too long */
 
+_PROTOTYPE(void main, (int argc, char *argv[]));
 _PROTOTYPE(void test32a, (void));
 _PROTOTYPE(void test32b, (void));
 _PROTOTYPE(void test32c, (void));
@@ -35,7 +36,9 @@ _PROTOTYPE(void makelongnames, (void));
 _PROTOTYPE(void e, (int number));
 _PROTOTYPE(void quit, (void));
 
-int main(int argc, char *argv[])
+void main(argc, argv)
+int argc;
+char *argv[];
 {
   int i, m = 0xFFFF;
 
@@ -54,7 +57,6 @@ int main(int argc, char *argv[])
 	if (m & 0004) test32c();
   }
   quit();
-  return 1;
 }
 
 #define BUF_SIZE 1024
@@ -217,7 +219,7 @@ void test32b()
 		rename("old", "new");
 		exit(0);
 	    default:
-		while (stat("old", &st) == 0)
+		while (stat("old", &st) != 0)
 			if (stat("new", &st) != 0) e(18);
 		wait(&stat_loc);
 		if (stat_loc != 0) e(19);	/* Alarm? */
@@ -279,7 +281,7 @@ void test32c()
 		alarm(20);
 		if (chdir("newdir") != 0) e(15);
 		Creat("/tmp/sema.11a");
-		while (stat("/tmp/sema.11a", &st1) == 0) sleep(1);
+		while (stat("/tmp/sema.11a", &st1) == -1) sleep(1);
 		exit(0);
 	    default:
 		wait(&stat_loc);
@@ -289,7 +291,7 @@ void test32c()
 	/* Child B. */
 	if (chdir("olddir") != 0) e(17);
 	Creat("/tmp/sema.11b");
-	while (stat("/tmp/sema.11b", &st1) == 0) sleep(1);
+	while (stat("/tmp/sema.11b", &st1) == -1) sleep(1);
 	exit(0);
       default:
 	/* Wait for child A. It will keep ``newdir'' bussy. */

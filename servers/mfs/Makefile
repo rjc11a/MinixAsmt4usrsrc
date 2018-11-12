@@ -1,19 +1,40 @@
-# Makefile for Minix File System (MFS)
-PROG=	mfs
-SRCS=	cache.c device.c link.c \
-	mount.c misc.c open.c protect.c read.c \
-	stadir.c stats.c table.c time.c utility.c \
-	write.c inode.c main.c path.c super.c
+# Makefile for File System (FS)
+SERVER = mfs
 
-DPADD+=	${LIBSYS}
-LDADD+=	-lsys
+# directories
+u = /usr
+i = $u/include
+s = $i/sys
+h = $i/minix
 
-MAN=
+# programs, flags, etc.
+CC =	exec cc
+CFLAGS = -I$i $(EXTRA_OPTS) $(CPROFILE)
+LDFLAGS = -i
+LIBS = -lsysutil  -lsys -ltimers
 
-BINDIR?= /sbin
-INSTALLFLAGS+=	-S 128k
+OBJ =	cache.o device.o link.o \
+	mount.o misc.o open.o pipe.o protect.o read.o \
+	stadir.o table.o time.o utility.o \
+	write.o inode.o main.o path.o super.o
 
-DEFAULT_NR_BUFS= 1024
-CPPFLAGS+= -DDEFAULT_NR_BUFS=${DEFAULT_NR_BUFS}
+# build local binary 
+all build:	$(SERVER)
+$(SERVER):	$(OBJ)
+	$(CC) -o $@ $(LDFLAGS) $(OBJ) $(LIBS)
+	install -S 64k $(SERVER)
 
-.include <bsd.prog.mk>
+install: $(SERVER)
+	install $(SERVER) /sbin/$(SERVER)
+
+# clean up local files
+clean:
+	rm -f $(SERVER) *.o *.bak 
+
+depend: 
+	mkdep "$(CC) -E $(CPPFLAGS)" *.c > .depend
+
+# Include generated dependencies.
+include .depend
+
+

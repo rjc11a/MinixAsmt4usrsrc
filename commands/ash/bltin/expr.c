@@ -279,9 +279,6 @@ expr_operator(op, sp, fs)
 	    sp->u.num = expr_is_false(sp);
 	    sp->type = BOOLEAN;
 	    break;
-      case EXISTS:
-	    if (fs->rcode >= 0) goto true;
-	    goto false;
       case ISREAD:
 	    i = 04;
 	    goto permission;
@@ -347,18 +344,13 @@ filebit:
 	    sp->u.num = fs->rcode >= 0? fs->stat.st_size : 0L;
 	    sp->type = INTEGER;
 	    break;
-      case OLDER:
       case NEWER:
 	    if (stat(sp->u.string, &st1) != 0) {
 		  sp->u.num = 0;
 	    } else if (stat((sp + 1)->u.string, &st2) != 0) {
 		  sp->u.num = 1;
 	    } else {
-               int isnewer = st1.st_mtime >= st2.st_mtime;
-               if(op == NEWER)
-                 sp->u.num = isnewer;
-               else
-                 sp->u.num = !isnewer;
+		  sp->u.num = st1.st_mtime >= st2.st_mtime;
 	    }
 	    sp->type = INTEGER;
 	    break;

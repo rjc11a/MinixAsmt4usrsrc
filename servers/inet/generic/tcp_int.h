@@ -204,7 +204,7 @@ void tcp_bytesavailable ARGS(( tcp_fd_t *tcp_fd, int *bytesp ));
 /* tcp_send.c */
 void tcp_conn_write ARGS(( tcp_conn_t *tcp_conn, int enq ));
 void tcp_release_retrans ARGS(( tcp_conn_t *tcp_conn, u32_t seg_ack,
-	u16_t new_win ));
+	U16_t new_win ));
 void tcp_fast_retrans ARGS(( tcp_conn_t *tcp_conn ));
 void tcp_set_send_timer ARGS(( tcp_conn_t *tcp_conn ));
 void tcp_fd_write ARGS(( tcp_conn_t *tcp_conn ));
@@ -243,7 +243,7 @@ int tcp_su4listen ARGS(( tcp_fd_t *tcp_fd, tcp_conn_t *tcp_conn,
 void tcp_reply_ioctl ARGS(( tcp_fd_t *tcp_fd, int reply ));
 void tcp_reply_write ARGS(( tcp_fd_t *tcp_fd, size_t reply ));
 void tcp_reply_read ARGS(( tcp_fd_t *tcp_fd, size_t reply ));
-void tcp_notreach ARGS(( tcp_conn_t *tcp_conn, int error ));
+void tcp_notreach ARGS(( tcp_conn_t *tcp_conn ));
 void tcp_mtu_exceeded ARGS(( tcp_conn_t *tcp_conn ));
 void tcp_mtu_incr ARGS(( tcp_conn_t *tcp_conn ));
 

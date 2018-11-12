@@ -31,6 +31,4 @@ struct ranlib {
 #define SZ_RAN	8
 #define SF_RAN	"44"
 
-extern void wr_ranlib(int fd, struct ranlib ran[], long cnt);
 #endif /* __RANLIB_H_INCLUDED */
-

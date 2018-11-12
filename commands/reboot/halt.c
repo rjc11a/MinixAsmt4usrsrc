@@ -32,7 +32,7 @@ char *reboot_code = "delay; boot";
 void
 usage()
 {
-  fprintf(stderr, "Usage: %s [-hrRfd] [-x reboot-code]\n", prog);
+  fprintf(stderr, "Usage: %s [-hrRf] [-x reboot-code]\n", prog);
   exit(1);
 }
 
@@ -63,7 +63,6 @@ char **argv;
       case 'h': flag = RBT_HALT; 	break;
       case 'r': flag = RBT_REBOOT; 	break;
       case 'R': flag = RBT_RESET; 	break;
-      case 'd': flag = RBT_DEFAULT; 	break;
       case 'f': fast = 1; break;
       case 'x':
 	flag = RBT_MONITOR;
@@ -118,9 +117,6 @@ char **argv;
 
   /* Tell init to stop spawning getty's. */
   kill(1, SIGTERM);
-
-  /* Extra sync for the case where SIGTERM causes deadlock */
-  sync();
 
   /* Give everybody a chance to die peacefully. */
   printf("Sending SIGTERM to all processes ...\n");

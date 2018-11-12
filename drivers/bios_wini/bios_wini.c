@@ -20,19 +20,24 @@
  *	14 May 2000 by Kees J. Bot: d-d/i rewrite.
  */
 
-#include <minix/drivers.h>
-#include <minix/driver.h>
-#include <minix/drvlib.h>
+#include "../drivers.h"
+#include "../libdriver/driver.h"
+#include "../libdriver/drvlib.h"
 #include <minix/sysutil.h>
 #include <minix/safecopies.h>
+#include <minix/keymap.h>
 #include <sys/ioc_disk.h>
-#include <machine/int86.h>
+#include <ibm/int86.h>
 #include <assert.h>
 
 #define ME "BIOS_WINI"
 
+/* Error codes */
+#define ERR		 (-1)	/* general error */
+
 /* Parameters for the disk drive. */
 #define MAX_DRIVES         8	/* this driver supports 8 drives (d0 - d7)*/
+#define MAX_SECS	 255	/* bios can transfer this many sectors */
 #define NR_MINORS      (MAX_DRIVES * DEV_PER_DRIVE)
 #define SUB_PER_DRIVE	(NR_PARTITIONS * NR_PARTITIONS)
 #define NR_SUBDEVS	(MAX_DRIVES * SUB_PER_DRIVE)
@@ -54,21 +59,24 @@ PRIVATE struct wini {		/* main drive struct, one entry per drive */
 
 PRIVATE int w_drive;			/* selected drive */
 PRIVATE struct device *w_dv;		/* device's base and size */
-PRIVATE char *bios_buf_v;
+PRIVATE vir_bytes bios_buf_vir, bios_buf_size;
 PRIVATE phys_bytes bios_buf_phys;
 PRIVATE int remap_first = 0;		/* Remap drives for CD HD emulation */
-#define BIOSBUF 16384
+PRIVATE char my_bios_buf[16384];
+PRIVATE cp_grant_id_t my_bios_grant_id;
 
 _PROTOTYPE(int main, (void) );
 FORWARD _PROTOTYPE( struct device *w_prepare, (int device) );
 FORWARD _PROTOTYPE( char *w_name, (void) );
 FORWARD _PROTOTYPE( int w_transfer, (int proc_nr, int opcode, u64_t position,
-				iovec_t *iov, unsigned nr_req) );
+				iovec_t *iov, unsigned nr_req, int safe) );
 FORWARD _PROTOTYPE( int w_do_open, (struct driver *dp, message *m_ptr) );
 FORWARD _PROTOTYPE( int w_do_close, (struct driver *dp, message *m_ptr) );
 FORWARD _PROTOTYPE( void w_init, (void) );
 FORWARD _PROTOTYPE( void w_geometry, (struct partition *entry));
-FORWARD _PROTOTYPE( int w_other, (struct driver *dp, message *m_ptr) );
+FORWARD _PROTOTYPE( int w_other, (struct driver *dp, message *m_ptr, int)    );
+FORWARD _PROTOTYPE( int my_vircopy, (endpoint_t, int, vir_bytes, endpoint_t,
+	int, vir_bytes, size_t, size_t));
 
 /* Entry points to this driver. */
 PRIVATE struct driver w_dtab = {
@@ -80,6 +88,7 @@ PRIVATE struct driver w_dtab = {
   w_transfer,	/* do the I/O */
   nop_cleanup,	/* no cleanup needed */
   w_geometry,	/* tell the geometry of the disk */
+  nop_signal,		/* no cleanup needed on shutdown */
   nop_alarm,		/* ignore leftover alarms */
   nop_cancel,		/* ignore CANCELs */
   nop_select,		/* ignore selects */
@@ -87,57 +96,25 @@ PRIVATE struct driver w_dtab = {
   NULL			/* leftover hardware interrupts */
 };
 
-/* SEF functions and variables. */
-FORWARD _PROTOTYPE( void sef_local_startup, (void) );
-FORWARD _PROTOTYPE( int sef_cb_init_fresh, (int type, sef_init_info_t *info) );
-
 /*===========================================================================*
  *				bios_winchester_task			     *
  *===========================================================================*/
 PUBLIC int main()
 {
-  /* SEF local startup. */
-  sef_local_startup();
-
-  /* Call the generic receive loop. */
-  driver_task(&w_dtab, DRIVER_STD);
-
-  return(OK);
-}
-
-/*===========================================================================*
- *			       sef_local_startup			     *
- *===========================================================================*/
-PRIVATE void sef_local_startup()
-{
-  /* Register init callbacks. */
-  sef_setcb_init_fresh(sef_cb_init_fresh);
-  sef_setcb_init_lu(sef_cb_init_fresh);
-  sef_setcb_init_restart(sef_cb_init_fresh);
-
-  /* Register live update callbacks. */
-  sef_setcb_lu_prepare(sef_cb_lu_prepare_always_ready);
-  sef_setcb_lu_state_isvalid(sef_cb_lu_state_isvalid_standard);
-
-  /* Let SEF perform startup. */
-  sef_startup();
-}
-
-/*===========================================================================*
- *		            sef_cb_init_fresh                                *
- *===========================================================================*/
-PRIVATE int sef_cb_init_fresh(int type, sef_init_info_t *UNUSED(info))
-{
-/* Initialize the bios_wini driver. */
   long v;
+  struct sigaction sa;
+ 
+  sa.sa_handler = SIG_MESS;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  if (sigaction(SIGTERM,&sa,NULL)<0) panic("BIOS","sigaction failed", errno);
 
-  v = 0;
+  v= 0;
   env_parse("bios_remap_first", "d", 0, &v, 0, 1);
-  remap_first = v;
+  remap_first= v;
 
-  /* Announce we are up! */
-  driver_announce();
-
+/* Set special disk parameters then call the generic main loop. */
+  driver_task(&w_dtab);
   return(OK);
 }
 
@@ -159,10 +136,10 @@ int device;
 	w_wn = &wini[w_drive];
 	w_dv = &w_wn->subpart[device % SUB_PER_DRIVE];
   } else {
-	return(NULL);
+	return(NIL_DEV);
   }
   if (w_drive >= MAX_DRIVES || !w_wn->present)
-  	return NULL;
+  	return NIL_DEV;
   return(w_dv);
 }
 
@@ -181,41 +158,85 @@ PRIVATE char *w_name()
 /*===========================================================================*
  *				w_transfer				     *
  *===========================================================================*/
-PRIVATE int w_transfer(proc_nr, opcode, pos64, iov, nr_req)
+PRIVATE int my_vircopy(from_proc, from_seg, from_vir, to_proc, to_seg,
+  to_vir, grant_offset, size)
+endpoint_t from_proc;
+int from_seg;
+vir_bytes from_vir;
+endpoint_t to_proc;
+int to_seg;
+vir_bytes to_vir;
+vir_bytes grant_offset;
+size_t size;
+{
+	phys_bytes addr;
+	int r;
+
+	if(from_seg == GRANT_SEG) {
+  		if((r=sys_umap(from_proc, GRANT_SEG,
+			(vir_bytes)from_vir, (phys_bytes)size+grant_offset,
+  			&addr)) != OK) {
+			panic(ME, "sys_umap in my_vircopy failed", r);
+		}
+		from_seg = PHYS_SEG;
+		from_vir = addr + grant_offset;
+	}
+
+	if(to_seg == GRANT_SEG) {
+  		if((r=sys_umap(to_proc, GRANT_SEG,
+			(vir_bytes)to_vir, (phys_bytes)size+grant_offset,
+  			&addr)) != OK) {
+			panic(ME, "sys_umap in my_vircopy failed", r);
+		}
+		to_seg = PHYS_SEG;
+		to_vir = addr + grant_offset;
+	}
+
+	return sys_physcopy(from_proc, from_seg, from_vir,
+		to_proc, to_seg, to_vir, size);
+}
+
+/*===========================================================================*
+ *				w_transfer				     *
+ *===========================================================================*/
+PRIVATE int w_transfer(proc_nr, opcode, pos64, iov, nr_req, safe)
 int proc_nr;			/* process doing the request */
 int opcode;			/* DEV_GATHER or DEV_SCATTER */
 u64_t pos64;			/* offset on device to read or write */
 iovec_t *iov;			/* pointer to read or write request vector */
 unsigned nr_req;		/* length of request vector */
+int safe;			/* use safecopies? */
 {
   struct wini *wn = w_wn;
   iovec_t *iop, *iov_end = iov + nr_req;
   int r, errors;
-  unsigned count;
-  vir_bytes chunk, nbytes;
+  unsigned nbytes, count, chunk;
   unsigned long block;
   vir_bytes i13e_rw_off, rem_buf_size;
+  size_t vir_offset = 0;
+  unsigned long dv_size = cv64ul(w_dv->dv_size);
   unsigned secspcyl = wn->heads * wn->sectors;
+  off_t position;
   struct int13ext_rw {
 	u8_t	len;
 	u8_t	res1;
 	u16_t	count;
 	u16_t	addr[2];
 	u32_t	block[2];
-  } *i13e_rw;
+  } i13e_rw;
   struct reg86u reg86;
-  u32_t lopos;
 
-  lopos= ex64lo(pos64);
+  if (ex64hi(pos64))
+	panic(__FILE__, "should handle 64-bit offsets", NO_NUM);
+  position= ex64lo(pos64);
 
   /* Check disk address. */
-  if ((lopos & SECTOR_MASK) != 0) return(EINVAL);
+  if ((position & SECTOR_MASK) != 0) return(EINVAL);
 
   errors = 0;
 
-  i13e_rw_off= BIOSBUF-sizeof(*i13e_rw);
+  i13e_rw_off= bios_buf_size-sizeof(i13e_rw);
   rem_buf_size= (i13e_rw_off & ~SECTOR_MASK);
-  i13e_rw = (struct int13ext_rw *) (bios_buf_v + i13e_rw_off);
   assert(rem_buf_size != 0);
 
   while (nr_req > 0) {
@@ -232,14 +253,9 @@ unsigned nr_req;		/* length of request vector */
 	if ((nbytes & SECTOR_MASK) != 0) return(EINVAL);
 
 	/* Which block on disk and how close to EOF? */
-	if (cmp64(pos64, w_dv->dv_size) >= 0) return(OK);	/* At EOF */
-	if (cmp64(add64u(pos64, nbytes), w_dv->dv_size) > 0) {
-		u64_t n;
-		n = sub64(w_dv->dv_size, pos64);
-		assert(ex64hi(n) == 0);
-		nbytes = ex64lo(n);
-	}
-	block = div64u(add64(w_dv->dv_base, pos64), SECTOR_SIZE);
+	if (position >= dv_size) return(OK);		/* At EOF */
+	if (position + nbytes > dv_size) nbytes = dv_size - position;
+	block = div64u(add64ul(w_dv->dv_base, position), SECTOR_SIZE);
 
 	/* Degrade to per-sector mode if there were errors. */
 	if (errors > 0) nbytes = SECTOR_SIZE;
@@ -248,34 +264,33 @@ unsigned nr_req;		/* length of request vector */
 		/* Copy from user space to the DMA buffer. */
 		count = 0;
 		for (iop = iov; count < nbytes; iop++) {
-			chunk = iop->iov_size;
+			chunk = iov->iov_size;
 			if (count + chunk > nbytes) chunk = nbytes - count;
 			assert(chunk <= rem_buf_size);
-
-			if(proc_nr != SELF) {
-			   	r=sys_safecopyfrom(proc_nr,
-					(cp_grant_id_t) iop->iov_addr,
-		       			0, (vir_bytes) (bios_buf_v+count),
-					chunk, D);
-				if (r != OK)
-					panic("copy failed: %d", r);
-			} else {
-				memcpy(bios_buf_v+count,
-					(char *) iop->iov_addr, chunk);
-			}
+			r= my_vircopy(proc_nr, safe ? GRANT_SEG : D,
+				(vir_bytes) iop->iov_addr,
+				SYSTEM, D, bios_buf_vir+count, 
+				vir_offset, chunk);
+			if (r != OK)
+				panic(ME, "copy failed", r);
 			count += chunk;
 		}
 	}
 
 	/* Do the transfer */
 	if (wn->int13ext) {
-		i13e_rw->len = 0x10;
-		i13e_rw->res1 = 0;
-		i13e_rw->count = nbytes >> SECTOR_SHIFT;
-		i13e_rw->addr[0] = bios_buf_phys % HCLICK_SIZE;
-		i13e_rw->addr[1] = bios_buf_phys / HCLICK_SIZE;
-		i13e_rw->block[0] = block;
-		i13e_rw->block[1] = 0;
+		i13e_rw.len = 0x10;
+		i13e_rw.res1 = 0;
+		i13e_rw.count = nbytes >> SECTOR_SHIFT;
+		i13e_rw.addr[0] = bios_buf_phys % HCLICK_SIZE;
+		i13e_rw.addr[1] = bios_buf_phys / HCLICK_SIZE;
+		i13e_rw.block[0] = block;
+		i13e_rw.block[1] = 0;
+		r= sys_vircopy(SELF, D, (vir_bytes)&i13e_rw,
+			SYSTEM, D, (bios_buf_vir+i13e_rw_off), 
+			sizeof(i13e_rw));
+		if (r != OK)
+			panic(ME, "sys_vircopy failed", r);
 
 		/* Set up an extended read or write BIOS call. */
 		reg86.u.b.intno = 0x13;
@@ -302,7 +317,7 @@ unsigned nr_req;		/* length of request vector */
 
 	r= sys_int86(&reg86);
 	if (r != OK)
-		panic("BIOS call failed: %d", r);
+		panic(ME, "BIOS call failed", r);
 
 	if (reg86.u.w.f & 0x0001) {
 		/* An error occurred, try again sector by sector unless */
@@ -314,34 +329,29 @@ unsigned nr_req;		/* length of request vector */
 		/* Copy from the DMA buffer to user space. */
 		count = 0;
 		for (iop = iov; count < nbytes; iop++) {
-			chunk = iop->iov_size;
+			chunk = iov->iov_size;
 			if (count + chunk > nbytes) chunk = nbytes - count;
 			assert(chunk <= rem_buf_size);
-
-			if(proc_nr != SELF) {
-			   	r=sys_safecopyto(proc_nr, iop->iov_addr, 
-				       	0, (vir_bytes) (bios_buf_v+count),
-				       	chunk, D);
-
-				if (r != OK)
-					panic("sys_vircopy failed: %d", r);
-			} else {
-				memcpy((char *) iop->iov_addr,
-					bios_buf_v+count, chunk);
-			}
+			r = my_vircopy(SYSTEM, D, bios_buf_vir+count, 
+				proc_nr, safe ? GRANT_SEG : D,
+				iop->iov_addr, vir_offset, chunk);
+			if (r != OK)
+				panic(ME, "sys_vircopy failed", r);
 			count += chunk;
 		}
 	}
 
 	/* Book the bytes successfully transferred. */
-	pos64 = add64ul(pos64, nbytes);
+	position += nbytes;
 	for (;;) {
 		if (nbytes < iov->iov_size) {
 			/* Not done with this one yet. */
+			vir_offset += nbytes;
 			iov->iov_size -= nbytes;
 			break;
 		}
 		nbytes -= iov->iov_size;
+		vir_offset = 0;
 		iov->iov_size = 0;
 		if (nbytes == 0) {
 			/* The rest is optional, so we return to give FS a
@@ -369,7 +379,7 @@ message *m_ptr;
 
   if (!init_done) { w_init(); init_done = TRUE; }
 
-  if (w_prepare(m_ptr->DEVICE) == NULL) return(ENXIO);
+  if (w_prepare(m_ptr->DEVICE) == NIL_DEV) return(ENXIO);
 
   if (w_wn->open_ct++ == 0) {
 	/* Partition the disk. */
@@ -387,7 +397,7 @@ message *m_ptr;
 {
 /* Device close: Release a device. */
 
-  if (w_prepare(m_ptr->DEVICE) == NULL) return(ENXIO);
+  if (w_prepare(m_ptr->DEVICE) == NIL_DEV) return(ENXIO);
   w_wn->open_ct--;
   return(OK);
 }
@@ -411,22 +421,30 @@ PRIVATE void w_init()
 	u32_t	capacity[2];
 	u16_t	bts_per_sec;
 	u16_t	config[2];
-  } *i13e_par;
+  } i13e_par;
   struct reg86u reg86;
 
   /* Ask the system task for a suitable buffer */
-  if(!(bios_buf_v = alloc_contig(BIOSBUF, AC_LOWER1M, &bios_buf_phys))) {
-  	panic("allocating bios buffer failed: %d", ENOMEM);
+  r= sys_getbiosbuffer(&bios_buf_vir, &bios_buf_size);
+  if (r != OK)
+  	panic(ME, "sys_getbiosbuffer failed", r);
+
+  if(bios_buf_size >= sizeof(my_bios_buf)) {
+        printf("bios_wini: truncating buffer %d -> %d\n",
+		bios_buf_size, sizeof(my_bios_buf));
+	bios_buf_size = sizeof(my_bios_buf);
   }
 
-  if (bios_buf_phys+BIOSBUF > 0x100000)
-  	panic("bad BIOS buffer / phys: %d", bios_buf_phys);
+  r= sys_umap(SYSTEM, D, (vir_bytes)bios_buf_vir, (phys_bytes)bios_buf_size,
+  	&bios_buf_phys);
+  if (r != OK)
+  	panic(ME, "sys_umap failed", r);
+  if (bios_buf_phys+bios_buf_size > 0x100000)
+  	panic(ME, "bad BIOS buffer, phys", bios_buf_phys);
 #if 0
   printf("bios_wini: got buffer size %d, virtual 0x%x, phys 0x%x\n",
-  		BIOSBUF, bios_buf_v, bios_buf_phys);
+  		bios_buf_size, bios_buf_vir, bios_buf_phys);
 #endif
-
-  i13e_par = (struct int13ext_params *) bios_buf_v;
 
   /* Get the geometry of the drives */
   for (drive = 0; drive < MAX_DRIVES; drive++) {
@@ -449,7 +467,7 @@ PRIVATE void w_init()
 	reg86.u.b.dl = drive_id;
 	r= sys_int86(&reg86);
 	if (r != OK)
-		panic("BIOS call failed: %d", r);
+		panic(ME, "BIOS call failed", r);
 
 	nr_drives = !(reg86.u.w.f & 0x0001) ? reg86.u.b.dl : drive;
 	if (drive_id >= 0x80 + nr_drives) continue;
@@ -469,13 +487,18 @@ PRIVATE void w_init()
 	if (pc_at) {
 		r= sys_int86(&reg86);
 		if (r != OK)
-			panic("BIOS call failed: %d", r);
+			panic(ME, "BIOS call failed", r);
 	}
 
 	if (!(reg86.u.w.f & 0x0001) && reg86.u.w.bx == 0xAA55
 				&& (reg86.u.w.cx & 0x0001)) {
 		/* INT 13 Extensions available. */
-		i13e_par->len = 0x001E;	/* Input size of parameter packet */
+		i13e_par.len = 0x001E;	/* Input size of parameter packet */
+		r= sys_vircopy(SELF, D, (vir_bytes)&i13e_par,
+			SYSTEM, D, bios_buf_vir, 
+			sizeof(i13e_par));
+		if (r != OK)
+			panic(ME, "sys_vircopy failed\n", r);
 		reg86.u.b.intno = 0x13;
 		reg86.u.b.ah = 0x48;	/* Ext. Get drive parameters. */
 		reg86.u.b.dl = drive_id;
@@ -484,12 +507,18 @@ PRIVATE void w_init()
 
 		r= sys_int86(&reg86);
 		if (r != OK)
-			panic("BIOS call failed: %d", r);
+			panic(ME, "BIOS call failed", r);
+
+		r= sys_vircopy(SYSTEM, D, bios_buf_vir,
+			 SELF, D, (vir_bytes)&i13e_par,
+			sizeof(i13e_par));
+		if (r != OK)
+			panic(ME, "sys_vircopy failed\n", r);
 
 		if (!(reg86.u.w.f & 0x0001)) {
 			wn->int13ext = 1;	/* Extensions can be used. */
-			capacity = i13e_par->capacity[0];
-			if (i13e_par->capacity[1] != 0) capacity = 0xFFFFFFFF;
+			capacity = i13e_par.capacity[0];
+			if (i13e_par.capacity[1] != 0) capacity = 0xFFFFFFFF;
 		}
 	}
 
@@ -517,19 +546,27 @@ struct partition *entry;
 /*============================================================================*
  *				w_other				      *
  *============================================================================*/
-PRIVATE int w_other(struct driver *UNUSED(dr), message *m)
+PRIVATE int w_other(dr, m, safe)
+struct driver *dr;
+message *m;
+int safe;
 {
-        int r;
+        int r, timeout, prev;
 
         if (m->m_type != DEV_IOCTL_S )
                 return EINVAL;
 
 	if (m->REQUEST == DIOCOPENCT) {
                 int count;
-                if (w_prepare(m->DEVICE) == NULL) return ENXIO;
+                if (w_prepare(m->DEVICE) == NIL_DEV) return ENXIO;
                 count = w_wn->open_ct;
-	        r=sys_safecopyto(m->IO_ENDPT, (cp_grant_id_t)m->IO_GRANT,
+		if(safe) {
+		   r=sys_safecopyto(m->IO_ENDPT, (vir_bytes)m->ADDRESS,
 		       0, (vir_bytes)&count, sizeof(count), D);
+		} else {
+                   r=sys_datacopy(SELF, (vir_bytes)&count,
+                        m->IO_ENDPT, (vir_bytes)m->ADDRESS, sizeof(count));
+		}
 
 		if(r != OK)
                         return r;
@@ -538,5 +575,4 @@ PRIVATE int w_other(struct driver *UNUSED(dr), message *m)
 
         return EINVAL;
 }
-
 

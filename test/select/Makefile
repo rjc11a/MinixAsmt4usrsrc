@@ -13,7 +13,7 @@ $(PROG):
 	$(CC) $(CFLAGS) -o $@ $@.c -lutil
 
 clean:
-	rm -f *.o $(PROG)
+	/usr/bin/rm -f *.o $(PROG)
 
 speed: speed.c
 test00: test00.c

@@ -1,13 +1,11 @@
-#ifndef __MFS_GLO_H__
-#define __MFS_GLO_H__
-
 /* EXTERN should be extern except for the table file */
 #ifdef _TABLE
 #undef EXTERN
 #define EXTERN
 #endif
 
-#include <minix/vfsif.h>
+EXTERN off_t rdahedpos;		/* position to read ahead */
+EXTERN struct inode *rdahed_inode;	/* pointer to inode to read ahead */
 
 /* The following variables are used for returning results to the caller. */
 EXTERN int err_code;		/* temporary storage for error number */
@@ -22,32 +20,24 @@ extern _PROTOTYPE (int (*fs_call_vec[]), (void) ); /* fs call table */
 
 EXTERN message fs_m_in;
 EXTERN message fs_m_out;
-EXTERN vfs_ucred_t credentials;
+EXTERN int FS_STATE;
 
 EXTERN uid_t caller_uid;
 EXTERN gid_t caller_gid;
 
+EXTERN time_t boottime;		/* time in seconds at system boot */
 EXTERN int req_nr;
 
-EXTERN endpoint_t SELF_E;
+EXTERN int SELF_E;
 
+EXTERN struct inode *chroot_dir;
+
+EXTERN short path_processed;      /* number of characters processed */
 EXTERN char user_path[PATH_MAX+1];  /* pathname to be processed */
+EXTERN char *vfs_slink_storage;
+EXTERN int symloop;
 
-EXTERN dev_t fs_dev;    	/* The device that is handled by this FS proc.
-				 */
-EXTERN char fs_dev_label[16];	/* Name of the device driver that is handled
-				 * by this FS proc.
-				 */
-EXTERN int unmountdone;
-EXTERN int exitsignaled;
+EXTERN dev_t fs_dev;    /* the device that is handled by this FS proc */
 
-/* our block size. */
-EXTERN unsigned int fs_block_size;
 
-/* Buffer cache. */
-EXTERN struct buf *buf;
-EXTERN struct buf **buf_hash;   /* the buffer hash table */
-EXTERN unsigned int nr_bufs;
-EXTERN int may_use_vmcache;
 
-#endif

@@ -471,13 +471,13 @@ void CTL()
 {
   register char ctrl;
 
-  status_line("Enter control character.", NULL);
+  status_line("Enter control character.", NIL_PTR);
   if ((ctrl = getchar()) >= '\01' && ctrl <= '\037') {
   	S(ctrl);		/* Insert the char */
 	clear_status();
   }
   else
-	error ("Unknown control character", NULL);
+	error ("Unknown control character", NIL_PTR);
 }
 
 /*
@@ -528,7 +528,7 @@ char *location, *string;
   register char *textp = line->text;
 
   if (length_of(textp) + length_of(string) >= MAX_CHARS) {
-  	error("Line too long", NULL);
+  	error("Line too long", NIL_PTR);
   	return ERRORS;
   }
 
@@ -607,12 +607,12 @@ char *start_textp, *end_textp;
 
 /* Check if line doesn't exceed MAX_CHARS */
   if (count + length_of(end_textp) >= MAX_CHARS) {
-  	error("Line too long", NULL);
+  	error("Line too long", NIL_PTR);
   	return;
   }
 
 /* Copy last part of end_line if end_line is not tail */
-  copy_string(bufp, (end_textp != NULL) ? end_textp : "\n");
+  copy_string(bufp, (end_textp != NIL_PTR) ? end_textp : "\n");
 
 /* Delete all lines between start and end_position (including end_line) */
   line = start_line->next;
@@ -623,7 +623,7 @@ char *start_textp, *end_textp;
   }
 
 /* Check if last line of file should be deleted */
-  if (end_textp == NULL && length_of(start_line->text) == 1 && nlines > 1) {
+  if (end_textp == NIL_PTR && length_of(start_line->text) == 1 && nlines > 1) {
   	start_line = start_line->prev;
   	(void) line_delete(start_line->next);
   	line_cnt++;
@@ -681,7 +681,7 @@ void PT()
   register int fd;		/* File descriptor for buffer */
 
   if ((fd = scratch_file(READ)) == ERRORS)
-  	error("Buffer is empty.", NULL);
+  	error("Buffer is empty.", NIL_PTR);
   else {
   	file_insert(fd, FALSE);/* Insert the buffer */
   	(void) close(fd);
@@ -782,7 +782,7 @@ void WB()
   
 /* Checkout the buffer */
   if ((yank_fd = scratch_file(READ)) == ERRORS) {
-  	error("Buffer is empty.", NULL);
+  	error("Buffer is empty.", NIL_PTR);
   	return;
   }
 
@@ -821,7 +821,7 @@ void MA()
 {
   mark_line = cur_line;
   mark_text = cur_text;
-  status_line("Mark set", NULL);
+  status_line("Mark set", NIL_PTR);
 }
 
 /*
@@ -851,7 +851,7 @@ FLAG remove;				/* DELETE if text should be deleted */
 {
   switch (checkmark()) {
   	case NOT_VALID :
-  		error("Mark not set.", NULL);
+  		error("Mark not set.", NIL_PTR);
   		return;
   	case SMALLER :
   		yank(mark_line, mark_text, cur_line, cur_text, remove);
@@ -862,7 +862,7 @@ FLAG remove;				/* DELETE if text should be deleted */
   	case SAME :		/* Ignore stupid behaviour */
   		yank_status = EMPTY;
   		chars_saved = 0L;
-  		status_line("0 characters saved in buffer.", NULL);
+  		status_line("0 characters saved in buffer.", NIL_PTR);
   		break;
   }
 }
@@ -938,7 +938,7 @@ FLAG remove;				/* DELETE if text should be deleted */
   
   chars_saved = 0L;
   lines_saved = 0;
-  status_line("Saving text.", NULL);
+  status_line("Saving text.", NIL_PTR);
 
 /* Keep writing chars until the end_location is reached. */
   while (textp != end_textp) {
@@ -1005,7 +1005,7 @@ FLAG mode;				/* Can be READ or WRITE permission */
   	/* Check file existence */
   	if (access(yank_file, 0) == 0 || (fd = creat(yank_file, 0644)) < 0) {
   		if (trials++ >= MAXTRAILS) {
-  			error("Unable to creat scratchfile.", NULL);
+  			error("Unable to creat scratchfile.", NIL_PTR);
   			return ERRORS;
   		}
   		else
@@ -1065,7 +1065,7 @@ void SR()
 /*
  * Get_expression() prompts for an expression. If just a return is typed, the
  * old expression is used. If the expression changed, compile() is called and
- * the returning REGEX structure is returned. It returns NULL upon error.
+ * the returning REGEX structure is returned. It returns NIL_REG upon error.
  * The save flag indicates whether the expression should be appended at the
  * message pointer.
  */
@@ -1076,11 +1076,11 @@ char *message;
   char exp_buf[LINE_LEN];			/* Buffer for new expr. */
 
   if (get_string(message, exp_buf, FALSE) == ERRORS)
-  	return NULL;
+  	return NIL_REG;
   
   if (exp_buf[0] == '\0' && typed_expression[0] == '\0') {
-  	error("No previous expression.", NULL);
-  	return NULL;
+  	error("No previous expression.", NIL_PTR);
+  	return NIL_REG;
   }
 
   if (exp_buf[0] != '\0') {		/* A new expr. is typed */
@@ -1089,8 +1089,8 @@ char *message;
   }
 
   if (program.status == REG_ERROR) {	/* Error during compiling */
-  	error(program.result.err_mess, NULL);
-  	return NULL;
+  	error(program.result.err_mess, NIL_PTR);
+  	return NIL_REG;
   }
   return &program;
 }
@@ -1133,7 +1133,7 @@ FLAG file;
 
 /* Save message and get expression */
   copy_string(mess_buf, message);
-  if ((program = get_expression(mess_buf)) == NULL)
+  if ((program = get_expression(mess_buf)) == NIL_REG)
   	return;
   
 /* Get substitution pattern */
@@ -1151,7 +1151,7 @@ FLAG file;
   		do {
   			subs++;	/* Increment subs */
   			if ((textp = substitute(line, program,replacement))
-								     == NULL)
+								     == NIL_PTR)
   				return;	/* Line too long */
   		} while ((program->status & BEGIN_LINE) != BEGIN_LINE &&
 			 (program->status & END_LINE) != END_LINE &&
@@ -1170,11 +1170,11 @@ FLAG file;
   copy_string(mess_buf, (quit == TRUE) ? "(Aborted) " : "");
 /* Fix the status line */
   if (subs == 0L && quit == FALSE)
-  	error("Pattern not found.", NULL);
+  	error("Pattern not found.", NIL_PTR);
   else if (lines >= REPORT || quit == TRUE) {
   	build_string(mess_buf, "%s %D substitutions on %D lines.", mess_buf,
 								   subs, lines);
-  	status_line(mess_buf, NULL);
+  	status_line(mess_buf, NIL_PTR);
   }
   else if (file == NOT_VALID && subs >= REPORT)
   	status_line(num_out(subs), " substitutions.");
@@ -1224,8 +1224,8 @@ char *replacement;		/* Contains replacement pattern */
 
 /* Check for line length not exceeding MAX_CHARS */
   if (length_of(text_buffer) + length_of(program->end_ptr) >= MAX_CHARS) {
-  	error("Substitution result: line too big", NULL);
-  	return NULL;
+  	error("Substitution result: line too big", NIL_PTR);
+  	return NIL_PTR;
   }
 
 /* Append last part of line to the new build line */
@@ -1242,7 +1242,7 @@ char *replacement;		/* Contains replacement pattern */
 /*
  * Search() calls get_expression to fetch the expression. If this went well,
  * the function match() is called which returns the line with the next match.
- * If this line is the NULL, it means that a match could not be found.
+ * If this line is the NIL_LINE, it means that a match could not be found.
  * Find_x() and find_y() display the right page on the screen, and return
  * the right coordinates for x and y. These coordinates are passed to move_to()
  */
@@ -1254,17 +1254,17 @@ FLAG method;
   register LINE *match_line;
 
 /* Get the expression */
-  if ((program = get_expression(message)) == NULL)
+  if ((program = get_expression(message)) == NIL_REG)
   	return;
 
   set_cursor(0, ymax);
   flush();
 /* Find the match */
-  if ((match_line = match(program, cur_text, method)) == NULL) {
+  if ((match_line = match(program, cur_text, method)) == NIL_LINE) {
   	if (quit == TRUE)
-  		status_line("Aborted", NULL);
+  		status_line("Aborted", NIL_PTR);
   	else
-  		status_line("Pattern not found.", NULL);
+  		status_line("Pattern not found.", NIL_PTR);
   	return;
   }
 
@@ -1499,7 +1499,7 @@ REGEX *program;
  * Match gets as argument the program, pointer to place in current line to 
  * start from and the method to search for (either FORWARD or REVERSE).
  * Match() will look through the whole file until a match is found.
- * NULL is returned if no match could be found.
+ * NIL_LINE is returned if no match could be found.
  */
 LINE *match(program, string, method)
 REGEX *program;
@@ -1511,7 +1511,7 @@ register FLAG method;
 
 /* Corrupted program */
   if (program->status == REG_ERROR)
-  	return NULL;
+  	return NIL_LINE;
 
 /* Check part of text first */
   if (!(program->status & BEGIN_LINE)) {
@@ -1533,14 +1533,14 @@ register FLAG method;
 /* No match in last (or first) part of line. Check out rest of file */
   do {
   	line = (method == FORWARD) ? line->next : line->prev;
-  	if (line->text == NULL)	/* Header/tail */
+  	if (line->text == NIL_PTR)	/* Header/tail */
   		continue;
   	if (line_check(program, line->text, method) == MATCH)
   		return line;
   } while (line != cur_line && quit == FALSE);
 
 /* No match found. */
-  return NULL;
+  return NIL_LINE;
 }
 
 /*
@@ -1560,7 +1560,7 @@ FLAG method;
 
 /* If the match must be anchored, just check the string. */
   if (program->status & BEGIN_LINE)
-  	return check_string(program, string, NULL);
+  	return check_string(program, string, NIL_INT);
   
   if (method == REVERSE) {
   	/* First move to the end of the string */
@@ -1569,7 +1569,7 @@ FLAG method;
   	/* Start checking string until the begin of the string is met */
   	while (textp >= string) {
   		program->start_ptr = textp;
-  		if (check_string(program, textp--, NULL))
+  		if (check_string(program, textp--, NIL_INT))
   			return MATCH;
   	}
   }
@@ -1577,7 +1577,7 @@ FLAG method;
   	/* Move through the string until the end of is found */
 	while (quit == FALSE && *textp != '\0') {
   		program->start_ptr = textp;
-  		if (check_string(program, textp, NULL))
+  		if (check_string(program, textp, NIL_INT))
   			return MATCH;
 		if (*textp == '\n')
 			break;
@@ -1606,7 +1606,7 @@ int *expression;
   char *mark;			/* For marking position */
   int star_fl;			/* A star has been born */
 
-  if (expression == NULL)
+  if (expression == NIL_INT)
   	expression = program->result.expression;
 
 /* Loop until end of string or end of expression */

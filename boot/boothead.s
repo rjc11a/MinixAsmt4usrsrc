@@ -41,35 +41,18 @@
 .extern _rem_part				! To pass partition info
 .extern _k_flags				! Special kernel flags
 .extern _mem					! Free memory list
-.extern _emem				! Free memory list for E820
-.extern _mem_entries				! Free memory E820 list entries
-.extern _cdbooted				! Whether we booted from CD
-.extern _cddevice				! Whether we booted from CD
 
 .text
-
 
 ! Set segment registers and stack pointer using the programs own header!
 ! The header is either 32 bytes (short form) or 48 bytes (long form).  The
 ! bootblock will jump to address 0x10030 in both cases, calling one of the
 ! two jmpf instructions below.
-!
-! CD bootblock jumps to address 0x10050 in both cases.
 
 	jmpf	boot, LOADSEG+3	! Set cs right (skipping long a.out header)
 	.space	11		! jmpf + 11 = 16 bytes
 	jmpf	boot, LOADSEG+2	! Set cs right (skipping short a.out header)
-	.space	11		! jmpf + 11 = 16 bytes
-	jmpf	cdboot, LOADSEG+3
-	.space	11		
-	jmpf	cdboot, LOADSEG+2
-	.space	11		
-cdboot:
-	mov	bx, #1
-	jmp	commonboot
 boot:
-	mov	bx, #0
-commonboot:
 	mov	ax, #LOADSEG
 	mov	ds, ax		! ds = header
 
@@ -113,7 +96,6 @@ sepID:
 	mov	_device, dx	! Boot device (probably 0x00 or 0x80)
 	mov	_rem_part+0, si	! Remote partition table offset
 	pop	_rem_part+2	! and segment (saved es)
-	mov	_cdbooted, bx	! Booted from CD? (bx set above)
 
 ! Remember the current video mode for restoration on exit.
 	movb	ah, #0x0F	! Get current video mode
@@ -144,64 +126,6 @@ sepID:
 	pop	ds
 	mov	_runsize+0, ax
 	mov	_runsize+2, dx	! 32 bit size of this process
-
-!Determine memory using the 0xE820 BIOS function if available
-	mov	di, #_emem
-	mov	20(di), #1	! force a valid ACPI 3.X entry
-
-	.data1 o32
-	xor	bx, bx		! zero EBX
-	xor	bp, bp		!zero bp
-	.data1 o32
-	mov 	dx, e820_magic
-	.data1 o32
-	mov	cx, const_24		! request 24 bytes
-	
-	.data1 o32
-	mov	ax, const_0xe820
-	int	0x15
-	jc	e820_failed
-
-	.data1 o32
-	mov 	dx, e820_magic
-	.data1 o32
-	cmp	dx, ax
-	jne	e820_failed
-
-	.data1 o32
-	test	bx, bx
-	je	e820_failed
-	jmp	e820_gotit
-
-e820_next:
-	.data1 o32
-	mov	ax, const_0xe820
-	mov	20(di), #1	! force a valid ACPI 3.X entry
-	
-	.data1 o32
-	mov	cx, const_24	! request 24 bytes
-	int	0x15
-	jc	e820_done
-	.data1 o32
-	mov 	dx, e820_magic
-
-
-e820_gotit:
-	jcxz	e820_skip
-	cmp	bp, #16
-	je	e820_done	! we have only space for 16 entries
-	inc	bp
-	add	di, #24
-e820_skip:
-	.data1 o32
-	test	bx, bx
-	jne	e820_next
-
-e820_done:
-	mov	_mem_entries, bp
-	jmp	memory_detected
-
-e820_failed:
 
 ! Determine available memory as a list of (base,size) pairs as follows:
 ! mem[0] = low memory, mem[1] = memory between 1M and 16M, mem[2] = memory
@@ -244,8 +168,6 @@ got_ext:
 adj_ext:
 	add	14(di), bx	! Add ext mem above 16M to mem below 16M
 no_ext:
-
-memory_detected:
 
 
 ! Time to switch to a higher level language (not much higher)
@@ -363,12 +285,10 @@ smallcopy:
 ext_copy:
 	mov	x_dst_desc+2, ax
 	movb	x_dst_desc+4, dl ! Set base of destination segment
-	movb	x_dst_desc+7, dh
 	mov	ax, 8(bp)
 	mov	dx, 10(bp)
 	mov	x_src_desc+2, ax
 	movb	x_src_desc+4, dl ! Set base of source segment
-	movb	x_src_desc+7, dh
 	mov	si, #x_gdt	! es:si = global descriptor table
 	shr	cx, #1		! Words to move
 	movb	ah, #0x87	! Code for extended memory move
@@ -496,8 +416,6 @@ _dev_open:
 	push	es
 	push	di		! Save registers used by BIOS calls
 	movb	dl, _device	! The default device
-	cmpb	dl, _cddevice
-	je	cdopen
 	cmpb	dl, #0x80	! Floppy < 0x80, winchester >= 0x80
 	jae	winchester
 floppy:
@@ -545,10 +463,6 @@ winchester:
 	jc	geoerr		! No such drive?
 	andb	cl, #0x3F	! cl = max sector number (1-origin)
 	incb	dh		! dh = 1 + max head number (0-origin)
-	jmp geoboth
-cdopen:
-	movb	cl, #0x3F	! Think up geometry for CD's
-	movb	dh, #0x2
 geoboth:
 	movb	sectors, cl	! Sectors per track
 	movb	al, cl		! al = sectors per track
@@ -601,20 +515,20 @@ _dev_boundary:
 	neg	ax		! ax = (sector % sectors) == 0
 	ret
 
-! int biosreadsectors(u32_t bufaddr, u32_t sector, u8_t count)
+! int readsectors(u32_t bufaddr, u32_t sector, u8_t count)
 ! int writesectors(u32_t bufaddr, u32_t sector, u8_t count)
 !	Read/write several sectors from/to disk or floppy.  The buffer must
 !	be between 64K boundaries!  Count must fit in a byte.  The external
 !	variables _device, sectors and secspcyl describe the disk and its
 !	geometry.  Returns 0 for success, otherwise the BIOS error code.
 !
-.define _biosreadsectors, _writesectors
+.define _readsectors, _writesectors
 _writesectors:
 	push	bp
 	mov	bp, sp
 	movb	13(bp), #0x03	! Code for a disk write
 	jmp	rwsec
-_biosreadsectors:
+_readsectors:
 	push	bp
 	mov	bp, sp
 	movb	13(bp), #0x02	! Code for a disk read
@@ -641,9 +555,6 @@ more:	mov	ax, 8(bp)
 	mov	dx, 10(bp)	! dx:ax = abs sector.  Divide it by sectors/cyl
 	cmp	dx, #[1024*255*63-255]>>16  ! Near 8G limit?
 	jae	bigdisk
-	mov	si, _device	
-	cmp	si, _cddevice	! Is it a CD?
-	je	bigdisk		! CD's need extended read.
 	div	secspcyl	! ax = cylinder, dx = sector within cylinder
 	xchg	ax, dx		! ax = sector within cylinder, dx = cylinder
 	movb	ch, dl		! ch = low 8 bits of cylinder
@@ -729,7 +640,7 @@ _getch:
 	test	ax, ax
 	jnz	gotch
 getch:
-!	hlt			! Play dead until interrupted (see pause())
+	hlt			! Play dead until interrupted (see pause())
 	movb	ah, #0x01	! Keyboard status
 	int	0x16
 	jz	0f		! Nothing typed
@@ -830,7 +741,7 @@ nulch:	ret
 !	power, or tells an x86 emulator that nothing is happening right now.
 .define _pause
 _pause:
-!	hlt
+	hlt
 	ret
 
 ! void set_mode(unsigned mode);
@@ -1516,11 +1427,6 @@ _scan_keyboard:
 	outb	0x61
 	ret
 
-.define	_reset
-_reset:
-	lidt	idt_zero
-	int	0x3
-
 .data
 	.ascii	"(null)\0"	! Just in case someone follows a null pointer
 	.align	2
@@ -1528,8 +1434,6 @@ c60:	.data2	60		! Constants for MUL and DIV
 c1024:	.data2	1024
 c1080:	.data2	1080
 c19663:	.data2	19663
-idt_zero:
-.data4	0,0
 
 ! Global descriptor tables.
 	UNSET	= 0		! Must be computed
@@ -1596,15 +1500,6 @@ p_mcs_desc:
 	.data2	0xFFFF, UNSET
 	.data1	UNSET, 0x9A, 0x00, 0x00
 
-e820_magic:
-!	.data1 0x53, 0x4D, 0x41, 0x50
-	.data1 0x50, 0x41, 0x4D, 0x53
-const_24:
-	.data1 0x18, 0x0, 0x0, 0x0
-const_0xe820:
-	.data2 0xe820
-
-
 .bss
 	.comm	old_vid_mode, 2	! Video mode at startup
 	.comm	cur_vid_mode, 2	! Current video mode
@@ -1617,3 +1512,5 @@ const_0xe820:
 	.comm	bus, 2		! Saved return value of _get_bus
 	.comm	unchar, 2	! Char returned by ungetch(c)
 	.comm	line, 2		! Serial line I/O port to copy console I/O to.
+
+

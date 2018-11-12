@@ -11,63 +11,98 @@
  *   free_inode:   mark an inode as available for a new file
  *   update_times: update atime, ctime, and mtime
  *   rw_inode:	   read a disk block and extract an inode, or corresp. write
+ *   old_icopy:	   copy to/from in-core inode struct and disk inode (V1.x)
+ *   new_icopy:	   copy to/from in-core inode struct and disk inode (V2.x)
  *   dup_inode:	   indicate that someone else is using an inode table entry
- *   find_inode:   retrieve pointer to inode in inode cache
- *
  */
 
 #include "fs.h"
 #include "buf.h"
 #include "inode.h"
 #include "super.h"
+
 #include <minix/vfsif.h>
 
-FORWARD _PROTOTYPE( void addhash_inode, (struct inode *node)		); 
-
-FORWARD _PROTOTYPE( void free_inode, (dev_t dev, ino_t numb)			);
-FORWARD _PROTOTYPE( void new_icopy, (struct inode *rip, d2_inode *dip,
-						int direction, int norm));
 FORWARD _PROTOTYPE( void old_icopy, (struct inode *rip, d1_inode *dip,
 						int direction, int norm));
-FORWARD _PROTOTYPE( void unhash_inode, (struct inode *node) 		);
-FORWARD _PROTOTYPE( void wipe_inode, (struct inode *rip)			);
+FORWARD _PROTOTYPE( void new_icopy, (struct inode *rip, d2_inode *dip,
+						int direction, int norm));
+FORWARD _PROTOTYPE( void put_inode2, (struct inode *rip, int count));
 
 
 /*===========================================================================*
  *				fs_putnode				     *
  *===========================================================================*/
-PUBLIC int fs_putnode(void)
+PUBLIC int fs_putnode()
 {
-/* Find the inode specified by the request message and decrease its counter.*/
-
+/* Find the inode specified by the request message and decrease its counter.
+ */
   struct inode *rip;
   int count;
   
-  rip = find_inode(fs_dev, (ino_t) fs_m_in.REQ_INODE_NR);
-
-  if(!rip) {
-	  printf("%s:%d put_inode: inode #%lu dev: %d not found\n", __FILE__,
-		 __LINE__, (ino_t) fs_m_in.REQ_INODE_NR, fs_dev);
-	  panic("fs_putnode failed");
+  /* Sanity check for the direct index */
+  if (fs_m_in.REQ_INODE_INDEX >= 0 && 
+          fs_m_in.REQ_INODE_INDEX < NR_INODES &&
+          inode[fs_m_in.REQ_INODE_INDEX].i_num == fs_m_in.REQ_INODE_NR) {
+      rip = &inode[fs_m_in.REQ_INODE_INDEX];
+  }
+  /* Otherwise find it */
+  else { 
+      rip = find_inode(fs_dev, fs_m_in.REQ_INODE_NR);
   }
 
-  count = fs_m_in.REQ_COUNT;
-  if (count <= 0) {
-	printf("%s:%d put_inode: bad value for count: %d\n", __FILE__,
-	       __LINE__, count);
-	panic("fs_putnode failed");
-  } else if(count > rip->i_count) {
-	printf("%s:%d put_inode: count too high: %d > %d\n", __FILE__,
-	       __LINE__, count, rip->i_count);
-	panic("fs_putnode failed");
+  if (!rip)
+  {
+      printf("FSput_inode: inode #%d dev: %d couldn't be put, req_nr: %d\n", 
+            fs_m_in.REQ_INODE_NR, fs_dev, req_nr);
+	panic(__FILE__, "fs_putnode failed", NO_NUM);
   }
 
-  /* Decrease reference counter, but keep one reference; it will be consumed by
-   * put_inode(). */ 
-  rip->i_count -= count - 1;
-  put_inode(rip);
+  count= fs_m_in.REQ_COUNT;
+  if (count <= 0)
+  {
+	printf("put_inode: bad value for count: %d\n", count);
+	panic(__FILE__, "fs_putnode failed", NO_NUM);
+	return EINVAL;
+  }
+  if (count > rip->i_count)
+  {
+	printf("put_inode: count too high: %d > %d\n", count, rip->i_count);
+	panic(__FILE__, "fs_putnode failed", NO_NUM);
+	return EINVAL;
+  }
 
-  return(OK);
+  put_inode2(rip, count);
+  return OK;
+}
+
+
+/*===========================================================================*
+ *				fs_getnode				     *
+ *===========================================================================*/
+PUBLIC int fs_getnode()
+{
+/* Increase the inode's counter specified in the request message
+ */
+  struct inode *rip;
+  /* Get the inode */
+  rip = get_inode(fs_dev, fs_m_in.REQ_INODE_NR);
+
+  if (!rip) {
+      printf("FS: inode #%d couldn't be found\n", fs_m_in.REQ_INODE_NR);
+      return EINVAL;
+  }
+
+  /* Transfer back the inode's details */
+  fs_m_out.m_source = rip->i_dev;
+  fs_m_out.RES_INODE_NR = rip->i_num;
+  fs_m_out.RES_MODE = rip->i_mode;
+  fs_m_out.RES_FILE_SIZE = rip->i_size;
+  fs_m_out.RES_DEV = (Dev_t) rip->i_zone[0];
+  fs_m_out.RES_UID = rip->i_uid;
+  fs_m_out.RES_GID = rip->i_gid;
+
+  return OK;
 }
 
 
@@ -91,7 +126,7 @@ PUBLIC void init_inode_cache()
 
   /* add free inodes to unused/free list */
   for (rip = &inode[0]; rip < &inode[NR_INODES]; ++rip) {
-      rip->i_num = NO_ENTRY;
+      rip->i_num = 0;
       TAILQ_INSERT_HEAD(&unused_inodes, rip, i_unused);
   }
 }
@@ -100,40 +135,39 @@ PUBLIC void init_inode_cache()
 /*===========================================================================*
  *				addhash_inode   			     *
  *===========================================================================*/
-PRIVATE void addhash_inode(struct inode *node) 
+PRIVATE int addhash_inode(struct inode *node) 
 {
-  int hashi = (int) (node->i_num & INODE_HASH_MASK);
+  int hashi = node->i_num & INODE_HASH_MASK;
   
   /* insert into hash table */
   LIST_INSERT_HEAD(&hash_inodes[hashi], node, i_hash);
+  return OK;
 }
-
 
 /*===========================================================================*
  *				unhash_inode      			     *
  *===========================================================================*/
-PRIVATE void unhash_inode(struct inode *node) 
+PRIVATE int unhash_inode(struct inode *node) 
 {
   /* remove from hash table */
   LIST_REMOVE(node, i_hash);
+  return OK;
 }
-
 
 /*===========================================================================*
  *				get_inode				     *
  *===========================================================================*/
-PUBLIC struct inode *get_inode(
-  dev_t dev,			/* device on which inode resides */
-  ino_t numb			/* inode number */
-)
+PUBLIC struct inode *get_inode(dev, numb)
+dev_t dev;			/* device on which inode resides */
+int numb;			/* inode number (ANSI: may not be unshort) */
 {
 /* Find the inode in the hash table. If it is not there, get a free inode
  * load it from the disk if it's necessary and put on the hash list 
  */
-  register struct inode *rip;
+  register struct inode *rip, *xp;
   int hashi;
 
-  hashi = (int) (numb & INODE_HASH_MASK);
+  hashi = numb & INODE_HASH_MASK;
 
   /* Search inode in the hash table */
   LIST_FOREACH(rip, &hash_inodes[hashi], i_hash) {
@@ -144,7 +178,7 @@ PUBLIC struct inode *get_inode(
               TAILQ_REMOVE(&unused_inodes, rip, i_unused);
 	  }
           ++rip->i_count;
-          return(rip);
+          return rip;
       }
   }
 
@@ -153,12 +187,12 @@ PUBLIC struct inode *get_inode(
   /* Inode is not on the hash, get a free one */
   if (TAILQ_EMPTY(&unused_inodes)) {
       err_code = ENFILE;
-      return(NULL);
+      return NIL_INODE;
   }
   rip = TAILQ_FIRST(&unused_inodes);
 
   /* If not free unhash it */
-  if (rip->i_num != NO_ENTRY)
+  if (rip->i_num != 0)
       unhash_inode(rip);
   
   /* Inode is not unused any more */
@@ -170,8 +204,10 @@ PUBLIC struct inode *get_inode(
   rip->i_count = 1;
   if (dev != NO_DEV) rw_inode(rip, READING);	/* get inode from disk */
   rip->i_update = 0;		/* all the times are initially up-to-date */
-  rip->i_zsearch = NO_ZONE;	/* no zones searched for yet */
-  rip->i_mountpoint= FALSE;
+  if ((rip->i_mode & I_TYPE) == I_NAMED_PIPE)
+	rip->i_pipe = I_PIPE;
+  else
+	rip->i_pipe = NO_PIPE;
 
   /* Add to hash */
   addhash_inode(rip);
@@ -179,30 +215,28 @@ PUBLIC struct inode *get_inode(
   return(rip);
 }
 
-
 /*===========================================================================*
  *				find_inode        			     *
  *===========================================================================*/
-PUBLIC struct inode *find_inode(
-  dev_t dev,			/* device on which inode resides */
-  ino_t numb			/* inode number */
-)
+PUBLIC struct inode *find_inode(dev, numb)
+dev_t dev;			/* device on which inode resides */
+int numb;			/* inode number (ANSI: may not be unshort) */
 {
 /* Find the inode specified by the inode and device number.
  */
   struct inode *rip;
   int hashi;
 
-  hashi = (int) (numb & INODE_HASH_MASK);
+  hashi = numb & INODE_HASH_MASK;
 
   /* Search inode in the hash table */
   LIST_FOREACH(rip, &hash_inodes[hashi], i_hash) {
       if (rip->i_count > 0 && rip->i_num == numb && rip->i_dev == dev) {
-          return(rip);
+          return rip;
       }
   }
   
-  return(NULL);
+  return NIL_INODE;
 }
 
 
@@ -217,34 +251,75 @@ register struct inode *rip;	/* pointer to inode to be released */
  * return it to the pool of available inodes.
  */
 
-  if (rip == NULL) return;	/* checking here is easier than in caller */
-
-  if (rip->i_count < 1)
-	panic("put_inode: i_count already below 1: %d", rip->i_count);
+  if (rip == NIL_INODE) return;	/* checking here is easier than in caller */
 
   if (--rip->i_count == 0) {	/* i_count == 0 means no one is using it now */
-	if (rip->i_nlinks == NO_LINK) {
-		/* i_nlinks == NO_LINK means free the inode. */
-		/* return all the disk blocks */
-
-		/* Ignore errors by truncate_inode in case inode is a block
-		 * special or character special file.
-		 */
-		(void) truncate_inode(rip, (off_t) 0); 
-		rip->i_mode = I_NOT_ALLOC;     /* clear I_TYPE field */
+	if (rip->i_nlinks == 0) {
+		/* i_nlinks == 0 means free the inode. */
+		truncate_inode(rip, 0);	/* return all the disk blocks */
+		rip->i_mode = I_NOT_ALLOC;	/* clear I_TYPE field */
 		rip->i_dirt = DIRTY;
 		free_inode(rip->i_dev, rip->i_num);
 	} 
-
-        rip->i_mountpoint = FALSE;
+        else {
+		if (rip->i_pipe == I_PIPE) truncate_inode(rip, 0);
+	}
+        rip->i_mount = NO_MOUNT;
 	if (rip->i_dirt == DIRTY) rw_inode(rip, WRITING);
 
-	if (rip->i_nlinks == NO_LINK) {
+	if (rip->i_nlinks == 0) {
 		/* free, put at the front of the LRU list */
 		unhash_inode(rip);
-		rip->i_num = NO_ENTRY;
+		rip->i_num = 0;
 		TAILQ_INSERT_HEAD(&unused_inodes, rip, i_unused);
-	} else {
+	}
+	else {
+		/* unused, put at the back of the LRU (cache it) */
+		TAILQ_INSERT_TAIL(&unused_inodes, rip, i_unused);
+	}
+  }
+}
+
+
+/*===========================================================================*
+ *				put_inode2				     *
+ *===========================================================================*/
+PRIVATE void put_inode2(rip, count)
+register struct inode *rip;	/* pointer to inode to be released */
+int count;
+{
+/* The caller is no longer using this inode.  If no one else is using it either
+ * write it back to the disk immediately.  If it has no links, truncate it and
+ * return it to the pool of available inodes.
+ */
+
+  if (rip == NIL_INODE) return;	/* checking here is easier than in caller */
+
+  if (rip->i_count < count)
+	panic(__FILE__, "put_inode2: bad value for count", count);
+  rip->i_count -= count;
+  if (rip->i_count == 0) {	/* i_count == 0 means no one is using it now */
+	if (rip->i_nlinks == 0) {
+		/* i_nlinks == 0 means free the inode. */
+		truncate_inode(rip, 0);	/* return all the disk blocks */
+		rip->i_mode = I_NOT_ALLOC;	/* clear I_TYPE field */
+		rip->i_dirt = DIRTY;
+		free_inode(rip->i_dev, rip->i_num);
+	} 
+        else {
+		if (rip->i_pipe == I_PIPE)
+			truncate_inode(rip, 0);
+	}
+        rip->i_mount = NO_MOUNT;
+	if (rip->i_dirt == DIRTY) rw_inode(rip, WRITING);
+
+	if (rip->i_nlinks == 0) {
+		/* free, put at the front of the LRU list */
+		unhash_inode(rip);
+		rip->i_num = 0;
+		TAILQ_INSERT_HEAD(&unused_inodes, rip, i_unused);
+	}
+	else {
 		/* unused, put at the back of the LRU (cache it) */
 		TAILQ_INSERT_TAIL(&unused_inodes, rip, i_unused);
 	}
@@ -267,29 +342,29 @@ PUBLIC struct inode *alloc_inode(dev_t dev, mode_t bits)
   sp = get_super(dev);	/* get pointer to super_block */
   if (sp->s_rd_only) {	/* can't allocate an inode on a read only device. */
 	err_code = EROFS;
-	return(NULL);
+	return(NIL_INODE);
   }
 
   /* Acquire an inode from the bit map. */
   b = alloc_bit(sp, IMAP, sp->s_isearch);
   if (b == NO_BIT) {
-	err_code = ENOSPC;
+	err_code = ENFILE;
 	major = (int) (sp->s_dev >> MAJOR) & BYTE;
 	minor = (int) (sp->s_dev >> MINOR) & BYTE;
 	printf("Out of i-nodes on device %d/%d\n", major, minor);
-	return(NULL);
+	return(NIL_INODE);
   }
   sp->s_isearch = b;		/* next time start here */
   inumb = (int) b;		/* be careful not to pass unshort as param */
 
   /* Try to acquire a slot in the inode table. */
-  if ((rip = get_inode(NO_DEV, inumb)) == NULL) {
+  if ((rip = get_inode(NO_DEV, inumb)) == NIL_INODE) {
 	/* No inode table slots available.  Free the inode just allocated. */
 	free_bit(sp, IMAP, b);
   } else {
 	/* An inode slot is available. Put the inode just allocated into it. */
 	rip->i_mode = bits;		/* set up RWX bits */
-	rip->i_nlinks = NO_LINK;	/* initial no links */
+	rip->i_nlinks = 0;		/* initial no links */
 	rip->i_uid = caller_uid;	/* file's uid is owner's */
 	rip->i_gid = caller_gid;	/* ditto group id */
 	rip->i_dev = dev;		/* mark which device it is on */
@@ -308,11 +383,10 @@ PUBLIC struct inode *alloc_inode(dev_t dev, mode_t bits)
   return(rip);
 }
 
-
 /*===========================================================================*
  *				wipe_inode				     *
  *===========================================================================*/
-PRIVATE void wipe_inode(rip)
+PUBLIC void wipe_inode(rip)
 register struct inode *rip;	/* the inode to be erased */
 {
 /* Erase some fields in the inode.  This function is called from alloc_inode()
@@ -331,10 +405,9 @@ register struct inode *rip;	/* the inode to be erased */
 /*===========================================================================*
  *				free_inode				     *
  *===========================================================================*/
-PRIVATE void free_inode(
-  dev_t dev,			/* on which device is the inode? */
-  ino_t inumb			/* number of the inode to be freed */
-)
+PUBLIC void free_inode(dev, inumb)
+dev_t dev;			/* on which device is the inode */
+ino_t inumb;			/* number of inode to be freed */
 {
 /* Return an inode to the pool of unallocated inodes. */
 
@@ -343,12 +416,11 @@ PRIVATE void free_inode(
 
   /* Locate the appropriate super_block. */
   sp = get_super(dev);
-  if (inumb == NO_ENTRY || inumb > sp->s_ninodes) return;
-  b = (bit_t) inumb;
+  if (inumb <= 0 || inumb > sp->s_ninodes) return;
+  b = inumb;
   free_bit(sp, IMAP, b);
   if (b < sp->s_isearch) sp->s_isearch = b;
 }
-
 
 /*===========================================================================*
  *				update_times				     *
@@ -394,7 +466,7 @@ int rw_flag;			/* READING or WRITING */
   /* Get the block where the inode resides. */
   sp = get_super(rip->i_dev);	/* get pointer to super block */
   rip->i_sp = sp;		/* inode must contain super block pointer */
-  offset = START_BLOCK + sp->s_imap_blocks + sp->s_zmap_blocks;
+  offset = sp->s_imap_blocks + sp->s_zmap_blocks + 2;
   b = (block_t) (rip->i_num - 1)/sp->s_inodes_per_block + offset;
   bp = get_block(rip->i_dev, b, NORMAL);
   dip  = bp->b_v1_ino + (rip->i_num - 1) % V1_INODES_PER_BLOCK;
@@ -419,7 +491,6 @@ int rw_flag;			/* READING or WRITING */
   rip->i_dirt = CLEAN;
 }
 
-
 /*===========================================================================*
  *				old_icopy				     *
  *===========================================================================*/
@@ -428,6 +499,7 @@ register struct inode *rip;	/* pointer to the in-core inode struct */
 register d1_inode *dip;		/* pointer to the d1_inode inode struct */
 int direction;			/* READING (from disk) or WRITING (to disk) */
 int norm;			/* TRUE = do not swap bytes; FALSE = swap */
+
 {
 /* The V1.x IBM disk, the V1.x 68000 disk, and the V2 disk (same for IBM and
  * 68000) all have different inode layouts.  When an inode is read or written
@@ -440,31 +512,30 @@ int norm;			/* TRUE = do not swap bytes; FALSE = swap */
 
   if (direction == READING) {
 	/* Copy V1.x inode to the in-core table, swapping bytes if need be. */
-	rip->i_mode    = (mode_t) conv2(norm, (int) dip->d1_mode);
-	rip->i_uid     = (uid_t)  conv2(norm, (int) dip->d1_uid );
-	rip->i_size    = (off_t)  conv4(norm,       dip->d1_size);
-	rip->i_mtime   = (time_t) conv4(norm,       dip->d1_mtime);
-	rip->i_atime   = (time_t) rip->i_mtime;
-	rip->i_ctime   = (time_t) rip->i_mtime;
-	rip->i_nlinks  = (nlink_t) dip->d1_nlinks;	/* 1 char */
-	rip->i_gid     = (gid_t) dip->d1_gid;		/* 1 char */
+	rip->i_mode    = conv2(norm, (int) dip->d1_mode);
+	rip->i_uid     = conv2(norm, (int) dip->d1_uid );
+	rip->i_size    = conv4(norm,       dip->d1_size);
+	rip->i_mtime   = conv4(norm,       dip->d1_mtime);
+	rip->i_atime   = rip->i_mtime;
+	rip->i_ctime   = rip->i_mtime;
+	rip->i_nlinks  = dip->d1_nlinks;		/* 1 char */
+	rip->i_gid     = dip->d1_gid;			/* 1 char */
 	rip->i_ndzones = V1_NR_DZONES;
 	rip->i_nindirs = V1_INDIRECTS;
 	for (i = 0; i < V1_NR_TZONES; i++)
-		rip->i_zone[i] = (zone_t) conv2(norm, (int) dip->d1_zone[i]);
+		rip->i_zone[i] = conv2(norm, (int) dip->d1_zone[i]);
   } else {
 	/* Copying V1.x inode to disk from the in-core table. */
-	dip->d1_mode   = (u16_t) conv2(norm, (int) rip->i_mode);
-	dip->d1_uid    = (i16_t) conv2(norm, (int) rip->i_uid );
-	dip->d1_size   = (i32_t) conv4(norm,       rip->i_size);
-	dip->d1_mtime  = (i32_t) conv4(norm,       rip->i_mtime);
-	dip->d1_nlinks = (u8_t) rip->i_nlinks;		/* 1 char */
-	dip->d1_gid    = (u8_t) rip->i_gid;		/* 1 char */
+	dip->d1_mode   = conv2(norm, (int) rip->i_mode);
+	dip->d1_uid    = conv2(norm, (int) rip->i_uid );
+	dip->d1_size   = conv4(norm,       rip->i_size);
+	dip->d1_mtime  = conv4(norm,       rip->i_mtime);
+	dip->d1_nlinks = rip->i_nlinks;			/* 1 char */
+	dip->d1_gid    = rip->i_gid;			/* 1 char */
 	for (i = 0; i < V1_NR_TZONES; i++)
-		dip->d1_zone[i] = (u16_t) conv2(norm, (int) rip->i_zone[i]);
+		dip->d1_zone[i] = conv2(norm, (int) rip->i_zone[i]);
   }
 }
-
 
 /*===========================================================================*
  *				new_icopy				     *
@@ -474,6 +545,7 @@ register struct inode *rip;	/* pointer to the in-core inode struct */
 register d2_inode *dip;	/* pointer to the d2_inode struct */
 int direction;			/* READING (from disk) or WRITING (to disk) */
 int norm;			/* TRUE = do not swap bytes; FALSE = swap */
+
 {
 /* Same as old_icopy, but to/from V2 disk layout. */
 
@@ -481,33 +553,32 @@ int norm;			/* TRUE = do not swap bytes; FALSE = swap */
 
   if (direction == READING) {
 	/* Copy V2.x inode to the in-core table, swapping bytes if need be. */
-	rip->i_mode    = (mode_t) conv2(norm,dip->d2_mode);
-	rip->i_uid     = (uid_t) conv2(norm,dip->d2_uid);
-	rip->i_nlinks  = (nlink_t) conv2(norm,dip->d2_nlinks);
-	rip->i_gid     = (gid_t) conv2(norm,dip->d2_gid);
-	rip->i_size    = (off_t) conv4(norm,dip->d2_size);
-	rip->i_atime   = (time_t) conv4(norm,dip->d2_atime);
-	rip->i_ctime   = (time_t) conv4(norm,dip->d2_ctime);
-	rip->i_mtime   = (time_t) conv4(norm,dip->d2_mtime);
+	rip->i_mode    = conv2(norm,dip->d2_mode);
+	rip->i_uid     = conv2(norm,dip->d2_uid);
+	rip->i_nlinks  = conv2(norm,dip->d2_nlinks);
+	rip->i_gid     = conv2(norm,dip->d2_gid);
+	rip->i_size    = conv4(norm,dip->d2_size);
+	rip->i_atime   = conv4(norm,dip->d2_atime);
+	rip->i_ctime   = conv4(norm,dip->d2_ctime);
+	rip->i_mtime   = conv4(norm,dip->d2_mtime);
 	rip->i_ndzones = V2_NR_DZONES;
 	rip->i_nindirs = V2_INDIRECTS(rip->i_sp->s_block_size);
 	for (i = 0; i < V2_NR_TZONES; i++)
-		rip->i_zone[i] = (zone_t) conv4(norm, (long) dip->d2_zone[i]);
+		rip->i_zone[i] = conv4(norm, (long) dip->d2_zone[i]);
   } else {
 	/* Copying V2.x inode to disk from the in-core table. */
-	dip->d2_mode   = (u16_t) conv2(norm,rip->i_mode);
-	dip->d2_uid    = (i16_t) conv2(norm,rip->i_uid);
-	dip->d2_nlinks = (u16_t) conv2(norm,rip->i_nlinks);
-	dip->d2_gid    = (u16_t) conv2(norm,rip->i_gid);
-	dip->d2_size   = (i32_t) conv4(norm,rip->i_size);
-	dip->d2_atime  = (i32_t) conv4(norm,rip->i_atime);
-	dip->d2_ctime  = (i32_t) conv4(norm,rip->i_ctime);
-	dip->d2_mtime  = (i32_t) conv4(norm,rip->i_mtime);
+	dip->d2_mode   = conv2(norm,rip->i_mode);
+	dip->d2_uid    = conv2(norm,rip->i_uid);
+	dip->d2_nlinks = conv2(norm,rip->i_nlinks);
+	dip->d2_gid    = conv2(norm,rip->i_gid);
+	dip->d2_size   = conv4(norm,rip->i_size);
+	dip->d2_atime  = conv4(norm,rip->i_atime);
+	dip->d2_ctime  = conv4(norm,rip->i_ctime);
+	dip->d2_mtime  = conv4(norm,rip->i_mtime);
 	for (i = 0; i < V2_NR_TZONES; i++)
-		dip->d2_zone[i] = (zone_t) conv4(norm, (long) rip->i_zone[i]);
+		dip->d2_zone[i] = conv4(norm, (long) rip->i_zone[i]);
   }
 }
-
 
 /*===========================================================================*
  *				dup_inode				     *
@@ -521,4 +592,3 @@ struct inode *ip;		/* The inode to be duplicated. */
 
   ip->i_count++;
 }
-

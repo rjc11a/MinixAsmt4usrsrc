@@ -12,18 +12,21 @@
  *   14 Aug, 2006   Created (Rogier Meurs)
  */
 
-#include "kernel/system.h"
+#include "../system.h"
+
+#if CPROFILE
 
 #include <string.h>
 
 /*===========================================================================*
  *				do_cprofile				     *
  *===========================================================================*/
-PUBLIC int do_cprofile(struct proc * caller, message * m_ptr)
+PUBLIC int do_cprofile(m_ptr)
+register message *m_ptr;    /* pointer to request message */
 {
-  int proc_nr, i;
-  phys_bytes len;
+  int proc_nr, i, err = 0, k = 0;
   vir_bytes vir_dst;
+  phys_bytes phys_src, phys_dst, len;
 
   switch (m_ptr->PROF_ACTION) {
 
@@ -33,25 +36,26 @@ PUBLIC int do_cprofile(struct proc * caller, message * m_ptr)
 
 	cprof_ctl_inst.reset = 1;
 
-	printf("CPROFILE notice: resetting tables:");
+	kprintf("CPROFILE notice: resetting tables:");
 
 	for (i=0; i<cprof_procs_no; i++) {
 
-		printf(" %s", cprof_proc_info[i].name);
+		kprintf(" %s", cprof_proc_info[i].name);
 
 		/* Test whether proc still alive. */
 		if (!isokendpt(cprof_proc_info[i].endpt, &proc_nr)) {
-			printf("endpt not valid %u (%s)\n",
+			kprintf("endpt not valid %u (%s)\n",
 			cprof_proc_info[i].endpt, cprof_proc_info[i].name);
 			continue;
 		}
 
 		/* Set reset flag. */
-		data_copy(KERNEL, (vir_bytes) &cprof_ctl_inst.reset,
-			cprof_proc_info[i].endpt, cprof_proc_info[i].ctl_v,
-			sizeof(cprof_ctl_inst.reset));
+		phys_src = vir2phys((vir_bytes) &cprof_ctl_inst.reset);
+		phys_dst = (phys_bytes) cprof_proc_info[i].ctl;
+		len = (phys_bytes) sizeof(cprof_ctl_inst.reset);
+		phys_copy(phys_src, phys_dst, len);
 	}
-	printf("\n");
+	kprintf("\n");
 	
 	return OK;
 
@@ -67,9 +71,17 @@ PUBLIC int do_cprofile(struct proc * caller, message * m_ptr)
 	if(!isokendpt(m_ptr->PROF_ENDPT, &proc_nr))
 		return EINVAL;
 
+	vir_dst = (vir_bytes) m_ptr->PROF_CTL_PTR;
+	len = (phys_bytes) sizeof (int *);
+	cprof_info_addr = numap_local(proc_nr, vir_dst, len);
+
+	vir_dst = (vir_bytes) m_ptr->PROF_MEM_PTR;
+	len = (phys_bytes) sizeof (char *);
+	cprof_data_addr = numap_local(proc_nr, vir_dst, len);
+
 	cprof_mem_size = m_ptr->PROF_MEM_SIZE;
 
-	printf("CPROFILE notice: getting tables:");
+	kprintf("CPROFILE notice: getting tables:");
 
 	/* Copy control structs of profiled processes to calculate total
 	 * nr of bytes to be copied to user program and find out if any
@@ -79,19 +91,20 @@ PUBLIC int do_cprofile(struct proc * caller, message * m_ptr)
 
 	for (i=0; i<cprof_procs_no; i++) {
 
-		printf(" %s", cprof_proc_info[i].name);
+		kprintf(" %s", cprof_proc_info[i].name);
 
 		/* Test whether proc still alive. */
 		if (!isokendpt(cprof_proc_info[i].endpt, &proc_nr)) {
-			printf("endpt not valid %u (%s)\n",
+			kprintf("endpt not valid %u (%s)\n",
 			cprof_proc_info[i].endpt, cprof_proc_info[i].name);
 			continue;
 		}
 
 		/* Copy control struct from proc to local variable. */
-		data_copy(cprof_proc_info[i].endpt, cprof_proc_info[i].ctl_v,
-			KERNEL, (vir_bytes) &cprof_ctl_inst,
-			sizeof(cprof_ctl_inst));
+		phys_src = cprof_proc_info[i].ctl;
+		phys_dst = vir2phys((vir_bytes) &cprof_ctl_inst);
+		len = (phys_bytes) sizeof(cprof_ctl_inst);
+		phys_copy(phys_src, phys_dst, len);
 
 	       	/* Calculate memory used. */
 		cprof_proc_info[i].slots_used = cprof_ctl_inst.slots_used;
@@ -102,39 +115,38 @@ PUBLIC int do_cprofile(struct proc * caller, message * m_ptr)
 		/* Collect errors. */
 		cprof_info.err |= cprof_ctl_inst.err;
 	}
-	printf("\n");
+	kprintf("\n");
 
 	/* Do we have the space available? */
 	if (cprof_mem_size < cprof_info.mem_used) cprof_info.mem_used = -1;
 
 	/* Copy the info struct to the user process. */
-	data_copy(KERNEL, (vir_bytes) &cprof_info,
-		m_ptr->PROF_ENDPT, (vir_bytes) m_ptr->PROF_CTL_PTR,
-		sizeof(cprof_info));
+	phys_copy(vir2phys((vir_bytes) &cprof_info), cprof_info_addr,
+					(phys_bytes) sizeof(cprof_info));
 
 	/* If there is no space or errors occurred, don't bother copying. */
 	if (cprof_info.mem_used == -1 || cprof_info.err) return OK;
 
 	/* For each profiled process, copy its name, slots_used and profiling
 	 * table to the user process. */
-	vir_dst = (vir_bytes) m_ptr->PROF_MEM_PTR;
+	phys_dst = cprof_data_addr;
 	for (i=0; i<cprof_procs_no; i++) {
+		phys_src = vir2phys((vir_bytes) cprof_proc_info[i].name);
 		len = (phys_bytes) strlen(cprof_proc_info[i].name);
-		data_copy(KERNEL, (vir_bytes) cprof_proc_info[i].name,
-			m_ptr->PROF_ENDPT, vir_dst, len);
-		vir_dst += CPROF_PROCNAME_LEN;
+		phys_copy(phys_src, phys_dst, len);
+		phys_dst += CPROF_PROCNAME_LEN;
 
+		phys_src = cprof_proc_info[i].ctl +
+						sizeof(cprof_ctl_inst.reset);
 		len = (phys_bytes) sizeof(cprof_ctl_inst.slots_used);
-		data_copy(cprof_proc_info[i].endpt,
-		  cprof_proc_info[i].ctl_v + sizeof(cprof_ctl_inst.reset),
-		  m_ptr->PROF_ENDPT, vir_dst, len);
-		vir_dst += len;
+		phys_copy(phys_src, phys_dst, len);
+		phys_dst += len;
 
+		phys_src = cprof_proc_info[i].buf;
 		len = (phys_bytes)
 		(sizeof(cprof_tbl_inst) * cprof_proc_info[i].slots_used);
-		data_copy(cprof_proc_info[i].endpt, cprof_proc_info[i].buf_v,
-		  m_ptr->PROF_ENDPT, vir_dst, len);
-		vir_dst += len;
+		phys_copy(phys_src, phys_dst, len);
+		phys_dst += len;
 	}
 
 	return OK;
@@ -143,4 +155,6 @@ PUBLIC int do_cprofile(struct proc * caller, message * m_ptr)
 	return EINVAL;
   }
 }
+
+#endif /* CPROFILE */
 

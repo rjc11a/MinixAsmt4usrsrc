@@ -1,9 +1,13 @@
+
+
 #include "fs.h"
+#include <unistd.h>
+#include <minix/callnr.h>
+#include "buf.h"
 #include "inode.h"
 #include "super.h"
-#include <minix/vfsif.h>
 
-FORWARD _PROTOTYPE( int in_group, (gid_t grp)				);
+#include <minix/vfsif.h>
 
 
 /*===========================================================================*
@@ -14,16 +18,35 @@ PUBLIC int fs_chmod()
 /* Perform the chmod(name, mode) system call. */
 
   register struct inode *rip;
-  mode_t mode;
-
-  mode = (mode_t) fs_m_in.REQ_MODE;
+  register int r;
+  
+  caller_uid = fs_m_in.REQ_UID;
+  caller_gid = fs_m_in.REQ_GID;
   
   /* Temporarily open the file. */
-  if( (rip = get_inode(fs_dev, (ino_t) fs_m_in.REQ_INODE_NR)) == NULL)
-	  return(EINVAL);
+  if ( (rip = get_inode(fs_dev, fs_m_in.REQ_INODE_NR)) == NIL_INODE) {
+printf("MFS(%d) get_inode by fs_chmod() failed\n", SELF_E);
+        return(EINVAL);
+  }
+
+  /* Only the owner or the super_user may change the mode of a file.
+   * No one may change the mode of a file on a read-only file system.
+   */
+  if (rip->i_uid != caller_uid && caller_uid != SU_UID)
+	r = EPERM;
+  else
+	r = read_only(rip);
+
+  /* If error, return inode. */
+  if (r != OK)	{
+	put_inode(rip);
+	return(r);
+  }
 
   /* Now make the change. Clear setgid bit if file is not in caller's grp */
-  rip->i_mode = (rip->i_mode & ~ALL_MODES) | (mode & ALL_MODES);
+  rip->i_mode = (rip->i_mode & ~ALL_MODES) | (fs_m_in.REQ_MODE & ALL_MODES);
+  if (caller_uid != SU_UID && rip->i_gid != caller_gid) 
+	  rip->i_mode &= ~I_SET_GID_BIT;
   rip->i_update |= CTIME;
   rip->i_dirt = DIRTY;
 
@@ -42,28 +65,69 @@ PUBLIC int fs_chown()
 {
   register struct inode *rip;
   register int r;
-
   /* Temporarily open the file. */
-  if( (rip = get_inode(fs_dev, (ino_t) fs_m_in.REQ_INODE_NR)) == NULL)
-	  return(EINVAL);
+  caller_uid = fs_m_in.REQ_UID;
+  caller_gid = fs_m_in.REQ_GID;
+  
+  /* Temporarily open the file. */
+  if ( (rip = get_inode(fs_dev, fs_m_in.REQ_INODE_NR)) == NIL_INODE) {
+printf("MFS(%d) get_inode by fs_chown() failed\n", SELF_E);
+        return(EINVAL);
+  }
 
   /* Not permitted to change the owner of a file on a read-only file sys. */
   r = read_only(rip);
   if (r == OK) {
-	  rip->i_uid = (uid_t) fs_m_in.REQ_UID;
-	  rip->i_gid = (gid_t) fs_m_in.REQ_GID;
-	  rip->i_mode &= ~(I_SET_UID_BIT | I_SET_GID_BIT);
-	  rip->i_update |= CTIME;
-	  rip->i_dirt = DIRTY;
+	/* FS is R/W.  Whether call is allowed depends on ownership, etc. */
+	if (caller_uid == SU_UID) {
+		/* The super user can do anything. */
+		rip->i_uid = fs_m_in.REQ_NEW_UID;	/* others later */
+	} else {
+		/* Regular users can only change groups of their own files. */
+		if (rip->i_uid != caller_uid) r = EPERM;
+		if (rip->i_uid != fs_m_in.REQ_NEW_UID) 
+                    r = EPERM;  /* no giving away */
+		if (caller_gid != fs_m_in.REQ_NEW_GID) r = EPERM;
+	}
+  }
+  if (r == OK) {
+	rip->i_gid = fs_m_in.REQ_NEW_GID;
+	rip->i_mode &= ~(I_SET_UID_BIT | I_SET_GID_BIT);
+	rip->i_update |= CTIME;
+	rip->i_dirt = DIRTY;
   }
 
   /* Update caller on current mode, as it may have changed. */
   fs_m_out.RES_MODE = rip->i_mode;
+
   put_inode(rip);
-  
+
   return(r);
 }
 
+/*===========================================================================*
+ *				fs_access				     *
+ *===========================================================================*/
+PUBLIC int fs_access()
+{
+  struct inode *rip;
+  register int r;
+  
+  /* Temporarily open the file whose access is to be checked. */
+  caller_uid = fs_m_in.REQ_UID;
+  caller_gid = fs_m_in.REQ_GID;
+  
+  /* Temporarily open the file. */
+  if ( (rip = get_inode(fs_dev, fs_m_in.REQ_INODE_NR)) == NIL_INODE) {
+printf("MFS(%d) get_inode by fs_access() failed\n", SELF_E);
+        return(EINVAL);
+  }
+
+  /* Now check the permissions. */
+  r = forbidden(rip, (mode_t) fs_m_in.REQ_MODE);
+  put_inode(rip);
+  return(r);
+}
 
 /*===========================================================================*
  *				forbidden				     *
@@ -77,8 +141,18 @@ PUBLIC int forbidden(register struct inode *rip, mode_t access_desired)
  */
 
   register struct inode *old_rip = rip;
+  register struct super_block *sp;
   register mode_t bits, perm_bits;
-  int r, shift;
+  int r, shift, type;
+
+  /*
+  if (rip->i_mount == I_MOUNT)	
+	for (sp = &super_block[1]; sp < &super_block[NR_SUPERS]; sp++)
+		if (sp->s_imount == rip) {
+			rip = get_inode(sp->s_dev, ROOT_INODE);
+			break;
+		} 
+  */
 
   /* Isolate the relevant rwx bits from the mode. */
   bits = rip->i_mode;
@@ -94,8 +168,7 @@ PUBLIC int forbidden(register struct inode *rip, mode_t access_desired)
 		perm_bits = R_BIT | W_BIT;
   } else {
 	if (caller_uid == rip->i_uid) shift = 6;	/* owner */
-	else if (caller_gid == rip->i_gid) shift = 3;	/* group */
-	else if (in_group(rip->i_gid) == OK) shift = 3;	/* other groups */
+	else if (caller_gid == rip->i_gid ) shift = 3;	/* group */
 	else shift = 0;					/* other */
 	perm_bits = (bits >> shift) & (R_BIT | W_BIT | X_BIT);
   }
@@ -107,29 +180,16 @@ PUBLIC int forbidden(register struct inode *rip, mode_t access_desired)
   /* Check to see if someone is trying to write on a file system that is
    * mounted read-only.
    */
+  type = rip->i_mode & I_TYPE;
   if (r == OK)
 	if (access_desired & W_BIT)
 	 	r = read_only(rip);
 
   if (rip != old_rip) put_inode(rip);
 
+/*printf("FSforbidden: %s %s\n", user_path, (r == OK ? "OK" : "notOK")); */
   return(r);
 }
-
-
-/*===========================================================================*
- *				in_group				     *
- *===========================================================================*/
-PRIVATE int in_group(gid_t grp)
-{
-  int i;
-  for(i = 0; i < credentials.vu_ngroups; i++)
-  	if (credentials.vu_sgroups[i] == grp)
-  		return(OK);
-
-  return(EINVAL);
-}
-
 
 /*===========================================================================*
  *				read_only				     *
@@ -146,4 +206,6 @@ struct inode *ip;		/* ptr to inode whose file sys is to be cked */
   sp = ip->i_sp;
   return(sp->s_rd_only ? EROFS : OK);
 }
+
+
 

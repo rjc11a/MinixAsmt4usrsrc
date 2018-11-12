@@ -15,7 +15,9 @@
 #include "config.h"
 #include "vi.h"
 #include "ctype.h"
-#include <sys/null.h>
+#ifndef NULL
+#define NULL (char *)0
+#endif
 extern char	*getenv();
 
 /* maximum width to permit for strings, including ="" */

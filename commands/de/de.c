@@ -27,9 +27,9 @@
 
 #include <minix/const.h>
 #include <minix/type.h>
-#include "mfs/const.h"
-#include "mfs/type.h"
-#include "mfs/inode.h"
+#include "../../servers/mfs/const.h"
+#include "../../servers/mfs/type.h"
+#include "../../servers/mfs/inode.h"
 
 #include "de.h"
 
@@ -55,7 +55,7 @@ _PROTOTYPE(void Sigint , (int));
 /****************************************************************/
 
 
-int main( argc, argv )
+void main( argc, argv )
   int   argc;
   char *argv[];
 

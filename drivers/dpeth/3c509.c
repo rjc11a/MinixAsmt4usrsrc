@@ -7,10 +7,13 @@
 **  device driver for 3Com Etherlink III (3c509) boards.
 **  NOTE: The board has to be setup to disable PnP and to assign
 **	  I/O base and IRQ.  The driver is for ISA bus only
+**
+**  $Id$
 */
 
-#include <minix/drivers.h>
+#include "drivers.h"
 #include <minix/com.h>
+#include <net/hton.h>
 #include <net/gen/ether.h>
 #include <net/gen/eth_io.h>
 
@@ -103,7 +106,7 @@ static void el3_rx_mode(dpeth_t * dep)
 **  Name:	void el3_reset(dpeth_t *dep)
 **  Function:	Reset function specific for Etherlink hardware.
 */
-static void el3_reset(dpeth_t * UNUSED(dep))
+static void el3_reset(dpeth_t * dep)
 {
 
   return;			/* Done */
@@ -117,6 +120,7 @@ static void el3_reset(dpeth_t * UNUSED(dep))
 */
 static void el3_write_fifo(dpeth_t * dep, int pktsize)
 {
+  phys_bytes phys_user;
   int bytes, ix = 0;
   iovec_dat_s_t *iovp = &dep->de_write_iovec;
   int r, padding = pktsize;
@@ -129,7 +133,7 @@ static void el3_write_fifo(dpeth_t * dep, int pktsize)
 	r= sys_safe_outsb(dep->de_data_port, iovp->iod_proc_nr,
 		iovp->iod_iovec[ix].iov_grant, 0, bytes);
 	if (r != OK)
-		panic("el3_write_fifo: sys_safe_outsb failed: %d", r);
+		panic(__FILE__, "el3_write_fifo: sys_safe_outsb failed", r);
 		
 	if (++ix >= IOVEC_NR) {	/* Next buffer of IO vector */
 		dp_next_iovec(iovp);
@@ -383,7 +387,7 @@ static void el3_read_StationAddress(dpeth_t * dep)
 {
   unsigned int ix, rc;
 
-  for (ix = EE_3COM_NODE_ADDR; ix < SA_ADDR_LEN+EE_3COM_NODE_ADDR;) {
+  for (ix = EE_3COM_NODE_ADDR; ix < SA_ADDR_LEN;) {
 	/* Accesses with word No. */
 	rc = el3_read_eeprom(dep->de_id_port, ix / 2);
 	/* Swaps bytes of word */
@@ -414,11 +418,11 @@ static void el3_open(dpeth_t * dep)
 
   AddrCfgReg = ((AddrCfgReg & EL3_CONFIG_IOBASE_MASK) << 4) + EL3_IO_BASE_ADDR;
   if (AddrCfgReg != dep->de_base_port)
-	panic("Bad I/O port for Etherlink board");
+	panic(dep->de_name, "Bad I/O port for Etherlink board", NO_NUM);
 
   ResCfgReg >>= 12;
   dep->de_irq &= NOT(DEI_DEFAULT);	/* Strips the default flag */
-  if (ResCfgReg != dep->de_irq) panic("Bad IRQ for Etherlink board");
+  if (ResCfgReg != dep->de_irq) panic(dep->de_name, "Bad IRQ for Etherlink board", NO_NUM);
 
   SetWindow(WNO_Setup);
 

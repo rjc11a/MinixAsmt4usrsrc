@@ -5,26 +5,23 @@
 #include "proc.h"
 #include <stdlib.h>
 #include <string.h>
-#include "proto.h"
+#include <archconst.h>
 
-#ifdef CONFIG_WATCHDOG
-#include "watchdog.h"
-#endif
+PRIVATE char params[K_PARAM_SIZE];
 
+FORWARD _PROTOTYPE( char *get_value, (_CONST char *params, _CONST char *key));
 /*===========================================================================*
  *				cstart					     *
  *===========================================================================*/
-PUBLIC void cstart(
-   u16_t cs,		/* kernel code segment */
-   u16_t ds,		/* kernel data segment */
-   u16_t mds,		/* monitor data segment */
-   u16_t parmoff,	/* boot parameters offset */
-   u16_t parmsize	/* boot parameters length */
-)
+PUBLIC void cstart(cs, ds, mds, parmoff, parmsize)
+U16_t cs, ds;			/* kernel code and data segment */
+U16_t mds;			/* monitor data segment */
+U16_t parmoff, parmsize;	/* boot parameters offset and length */
 {
 /* Perform system initializations prior to calling main(). Most settings are
  * determined with help of the environment strings passed by MINIX' loader.
  */
+  char params[128*sizeof(char *)];		/* boot monitor parameters */
   register char *value;				/* value in key=value pair */
   extern int etext, end;
   int h;
@@ -35,17 +32,14 @@ PUBLIC void cstart(
   kinfo.data_base = seg2phys(ds);
   kinfo.data_size = (phys_bytes) &end;		/* size of data segment */
 
-  /* protection initialization */
-  prot_init();
+  /* Architecture-dependent initialization. */
+  system_init();
 
   /* Copy the boot parameters to the local buffer. */
-  arch_get_params(params_buffer, sizeof(params_buffer));
-
-  /* determine verbosity */
-  if ((value = env_get(VERBOSEBOOTVARNAME)))
-	  verboseboot = atoi(value);
-
-  DEBUGEXTRA(("cstart\n"));
+  kinfo.params_base = seg2phys(mds) + parmoff;
+  kinfo.params_size = MIN(parmsize,sizeof(params)-2);
+  phys_copy(kinfo.params_base,
+	vir2phys(params), kinfo.params_size);
 
   /* Record miscellaneous information for user-space servers. */
   kinfo.nr_procs = NR_PROCS;
@@ -55,6 +49,8 @@ PUBLIC void cstart(
   strncpy(kinfo.version, OS_VERSION, sizeof(kinfo.version));
   kinfo.version[sizeof(kinfo.version)-1] = '\0';
   kinfo.proc_addr = (vir_bytes) proc;
+  kinfo.kmem_base = vir2phys(0);
+  kinfo.kmem_size = (phys_bytes) &end;	
 
   /* Load average data initialization. */
   kloadinfo.proc_last_slot = 0;
@@ -62,66 +58,40 @@ PUBLIC void cstart(
 	kloadinfo.proc_load_history[h] = 0;
 
   /* Processor? Decide if mode is protected for older machines. */
-  machine.processor=atoi(env_get("processor")); 
+  machine.processor=atoi(get_value(params, "processor")); 
 
   /* XT, AT or MCA bus? */
-  value = env_get("bus");
-  if (value == NULL || strcmp(value, "at") == 0) {
+  value = get_value(params, "bus");
+  if (value == NIL_PTR || strcmp(value, "at") == 0) {
       machine.pc_at = TRUE;			/* PC-AT compatible hardware */
   } else if (strcmp(value, "mca") == 0) {
       machine.pc_at = machine.ps_mca = TRUE;	/* PS/2 with micro channel */
   }
 
   /* Type of VDU: */
-  value = env_get("video");	/* EGA or VGA video unit */
+  value = get_value(params, "video");		/* EGA or VGA video unit */
   if (strcmp(value, "ega") == 0) machine.vdu_ega = TRUE;
   if (strcmp(value, "vga") == 0) machine.vdu_vga = machine.vdu_ega = TRUE;
-
-  /* Get clock tick frequency. */
-  value = env_get("hz");
-  if(value)
-	system_hz = atoi(value);
-  if(!value || system_hz < 2 || system_hz > 50000)	/* sanity check */
-	system_hz = DEFAULT_HZ;
-  value = env_get(SERVARNAME);
-  if(value && atoi(value) == 0)
-	do_serial_debug=1;
-
-#ifdef CONFIG_APIC
-  value = env_get("no_apic");
-  if(value)
-	config_no_apic = atoi(value);
-  else
-	config_no_apic = 1;
-#endif
-
-#ifdef CONFIG_WATCHDOG
-  value = env_get("watchdog");
-  if (value)
-	  watchdog_enabled = atoi(value);
-#endif
 
   /* Return to assembler code to switch to protected mode (if 286), 
    * reload selectors and call main().
    */
 
-  DEBUGEXTRA(("intr_init(%d, 0)\n", INTS_MINIX));
-  intr_init(INTS_MINIX, 0);
+  intr_init(INTS_MINIX);
 }
 
 /*===========================================================================*
  *				get_value				     *
  *===========================================================================*/
 
-PRIVATE char *get_value(
-  const char *params,			/* boot monitor parameters */
-  const char *name			/* key to look up */
-)
+PRIVATE char *get_value(params, name)
+_CONST char *params;				/* boot monitor parameters */
+_CONST char *name;				/* key to look up */
 {
 /* Get environment value - kernel version of getenv to avoid setting up the
  * usual environment array.
  */
-  register const char *namep;
+  register _CONST char *namep;
   register char *envp;
 
   for (envp = (char *) params; *envp != 0;) {
@@ -131,14 +101,5 @@ PRIVATE char *get_value(
 	while (*envp++ != 0)
 		;
   }
-  return(NULL);
+  return(NIL_PTR);
 }
-
-/*===========================================================================*
- *				env_get				     	*
- *===========================================================================*/
-PUBLIC char *env_get(const char *name)
-{
-	return get_value(params_buffer, name);
-}
-

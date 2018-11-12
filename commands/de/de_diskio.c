@@ -18,10 +18,10 @@
 
 #include <minix/const.h>
 #include <minix/type.h>
-#include "mfs/const.h"
-#include "mfs/type.h"
-#include "mfs/super.h"
-#include "mfs/inode.h"
+#include "../../servers/mfs/const.h"
+#include "../../servers/mfs/type.h"
+#include "../../servers/mfs/super.h"
+#include "../../servers/mfs/inode.h"
 #include <minix/fslib.h>
 
 #include "de.h"
@@ -188,14 +188,13 @@ void Read_Super_Block( s )
 
   s->inode_blocks = (s->inodes + inodes_per_block - 1) / inodes_per_block;
   s->first_data   = 2 + s->inode_maps + s->zone_maps + s->inode_blocks;
-  if ( super->s_firstdatazone_old != 0 &&
-  	s->first_data != super->s_firstdatazone_old )
+  if ( s->first_data != super->s_firstdatazone )
   {
-    if ( s->first_data > super->s_firstdatazone_old )
+    if ( s->first_data > super->s_firstdatazone )
       Error( "Corrupted first data zone offset or inode count in super block" );
     else
       Warning( "First data zone in super block suspiciously high" );
-    s->first_data = super->s_firstdatazone_old;
+    s->first_data = super->s_firstdatazone;
   }  
 
   s->inodes_in_map = s->inodes + 1;
@@ -210,7 +209,7 @@ void Read_Super_Block( s )
 
   if ( super->s_log_zone_size != 0 )
     Error( "Can not handle multiple blocks per zone" );
-}
+  }
 
 
 

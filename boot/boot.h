@@ -58,29 +58,14 @@ EXTERN u32_t caddr, daddr;	/* Code and data address of the boot program. */
 EXTERN u32_t runsize;		/* Size of this program. */
 
 EXTERN u16_t device;		/* Drive being booted from. */
-EXTERN u16_t cddevice;		/* Drive that is CD if known. */
-
-#define CDNAME	"cd"		/* Name of the CD device. */
 
 typedef struct {		/* One chunk of free memory. */
 	u32_t	base;		/* Start byte. */
 	u32_t	size;		/* Number of bytes. */
 } memory;
 
-typedef struct {		/* One chunk of free memory. */
-	u32_t	base_lo;	/* Start byte. */
-	u32_t	base_hi;
-	u32_t	size_lo;	/* Number of bytes. */
-	u32_t	size_hi;	/* Number of bytes. */
-	u32_t	type;
-	u32_t	acpi_attrs;
-} e820_memory;
-
 EXTERN memory mem[3];		/* List of available memory. */
-EXTERN e820_memory emem[16];		/* List of available memory. */
-EXTERN int mem_entries;
 EXTERN int mon_return;		/* Monitor stays in memory? */
-EXTERN int cdbooted;		/* Did we boot from CD? (Set by boothead.s.) */
 
 typedef struct bios_env
 {
@@ -104,7 +89,7 @@ void raw_copy(u32_t dstaddr, u32_t srcaddr, u32_t count);
 			/* Copy bytes from anywhere to anywhere. */
 u16_t get_word(u32_t addr);
 			/* Get a word from anywhere. */
-void put_word(u32_t addr, u16_t word);
+void put_word(u32_t addr, U16_t word);
 			/* Put a word anywhere. */
 void relocate(void);
 			/* Switch to a copy of this program. */
@@ -112,13 +97,10 @@ int dev_open(void), dev_close(void);
 			/* Open device and determine params / close device. */
 int dev_boundary(u32_t sector);
 			/* True if sector is on a track boundary. */
-int readsectors(u32_t bufaddr, u32_t sector, u8_t count);
+int readsectors(u32_t bufaddr, u32_t sector, U8_t count);
 			/* Read 1 or more sectors from "device". */
-int writesectors(u32_t bufaddr, u32_t sector, u8_t count);
+int writesectors(u32_t bufaddr, u32_t sector, U8_t count);
 			/* Write 1 or more sectors to "device". */
-
-int biosreadsectors(u32_t bufaddr, u32_t sector, u8_t count);
-
 int getch(void);
 			/* Read a keypress. */
 void scan_keyboard(void);	
@@ -178,9 +160,8 @@ typedef struct environment {
 
 EXTERN environment *env;	/* Lists the environment. */
 
-char *b_value(const char *name);	/* Get/set the value of a variable. */
+char *b_value(char *name);	/* Get/set the value of a variable. */
 int b_setvar(int flags, char *name, char *value);
-void b_unset(const char *name);
 
 void parse_code(char *code);	/* Parse boot monitor commands. */
 
@@ -198,9 +179,9 @@ void readerr(off_t sec, int err);
 			/* Report a read error. */
 char *ul2a(u32_t n, unsigned b), *ul2a10(u32_t n);
 			/* Transform u32_t to ASCII at base b or base 10. */
-long a2l(const char *a);
+long a2l(char *a);
 			/* Cheap atol(). */
-unsigned a2x(const char *a);
+unsigned a2x(char *a);
 			/* ASCII to hex. */
 dev_t name2dev(char *name);
 			/* Translate a device name to a device number. */
@@ -224,7 +205,7 @@ EXTERN char *drun;	/* Initial command from DOS command line. */
 #endif
 
 void readblock(off_t, char *, int);
-void delay(const char *);
+void delay(char *);
 
 /*
  * $PchId: boot.h,v 1.12 2002/02/27 19:42:45 philip Exp $

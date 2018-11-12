@@ -7,6 +7,10 @@
 #define _MINIX_MACHINE       _MACHINE_IBM_PC
 
 #define _MACHINE_IBM_PC             1	/* any  8088 or 80x86-based system */
+#define _MACHINE_SUN_4             40	/* any Sun SPARC-based system */
+#define _MACHINE_SUN_4_60	   40	/* Sun-4/60 (aka SparcStation 1 or Campus) */
+#define _MACHINE_ATARI             60	/* ATARI ST/STe/TT (68000/68030) */
+#define _MACHINE_MACINTOSH         62	/* Apple Macintosh (68000) */
 
 /* Word size in bytes (a constant equal to sizeof(int)). */
 #if __ACK__ || __GNUC__
@@ -14,8 +18,9 @@
 #define _PTR_SIZE	_EM_WSIZE
 #endif
 
-#define _NR_PROCS	256
-#define _NR_SYS_PROCS	64
+#define _NR_PROCS	100
+#define _NR_SYS_PROCS	32
+#define _NR_HOLES (2*_NR_PROCS+4)  /* No. of memory holes maintained by PM */
 
 /* Set the CHIP type based on the machine selected. The symbol CHIP is actually
  * indicative of more than just the CPU.  For example, machines for which
@@ -31,6 +36,20 @@
 
 #if (_MINIX_MACHINE == _MACHINE_IBM_PC)
 #define _MINIX_CHIP          _CHIP_INTEL
+#endif
+
+#if (_MINIX_MACHINE == _MACHINE_ATARI) || (_MINIX_MACHINE == _MACHINE_MACINTOSH)
+#define _MINIX_CHIP         _CHIP_M68000
+#endif
+
+#if (_MINIX_MACHINE == _MACHINE_SUN_4) || (_MINIX_MACHINE == _MACHINE_SUN_4_60)
+#define _MINIX_CHIP          _CHIP_SPARC
+#define _MINIX_FP_FORMAT   _FP_IEEE
+#endif
+
+#if (_MINIX_MACHINE == _MACHINE_ATARI) || (_MINIX_MACHINE == _MACHINE_SUN_4)
+#define _ASKDEV            1	/* ask for boot device */
+#define _FASTLOAD          1	/* use multiple block transfers to init ram */
 #endif
 
 #ifndef _MINIX_FP_FORMAT
@@ -52,12 +71,4 @@ error "_MINIX_MACHINE has incorrect value (0)"
 /* Kernel debug checks */
 #define DEBUG_LOCK_CHECK 1	/* Interrupt Lock/unlock sanity checking. */
 
-#define _KMESS_BUF_SIZE  10000
-
 #endif /* _MINIX_SYS_CONFIG_H */
-
-
-/* Added by release script  */
-#ifndef _SVN_REVISION
-#define _SVN_REVISION "branch-R3.1.8-r8398"
-#endif

@@ -41,7 +41,7 @@
 #define	_REGEX_H_
 
 #ifndef _TYPES_H
-#include <minix/types.h>
+#include <sys/types.h>
 #endif
 
 /* types */

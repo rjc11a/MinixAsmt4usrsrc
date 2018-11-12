@@ -634,19 +634,19 @@ _dev_boundary:
 	xor	ax, ax
 	ret
 
-! int biosreadsectors(u32_t bufaddr, u32_t sector, u8_t count)
+! int readsectors(u32_t bufaddr, u32_t sector, u8_t count)
 ! int writesectors(u32_t bufaddr, u32_t sector, u8_t count)
 !	Read/write several sectors from/to the Minix virtual disk.  Count
 !	must fit in a byte.  The external variable vfd is the file handle.
 !	Returns 0 for success, otherwise the DOS error code.
 !
-.define _biosreadsectors, _writesectors
+.define _readsectors, _writesectors
 _writesectors:
 	push	bp
 	mov	bp, sp
 	movb	13(bp), 0x40	! Code for a file write
 	jmp	rwsec
-_biosreadsectors:
+_readsectors:
 	push	bp
 	mov	bp, sp
 	movb	13(bp), 0x3F	! Code for a file read
@@ -1276,17 +1276,6 @@ _int15:
 	pop	6(si)		! ep->flags
 	pop	si		! Restore
 	ret
-
-! void scan_keyboard(void)
-!	Read keyboard character. Needs to be done in case one is waiting.
-.define _scan_keyboard
-_scan_keyboard:
-	movb	ah, 1		! Check keyboard
-	int	0x16
-	jz	no_key
-	movb	ah, 0		! Empty it
-	int	0x16
-no_key:	ret
 
 .sect	.rom
 	.align	4

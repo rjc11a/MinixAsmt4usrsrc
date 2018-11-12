@@ -7,38 +7,28 @@
 #include <minix/com.h>
 
 /* Masks and flags for system calls. */
-#define NON_BLOCKING    0x0080  /* do not block if target not ready */
-#define FROM_KERNEL     0x0100  /* message from kernel on behalf of a process */
+#define SYSCALL_FUNC	0x000F	/* mask for system call function */
+#define SYSCALL_FLAGS   0x00F0  /* mask for system call flags */
+#define NON_BLOCKING    0x0010  /* do not block if target not ready */
 
-#define WILLRECEIVE(target, source_ep) \
-  ((RTS_ISSET(target, RTS_RECEIVING) && !RTS_ISSET(target, RTS_SENDING)) &&	\
-    (target->p_getfrom_e == ANY || target->p_getfrom_e == source_ep))
-
-/* IPC status code macros. */
-#define IPC_STATUS_REG		bx
-#define IPC_STATUS_GET(p)	((p)->p_reg.IPC_STATUS_REG)
-#define IPC_STATUS_CLEAR(p)	((p)->p_reg.IPC_STATUS_REG = 0)
-
-/*
- * XXX: the following check is used to set the status code only on RECEIVE.
- * SENDREC is not currently atomic for user processes. A process can return
- * from SENDREC in a different context than the original when a Posix signal
- * handler gets executed. For this reason, it is not safe to manipulate
- * the context (i.e. registers) when a process is blocked on a SENDREC.
- * Unfortunately, avoiding setting the status code for SENDREC doesn't solve
- * the problem entirely because in rare situations it is still necessary to
- * override retreg dynamically (and possibly in a different context).
- * A possible reliable solution is to improve our Posix signal handling
- * implementation and guarantee SENDREC atomicity w.r.t. the process context.
+/* System call numbers that are passed when trapping to the kernel. The 
+ * numbers are carefully defined so that it can easily be seen (based on 
+ * the bits that are on) which checks should be done in sys_call().
  */
-#define IPC_STATUS_ADD(p, m)	do { \
-        if(!((p)->p_misc_flags & MF_REPLY_PEND)) { \
-            (p)->p_reg.IPC_STATUS_REG |= (m); \
-        } \
-    } while(0)
-#define IPC_STATUS_ADD_CALL(p, call) \
-    IPC_STATUS_ADD(p, IPC_STATUS_CALL_TO(call))
-#define IPC_STATUS_ADD_FLAGS(p, flags) \
-    IPC_STATUS_ADD(p, IPC_STATUS_FLAGS(flags))
+#define SEND		   1	/* 0001 : blocking send */
+#define RECEIVE		   2	/* 0010 : blocking receive */
+#define SENDREC	 	   3  	/* 0011 : SEND + RECEIVE */
+#define NOTIFY		   4	/* 0100 : nonblocking notify */
+#define ECHO		   8	/* 1000 : echo a message */
+
+#define IPC_REQUEST	   5	/* 0101 : blocking request */
+#define IPC_REPLY	   6    /* 0110 : nonblocking reply */
+#define IPC_NOTIFY	   7    /* 0111 : nonblocking notification */
+#define IPC_RECEIVE	   9	/* 1001 : blocking receive */
+
+/* The following bit masks determine what checks that should be done. */
+#define CHECK_PTR       0xBB	/* 1011 1011 : validate message buffer */
+#define CHECK_DST       0x55	/* 0101 0101 : validate message destination */
+#define CHECK_DEADLOCK  0x93	/* 1001 0011 : check for deadlock */
 
 #endif /* IPC_H */

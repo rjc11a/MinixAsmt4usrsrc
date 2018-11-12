@@ -8,24 +8,25 @@
  */
 
 #include "inc.h"
-#include <minix/endpoint.h>
+
+/* Set debugging level to 0, 1, or 2 to see no, some, all debug output. */
+#define DEBUG_LEVEL	1
+#define DPRINTF		if (DEBUG_LEVEL > 0) printf
 
 /* Allocate space for the global variables. */
-PRIVATE message m_in;		/* the input message itself */
-PRIVATE message m_out;		/* the output message used for reply */
-PRIVATE endpoint_t who_e;	/* caller's proc number */
-PRIVATE int callnr;		/* system call number */
+message m_in;		/* the input message itself */
+message m_out;		/* the output message used for reply */
+int who_e;		/* caller's proc number */
+int callnr;		/* system call number */
 
 extern int errno;	/* error number set by system library */
 
 /* Declare some local functions. */
+FORWARD _PROTOTYPE(void init_server, (int argc, char **argv)		);
+FORWARD _PROTOTYPE(void sig_handler, (void)				);
+FORWARD _PROTOTYPE(void exit_server, (void)				);
 FORWARD _PROTOTYPE(void get_work, (void)				);
 FORWARD _PROTOTYPE(void reply, (int whom, int result)			);
-
-/* SEF functions and variables. */
-FORWARD _PROTOTYPE( void sef_local_startup, (void) );
-FORWARD _PROTOTYPE( int sef_cb_init_fresh, (int type, sef_init_info_t *info) );
-FORWARD _PROTOTYPE( void sef_cb_signal_handler, (int signo) );
 
 /*===========================================================================*
  *				main                                         *
@@ -37,31 +38,38 @@ PUBLIC int main(int argc, char **argv)
  * sending the reply. The loop never terminates, unless a panic occurs.
  */
   int result;                 
+  sigset_t sigset;
 
-  /* SEF local startup. */
-  env_setargs(argc, argv);
-  sef_local_startup();
+  /* Initialize the server, then go to work. */
+  init_server(argc, argv);
 
   /* Main loop - get work and do it, forever. */         
   while (TRUE) {              
+
       /* Wait for incoming message, sets 'callnr' and 'who'. */
       get_work();
 
-      if (is_notify(callnr)) {
-	      switch (_ENDPOINT_P(who_e)) {
-		      case TTY_PROC_NR:
-			      result = do_fkey_pressed(&m_in);
-			      break;
-		      default:
-			      /* FIXME: error message. */
-			      result = EDONTREPLY;
-			      break;
-	      }
-      }
-      else {
-          printf("IS: warning, got illegal request %d from %d\n",
-          	callnr, m_in.m_source);
-          result = EDONTREPLY;
+      switch (callnr) {
+      case SYS_SIG:
+	  printf("got SYS_SIG message\n");
+	  sigset = m_in.NOTIFY_ARG;
+	  for ( result=0; result< _NSIG; result++) {
+	      if (sigismember(&sigset, result))
+		  printf("signal %d found\n", result);
+	  }
+	  continue;
+      case PROC_EVENT:
+	  result = EDONTREPLY;
+          break;
+      case FKEY_PRESSED:
+          result = do_fkey_pressed(&m_in);
+          break;
+      case DEV_PING:
+	  notify(m_in.m_source);
+	  continue;
+      default: 
+          report("IS","warning, got illegal request from:", m_in.m_source);
+          result = EINVAL;
       }
 
       /* Finally send reply message, unless disabled. */
@@ -73,50 +81,66 @@ PUBLIC int main(int argc, char **argv)
 }
 
 /*===========================================================================*
- *			       sef_local_startup			     *
+ *				 init_server                                 *
  *===========================================================================*/
-PRIVATE void sef_local_startup()
+PRIVATE void init_server(int argc, char **argv)
 {
-  /* Register init callbacks. */
-  sef_setcb_init_fresh(sef_cb_init_fresh);
-  sef_setcb_init_lu(sef_cb_init_fresh);
-  sef_setcb_init_restart(sef_cb_init_fresh);
+/* Initialize the information service. */
+  int fkeys, sfkeys;
+  int i, s;
+  struct sigaction sigact;
 
-  /* Register live update callbacks. */
-  sef_setcb_lu_prepare(sef_cb_lu_prepare_always_ready);
-  sef_setcb_lu_state_isvalid(sef_cb_lu_state_isvalid_standard);
+  /* Install signal handler. Ask PM to transform signal into message. */
+  sigact.sa_handler = SIG_MESS;
+  sigact.sa_mask = ~0;			/* block all other signals */
+  sigact.sa_flags = 0;			/* default behaviour */
+  if (sigaction(SIGTERM, &sigact, NULL) < 0) 
+      report("IS","warning, sigaction() failed", errno);
 
-  /* Register signal callbacks. */
-  sef_setcb_signal_handler(sef_cb_signal_handler);
-
-  /* Let SEF perform startup. */
-  sef_startup();
+  /* Set key mappings. IS takes all of F1-F12 and Shift+F1-F6. */
+  fkeys = sfkeys = 0;
+  for (i=1; i<=12; i++) bit_set(fkeys, i);
+  for (i=1; i<= 8; i++) bit_set(sfkeys, i);
+  if ((s=fkey_map(&fkeys, &sfkeys)) != OK)
+      report("IS", "warning, fkey_map failed:", s);
 }
 
 /*===========================================================================*
- *		            sef_cb_init_fresh                                *
+ *				sig_handler                                  *
  *===========================================================================*/
-PRIVATE int sef_cb_init_fresh(int UNUSED(type), sef_init_info_t *UNUSED(info))
+PRIVATE void sig_handler()
 {
-/* Initialize the information server. */
+  sigset_t sigset;
+  int sig;
 
-  /* Set key mappings. */
-  map_unmap_fkeys(TRUE /*map*/);
+  /* Try to obtain signal set from PM. */
+  if (getsigset(&sigset) != 0) return;
 
-  return(OK);
+  /* Check for known signals. */
+  if (sigismember(&sigset, SIGTERM)) {
+      exit_server();
+  }
 }
 
 /*===========================================================================*
- *		            sef_cb_signal_handler                            *
+ *				exit_server                                  *
  *===========================================================================*/
-PRIVATE void sef_cb_signal_handler(int signo)
+PRIVATE void exit_server()
 {
-  /* Only check for termination signal, ignore anything else. */
-  if (signo != SIGTERM) return;
+/* Shut down the information service. */
+  int fkeys, sfkeys;
+  int i,s;
 
-  /* Shutting down. Unset key mappings, and quit. */
-  map_unmap_fkeys(FALSE /*map*/);
+  /* Release the function key mappings requested in init_server(). 
+   * IS took all of F1-F12 and Shift+F1-F6. 
+   */
+  fkeys = sfkeys = 0;
+  for (i=1; i<=12; i++) bit_set(fkeys, i);
+  for (i=1; i<= 7; i++) bit_set(sfkeys, i);
+  if ((s=fkey_unmap(&fkeys, &sfkeys)) != OK)
+      report("IS", "warning, unfkey_map failed:", s);
 
+  /* Done. Now exit. */
   exit(0);
 }
 
@@ -126,9 +150,9 @@ PRIVATE void sef_cb_signal_handler(int signo)
 PRIVATE void get_work()
 {
     int status = 0;
-    status = sef_receive(ANY, &m_in);   /* this blocks until message arrives */
+    status = receive(ANY, &m_in);   /* this blocks until message arrives */
     if (OK != status)
-        panic("sef_receive failed!: %d", status);
+        panic("IS","failed to receive message!", status);
     who_e = m_in.m_source;        /* message arrived! set sender */
     callnr = m_in.m_type;       /* set function call number */
 }
@@ -144,7 +168,6 @@ int result;                           	/* report result to replyee */
     m_out.m_type = result;  		/* build reply message */
     send_status = send(who, &m_out);    /* send the message */
     if (OK != send_status)
-        panic("unable to send reply!: %d", send_status);
+        panic("IS", "unable to send reply!", send_status);
 }
-
 

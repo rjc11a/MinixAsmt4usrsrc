@@ -1,12 +1,8 @@
 # /etc/rc - System startup script run by init before going multiuser.
 
-exec >/dev/log
-exec 2>/dev/log
-exec </dev/null
-
 umask 022
 TERM="${TERM-minix}"
-PATH=/usr/local/bin:/bin:/usr/bin:/usr/sbin:/usr/pkg/bin:/usr/pkg/sbin:/sbin
+PATH=/usr/local/bin:/bin:/usr/bin:/usr/sbin
 RC_TZ=/etc/rc.timezone
 export TERM PATH
 
@@ -18,35 +14,12 @@ usage()
 
 up()
 {
+    service=$1
+    shift
+
     # Function to dynamically start a system service
-    opt=""
-    prefix=$(expr "$1 " : '\(-\)')
-    if [ "$prefix" = "-" ];
-    then
-         opt=$1
-         shift
-    fi
-    service=$1
-    shift
-
-    service $opt up /sbin/$service "$@"
-}
-
-edit()
-{
-    # Function to dynamically edit system service settings
-    opt=""
-    prefix=$(expr "$1 " : '\(-\)')
-    if [ "$prefix" = "-" ];
-    then
-         opt=$1
-         shift
-    fi
-    service=$1
-    shift
-
-    # Assume binaries are always in /usr/sbin
-    service $opt edit /usr/sbin/$service -label $service "$@"
+    echo -n " $service"
+    service up /sbin/$service "$@"
 }
 
 while getopts 'saf' opt
@@ -69,22 +42,14 @@ esac
 
 case $action in
 start)
-    echo -n "Multiuser startup in progress ..."
+    echo ""
+    echo -n "Multiuser startup in progress ...:"
 
     # National keyboard?
     test -f /etc/keymap && loadkeys /etc/keymap
 
-    # options for fsck. default is -r, which prompts the user for repairs.
-    fsckopts="`sysenv fsckopts`"
-    if [ ! "$fsckopts" ]
-    then	fsckopts=-r
-    fi
-
-    if [ "`sysenv debug_fkeys`" != 0 ]
-    then
-        up -n is -period 5HZ
-    fi
-    echo
+    up is -period 5HZ
+    echo .
 
     # Set timezone.
     export TZ=GMT0
@@ -102,14 +67,8 @@ start)
     # /etc/fstab lists the root, tmp and usr devices.
     . /etc/fstab
 
-    # Unmount now defunct ramdisk
-    umount /dev/imgrd > /dev/null || echo "Failed to unmount boot ramdisk"
-
-    # Use MFS binary only from kernel image?
-    if [ "`sysenv bin_img`" = 1 ]
-    then
-        bin_img="-i "
-    fi
+    # Any swapspace on a device?
+    test "$swap" : '/dev/' && mount -s $swap
 
     # Are we booting from CD?
     bootcd="`/bin/sysenv bootcd`"
@@ -127,7 +86,6 @@ start)
     		echo "Setting /usr on cd is $usr"
     fi
  
-
     # Mount the /usr partition unless this is a single floppy Minix.
     if [ ! -d /usr/bin ]
     then
@@ -140,8 +98,7 @@ start)
 		echo "usr=/dev/$usr" >/tmp/usr'
 	    . /tmp/usr
 	fi
-
-	mount $bin_img $usr_roflag $usr /usr || {
+	mount $usr_roflag $usr /usr || {
 	    echo "\
 Please try to mount something else as /usr, then hit CTRL-D to continue startup.
 Mount $usr /usr failed -- Single user."
@@ -161,35 +118,19 @@ Mount $usr /usr failed -- Single user."
     if [ "$fflag" ]
     then
 	umount $usr
-	echo "fsck.mfs / - $root"
-	intr fsck.mfs $fsckopts $root
-	echo "fsck.mfs /usr - $usr"
-	intr fsck.mfs $fsckopts $usr
+	echo "fsck / - $root"
+	intr fsck -r $root
+	echo "fsck /usr - $usr"
+	intr fsck -r $usr
 	if [ ! -z "$home" ]
-	then	echo "fsck.mfs /home - $home"
-		intr fsck.mfs $fsckopts $home
+	then	echo "fsck /home - $home"
+		intr fsck -r $home
 	fi
-	mount $bin_img $usr /usr
-    fi
-
-    # Edit settings for boot system services
-    if [ "`sysenv skip_boot_config`" != 1 ]
-    then
-	edit rs
-	edit vm
-	edit pm
-	edit sched
-	edit vfs
-	edit ds
-	edit tty
-	edit memory
-	edit -p log
-	edit -c pfs
-	edit init
+	mount $usr /usr
     fi
 
     if [ ! -z "$home" ]
-    then mount $bin_img $home /home || echo "WARNING: couldn't mount $home on /home"
+    then mount $home /home || echo "WARNING: couldn't mount $home on /home"
     fi
 
     # This file is necessary for above 'shutdown -C' check.
@@ -201,6 +142,10 @@ Mount $usr /usr failed -- Single user."
 	echo "Single user."
 	intr sh
     fi
+
+    # Any swapspace on a file?
+    test -n "$swap" -a ! "$swap" : '/dev/' && mount -s $swap
+
 
     case "`printroot -r`":$bootcd in
     /dev/ram:)
@@ -223,6 +168,7 @@ esac
 # Further initialization.
 test -f /usr/etc/rc && sh /usr/etc/rc $action
 test -f /usr/local/etc/rc && sh /usr/local/etc/rc $action
+#test -f /etc/rc.rescue && sh /etc/rc.rescue $action
 
 # Any messages?
 test "$action" = start -a -f /etc/issue && cat /etc/issue

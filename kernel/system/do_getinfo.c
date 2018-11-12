@@ -9,10 +9,14 @@
  *    m1_i2:	I_VAL_LEN2_E	(second length or process nr)	
  */
 
-#include <string.h>
-#include <minix/endpoint.h>
+#include "../system.h"
 
-#include "kernel/system.h"
+#if !( POWERPC )
+
+static unsigned long bios_buf[1024];	/* 4K, what about alignment */
+static vir_bytes bios_buf_vir, bios_buf_len;
+
+#endif /* #if !( POWERPC ) */
 
 
 #if USE_GETINFO
@@ -20,92 +24,83 @@
 /*===========================================================================*
  *			        do_getinfo				     *
  *===========================================================================*/
-PUBLIC int do_getinfo(struct proc * caller, message * m_ptr)
+PUBLIC int do_getinfo(m_ptr)
+register message *m_ptr;	/* pointer to request message */
 {
 /* Request system information to be copied to caller's address space. This
  * call simply copies entire data structures to the caller.
  */
   size_t length;
-  vir_bytes src_vir; 
-  int nr_e, nr, r;
-  int wipe_rnd_bin = -1;
-  struct exec e_hdr;
+  phys_bytes src_phys; 
+  phys_bytes dst_phys; 
+  int proc_nr, nr_e, nr;
 
   /* Set source address and length based on request type. */
-  switch (m_ptr->I_REQUEST) {
+  switch (m_ptr->I_REQUEST) {	
     case GET_MACHINE: {
         length = sizeof(struct machine);
-        src_vir = (vir_bytes) &machine;
+        src_phys = vir2phys(&machine);
         break;
     }
     case GET_KINFO: {
         length = sizeof(struct kinfo);
-        src_vir = (vir_bytes) &kinfo;
+        src_phys = vir2phys(&kinfo);
         break;
     }
     case GET_LOADINFO: {
         length = sizeof(struct loadinfo);
-        src_vir = (vir_bytes) &kloadinfo;
-        break;
-    }
-    case GET_HZ: {
-        length = sizeof(system_hz);
-        src_vir = (vir_bytes) &system_hz;
+        src_phys = vir2phys(&kloadinfo);
         break;
     }
     case GET_IMAGE: {
         length = sizeof(struct boot_image) * NR_BOOT_PROCS;
-        src_vir = (vir_bytes) image;
+        src_phys = vir2phys(image);
         break;
     }
     case GET_IRQHOOKS: {
         length = sizeof(struct irq_hook) * NR_IRQ_HOOKS;
-        src_vir = (vir_bytes) irq_hooks;
+        src_phys = vir2phys(irq_hooks);
         break;
+    }
+    case GET_SCHEDINFO: {
+        /* This is slightly complicated because we need two data structures
+         * at once, otherwise the scheduling information may be incorrect.
+         * Copy the queue heads and fall through to copy the process table. 
+         */
+        length = sizeof(struct proc *) * NR_SCHED_QUEUES;
+        src_phys = vir2phys(rdy_head);
+	okendpt(m_ptr->m_source, &proc_nr);
+        dst_phys = numap_local(proc_nr, (vir_bytes) m_ptr->I_VAL_PTR2,
+                length); 
+        if (src_phys == 0 || dst_phys == 0) return(EFAULT);
+        phys_copy(src_phys, dst_phys, length);
+        /* fall through */
     }
     case GET_PROCTAB: {
         length = sizeof(struct proc) * (NR_PROCS + NR_TASKS);
-        src_vir = (vir_bytes) proc;
+        src_phys = vir2phys(proc);
         break;
     }
     case GET_PRIVTAB: {
         length = sizeof(struct priv) * (NR_SYS_PROCS);
-        src_vir = (vir_bytes) priv;
+        src_phys = vir2phys(priv);
         break;
     }
     case GET_PROC: {
         nr_e = (m_ptr->I_VAL_LEN2_E == SELF) ?
-		caller->p_endpoint : m_ptr->I_VAL_LEN2_E;
+		m_ptr->m_source : m_ptr->I_VAL_LEN2_E;
 	if(!isokendpt(nr_e, &nr)) return EINVAL; /* validate request */
         length = sizeof(struct proc);
-        src_vir = (vir_bytes) proc_addr(nr);
+        src_phys = vir2phys(proc_addr(nr));
         break;
-    }
-    case GET_PRIV: {
-        nr_e = (m_ptr->I_VAL_LEN2_E == SELF) ?
-            caller->p_endpoint : m_ptr->I_VAL_LEN2_E;
-        if(!isokendpt(nr_e, &nr)) return EINVAL; /* validate request */
-        length = sizeof(struct priv);
-        src_vir = (vir_bytes) priv_addr(nr_to_id(nr));
-        break;
-    }
-    case GET_WHOAMI: {
-	int len;
-	/* GET_WHOAMI uses m3 and only uses the message contents for info. */
-	m_ptr->GIWHO_EP = caller->p_endpoint;
-	len = MIN(sizeof(m_ptr->GIWHO_NAME), sizeof(caller->p_name))-1;
-	strncpy(m_ptr->GIWHO_NAME, caller->p_name, len);
-	m_ptr->GIWHO_NAME[len] = '\0';
-	m_ptr->GIWHO_PRIVFLAGS = priv(caller)->s_flags;
-	return OK;
     }
     case GET_MONPARAMS: {
-        src_vir = (vir_bytes) params_buffer;
-	length = sizeof(params_buffer);
+        src_phys = kinfo.params_base;		/* already is a physical */
+        length = kinfo.params_size;
         break;
     }
     case GET_RANDOMNESS: {		
-        static struct k_randomness copy;	/* copy to keep counters */
+        static struct randomness copy;		/* copy to keep counters */
 	int i;
 
         copy = krandom;
@@ -113,86 +108,59 @@ PUBLIC int do_getinfo(struct proc * caller, message * m_ptr)
   		krandom.bin[i].r_size = 0;	/* invalidate random data */
   		krandom.bin[i].r_next = 0;
 	}
-    	length = sizeof(copy);
-    	src_vir = (vir_bytes) &copy;
-    	break;
-    }
-    case GET_RANDOMNESS_BIN: {		
-	int bin = m_ptr->I_VAL_LEN2_E;
-
-	if(bin < 0 || bin >= RANDOM_SOURCES) {
-		printf("SYSTEM: GET_RANDOMNESS_BIN: %d out of range\n", bin);
-		return EINVAL;
-	}
-
-	if(krandom.bin[bin].r_size < RANDOM_ELEMENTS)
-		return ENOENT;
-
-    	length = sizeof(krandom.bin[bin]);
-    	src_vir = (vir_bytes) &krandom.bin[bin];
-
-	wipe_rnd_bin = bin;
-
+    	length = sizeof(struct randomness);
+    	src_phys = vir2phys(&copy);
     	break;
     }
     case GET_KMESSAGES: {
         length = sizeof(struct kmessages);
-        src_vir = (vir_bytes) &kmess;
+        src_phys = vir2phys(&kmess);
         break;
     }
 #if DEBUG_TIME_LOCKS
     case GET_LOCKTIMING: {
     length = sizeof(timingdata);
-    src_vir = (vir_bytes) timingdata;
+    src_phys = vir2phys(timingdata);
     break;
     }
 #endif
+
+#if !( POWERPC )        
+    case GET_BIOSBUFFER:
+    	bios_buf_vir = (vir_bytes)bios_buf;
+    	bios_buf_len = sizeof(bios_buf);
+
+    	length = sizeof(bios_buf_len);
+    	src_phys = vir2phys(&bios_buf_len);
+	if (length != m_ptr->I_VAL_LEN2_E) return (EINVAL);
+	if(!isokendpt(m_ptr->m_source, &proc_nr))
+		panic("bogus source", m_ptr->m_source);
+	dst_phys = numap_local(proc_nr, (vir_bytes) m_ptr->I_VAL_PTR2, length); 
+	if (src_phys == 0 || dst_phys == 0) return(EFAULT);
+	phys_copy(src_phys, dst_phys, length);
+
+    	length = sizeof(bios_buf_vir);
+    	src_phys = vir2phys(&bios_buf_vir);
+    	break;
+#endif /* #if !( POWERPC ) */
+	
     case GET_IRQACTIDS: {
         length = sizeof(irq_actids);
-        src_vir = (vir_bytes) irq_actids;
-        break;
-    }
-    case GET_IDLETSC: {
-	struct proc * idl;
-
-	idl = proc_addr(IDLE);
-        length = sizeof(idl->p_cycles);
-        src_vir = (vir_bytes) &idl->p_cycles;
-        break;
-    }
-    case GET_AOUTHEADER: {
-        int hdrindex, index = m_ptr->I_VAL_LEN2_E;
-        if(index < 0 || index >= NR_BOOT_PROCS) {
-            return EINVAL;
-        }
-        if (iskerneln(_ENDPOINT_P(image[index].endpoint))) { 
-            hdrindex = 0;
-        } else {
-            hdrindex = 1 + index-NR_TASKS;
-        }
-        arch_get_aout_headers(hdrindex, &e_hdr);
-        length = sizeof(e_hdr);
-        src_vir = (vir_bytes) &e_hdr;
+        src_phys = vir2phys(irq_actids);
         break;
     }
 
     default:
-	printf("do_getinfo: invalid request %d\n", m_ptr->I_REQUEST);
         return(EINVAL);
   }
 
   /* Try to make the actual copy for the requested data. */
   if (m_ptr->I_VAL_LEN > 0 && length > m_ptr->I_VAL_LEN) return (E2BIG);
-  r = data_copy_vmcheck(caller, KERNEL, src_vir, caller->p_endpoint,
-	(vir_bytes) m_ptr->I_VAL_PTR, length);
-
-  if(r != OK) return r;
-
-	if(wipe_rnd_bin >= 0 && wipe_rnd_bin < RANDOM_SOURCES) {
-		krandom.bin[wipe_rnd_bin].r_size = 0;
-		krandom.bin[wipe_rnd_bin].r_next = 0;
-	}
-
+  if(!isokendpt(m_ptr->m_source, &proc_nr)) 
+	panic("bogus source", m_ptr->m_source);
+  dst_phys = numap_local(proc_nr, (vir_bytes) m_ptr->I_VAL_PTR, length); 
+  if (src_phys == 0 || dst_phys == 0) return(EFAULT);
+  phys_copy(src_phys, dst_phys, length);
   return(OK);
 }
 

@@ -1,12 +1,43 @@
 # Makefile for the AT disk driver (AT_WINI)
-PROG=	at_wini
-SRCS=	at_wini.c liveupdate.c
+DRIVER = at_wini
 
-DPADD+=	${LIBDRIVER} ${LIBSYS} ${LIBTIMERS}
-LDADD+=	-ldriver -lsys -ltimers
+# directories
+u = /usr
+i = $u/include
+s = $i/sys
+m = $i/minix
+b = $i/ibm
+d = ..
+p = ../libpci
 
-MAN=
+# programs, flags, etc.
+MAKE = exec make
+CC =	exec cc
+CFLAGS = -I$i $(CPROFILE)
+LDFLAGS = -i -L../libdriver
+LIBS = -lsysutil -lsys -ltimers -ldriver
 
-BINDIR?= /sbin
+OBJ = at_wini.o 
 
-.include <bsd.prog.mk>
+
+# build local binary
+all build:	$(DRIVER)
+$(DRIVER):	$(OBJ)
+	$(CC) -o $@ $(LDFLAGS) $(OBJ) $(LIBS)
+	install -S 32k $(DRIVER)
+
+# install with other drivers
+install:	/sbin/$(DRIVER)
+/sbin/$(DRIVER):	$(DRIVER)
+	install -o root -cs $? $@
+
+# clean up local files
+clean:
+	rm -f $(DRIVER) *.o *.bak 
+
+depend: 
+	mkdep "$(CC) -E $(CPPFLAGS)" *.c ../libdriver/*.c > .depend
+
+# Include generated dependencies.
+include .depend
+

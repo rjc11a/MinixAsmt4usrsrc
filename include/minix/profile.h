@@ -31,7 +31,9 @@ struct {
 #endif /* SPROFILE */
 
 
-#include <minix/types.h>
+#if CPROFILE
+
+#include <sys/types.h>
 
 #  define PROF_GET         2    /* get call profiling tables */
 #  define PROF_RESET       3    /* reset call profiling tables */
@@ -94,6 +96,8 @@ struct cprof_tbl_s {
   int calls;				/* nr of executions of path */
   u64_t cycles;				/* execution time of path, in cycles */
 } cprof_tbl_inst;
+
+#endif /* CPROFILE */
 
 _PROTOTYPE( int sprofile, (int action, int size, int freq, 
                                        void *ctl_ptr, void *mem_ptr)   );

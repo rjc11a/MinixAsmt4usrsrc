@@ -11,7 +11,6 @@
 #endif
 #include <system.h>
 #include "param.h"
-#include "format.h"
 
 /*VARARGS*/
 /*FORMAT1v $

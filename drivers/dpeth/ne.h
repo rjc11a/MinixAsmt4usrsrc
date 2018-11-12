@@ -11,6 +11,8 @@
 **
 **  Revision 2.0  2005/06/26 16:16:46  lsodgf0
 **  Initial revision for Minix 3.0.6
+**
+**  $Id$
 */
 
 #ifndef NE2000_H

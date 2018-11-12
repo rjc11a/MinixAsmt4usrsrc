@@ -4,10 +4,8 @@
 #define _UNISTD_H
 
 #ifndef _TYPES_H
-#include <minix/types.h>
+#include <sys/types.h>
 #endif
-
-#include <sys/ucred.h>
 
 /* Values used by access().  POSIX Table 2-8. */
 #define F_OK               0	/* test if file exists */
@@ -35,8 +33,7 @@
 #define RBT_PANIC	   2	/* a server panics */
 #define RBT_MONITOR	   3	/* let the monitor do this */
 #define RBT_RESET	   4	/* hard reset the system */
-#define RBT_DEFAULT	   5	/* return to monitor, reset if not possible */
-#define RBT_INVALID	   6	/* first invalid reboot flag */
+#define RBT_INVALID	   5	/* first invalid reboot flag */
 
 #define _PM_SEG_FLAG (1L << 30)	/* for read() and write() to FS by PM */
 #endif
@@ -47,16 +44,13 @@
 #define SI_PROC_TAB	   2	/* copy of entire process table */
 #define SI_DMAP_TAB	   3	/* get device <-> driver mappings */
 #define SI_MEM_ALLOC	   4	/* get memory allocation data */
-#define SI_DATA_STORE	   5	/* get copy of data store mappings */
-#define SI_SUBSCRIPTION	   6	/* get copy of data store subscriptions */
-#define SI_LOADINFO	   7	/* get copy of load average structure */
-#define SI_KPROC_TAB	   8	/* copy of kernel process table */
-#define SI_CALL_STATS	   9	/* system call statistics */
-#define SI_PCI_INFO	   10	/* get kernel info via PM */
-#define SI_PROCPUB_TAB	   11	/* copy of public entries of process table */
+#define SI_DATA_STORE	   5	/* get copy of data store */
+#define SI_LOADINFO	   6	/* get copy of load average structure */
+#define SI_KPROC_TAB	   7	/* copy of kernel process table */
+#define SI_CALL_STATS	   8	/* system call statistics */
 
 /* NULL must be defined in <unistd.h> according to POSIX Sec. 2.7.1. */
-#include <sys/null.h>
+#define NULL    ((void *)0)
 
 /* The following relate to configurable system variables. POSIX Table 4-2. */
 #define _SC_ARG_MAX	   1
@@ -102,8 +96,8 @@ _PROTOTYPE( int access, (const char *_path, int _amode)			);
 _PROTOTYPE( unsigned int alarm, (unsigned int _seconds)			);
 _PROTOTYPE( int chdir, (const char *_path)				);
 _PROTOTYPE( int fchdir, (int fd)					);
-_PROTOTYPE( int chown, (const char *_path, uid_t _owner, gid_t _group)	);
-_PROTOTYPE( int fchown, (int fd, uid_t _owner, gid_t _group)	);
+_PROTOTYPE( int chown, (const char *_path, _mnx_Uid_t _owner, _mnx_Gid_t _group)	);
+_PROTOTYPE( int fchown, (int fd, _mnx_Uid_t _owner, _mnx_Gid_t _group)	);
 _PROTOTYPE( int close, (int _fd)					);
 _PROTOTYPE( char *ctermid, (char *_s)					);
 _PROTOTYPE( char *cuserid, (char *_s)					);
@@ -123,10 +117,10 @@ _PROTOTYPE( gid_t getegid, (void)					);
 _PROTOTYPE( uid_t geteuid, (void)					);
 _PROTOTYPE( gid_t getgid, (void)					);
 _PROTOTYPE( int getgroups, (int _gidsetsize, gid_t _grouplist[])	);
-_PROTOTYPE( int setgroups, (int _ngroups, gid_t const *grps)		);
 _PROTOTYPE( char *getlogin, (void)					);
 _PROTOTYPE( pid_t getpgrp, (void)					);
 _PROTOTYPE( pid_t getpid, (void)					);
+_PROTOTYPE( pid_t getnpid, (int proc_nr)				);
 _PROTOTYPE( pid_t getppid, (void)					);
 _PROTOTYPE( uid_t getuid, (void)					);
 _PROTOTYPE( int isatty, (int _fd)					);
@@ -136,13 +130,13 @@ _PROTOTYPE( long pathconf, (const char *_path, int _name)		);
 _PROTOTYPE( int pause, (void)						);
 _PROTOTYPE( int pipe, (int _fildes[2])					);
 _PROTOTYPE( ssize_t read, (int _fd, void *_buf, size_t _n)		);
-_PROTOTYPE( ssize_t pread, (int, void *, size_t, off_t)			);
 _PROTOTYPE( int rmdir, (const char *_path)				);
-_PROTOTYPE( int setgid, (gid_t _gid)				);
-_PROTOTYPE( int setegid, (gid_t _gid)				);
+_PROTOTYPE( int setgid, (_mnx_Gid_t _gid)				);
+_PROTOTYPE( int setegid, (_mnx_Gid_t _gid)				);
+_PROTOTYPE( int setpgid, (pid_t _pid, pid_t _pgid)			);
 _PROTOTYPE( pid_t setsid, (void)					);
-_PROTOTYPE( int setuid, (uid_t _uid)				);
-_PROTOTYPE( int seteuid, (uid_t _uid)				);
+_PROTOTYPE( int setuid, (_mnx_Uid_t _uid)				);
+_PROTOTYPE( int seteuid, (_mnx_Uid_t _uid)				);
 _PROTOTYPE( unsigned int sleep, (unsigned int _seconds)			);
 _PROTOTYPE( long sysconf, (int _name)					);
 _PROTOTYPE( pid_t tcgetpgrp, (int _fd)					);
@@ -150,7 +144,6 @@ _PROTOTYPE( int tcsetpgrp, (int _fd, pid_t _pgrp_id)			);
 _PROTOTYPE( char *ttyname, (int _fd)					);
 _PROTOTYPE( int unlink, (const char *_path)				);
 _PROTOTYPE( ssize_t write, (int _fd, const void *_buf, size_t _n)	);
-_PROTOTYPE( ssize_t pwrite, (int _fd, const void *_buf, size_t _n, off_t _offset));
 _PROTOTYPE( int truncate, (const char *_path, off_t _length)		);
 _PROTOTYPE( int ftruncate, (int _fd, off_t _length)			);
 _PROTOTYPE( int nice, (int _incr)					);
@@ -160,68 +153,57 @@ _PROTOTYPE( int symlink, (const char *path1, const char *path2)		);
 _PROTOTYPE( int readlink, (const char *, char *, size_t)		);
 _PROTOTYPE( int getopt, (int _argc, char * const _argv[], char const *_opts)		);
 extern char *optarg;
-extern int optreset;	/* Reset getopt state */
 extern int optind, opterr, optopt;
 _PROTOTYPE( int usleep, (useconds_t _useconds)				);
-
-_PROTOTYPE( int brk, (char *_addr)					);
-_PROTOTYPE( int chroot, (const char *_name)				);
-_PROTOTYPE( int lseek64, (int _fd, u64_t _offset, int _whence,
-						u64_t *_newpos)		);
-_PROTOTYPE( int mknod, (const char *_name, mode_t _mode, dev_t _addr)	);
-_PROTOTYPE( int mknod4, (const char *_name, mode_t _mode, dev_t _addr,
-	    long _size)							);
-_PROTOTYPE( char *mktemp, (char *_template)				);
-_PROTOTYPE( long ptrace, (int _req, pid_t _pid, long _addr, long _data)	);
-_PROTOTYPE( char *sbrk, (int _incr)					);
-_PROTOTYPE( int sync, (void)						);
-_PROTOTYPE( int fsync, (int fd)						);
-_PROTOTYPE( int reboot, (int _how, ...)					);
-_PROTOTYPE( int gethostname, (char *_hostname, size_t _len)		);
-_PROTOTYPE( int getdomainname, (char *_domain, size_t _len)		);
-
-
-/* For compatibility with other Unix systems */
-_PROTOTYPE( int getpagesize, (void)					);
-_PROTOTYPE( int setgroups, (int ngroups, const gid_t *gidset)		);
-_PROTOTYPE( int initgroups, (const char *name, gid_t basegid)		);
-_PROTOTYPE( void *setmode, (const char *)				);
-_PROTOTYPE( mode_t  getmode, (const void *, mode_t)			);
-_PROTOTYPE( void    strmode, (mode_t, char *)				);
-_PROTOTYPE( int ttyslot, (void)						);
-_PROTOTYPE( int fttyslot, (int _fd)					);
-_PROTOTYPE( char *crypt, (const char *_key, const char *_salt)		);
 
 #ifdef _MINIX
 #ifndef _TYPE_H
 #include <minix/type.h>
 #endif
 
+extern int optreset;	/* Reset getopt state */
 
-_PROTOTYPE( int getsysinfo, (endpoint_t who, int what, void *where)	);
+_PROTOTYPE( int brk, (char *_addr)					);
+_PROTOTYPE( int chroot, (const char *_name)				);
+_PROTOTYPE( int lseek64, (int _fd, u64_t _offset, int _whence,
+						u64_t *_newpos)		);
+_PROTOTYPE( int mknod, (const char *_name, _mnx_Mode_t _mode, Dev_t _addr)	);
+_PROTOTYPE( int mknod4, (const char *_name, _mnx_Mode_t _mode, Dev_t _addr,
+	    long _size)							);
+_PROTOTYPE( char *mktemp, (char *_template)				);
+_PROTOTYPE( int mount, (char *_spec, char *_name, int _flag)		);
+_PROTOTYPE( long ptrace, (int _req, pid_t _pid, long _addr, long _data)	);
+_PROTOTYPE( char *sbrk, (int _incr)					);
+_PROTOTYPE( int sync, (void)						);
+_PROTOTYPE( int fsync, (int fd)						);
+_PROTOTYPE( int umount, (const char *_name)				);
+_PROTOTYPE( int reboot, (int _how, ...)					);
+_PROTOTYPE( int gethostname, (char *_hostname, size_t _len)		);
+_PROTOTYPE( int getdomainname, (char *_domain, size_t _len)		);
+_PROTOTYPE( int ttyslot, (void)						);
+_PROTOTYPE( int fttyslot, (int _fd)					);
+_PROTOTYPE( char *crypt, (const char *_key, const char *_salt)		);
+_PROTOTYPE( int getsysinfo, (int who, int what, void *where)		);
 _PROTOTYPE( int getsigset, (sigset_t *sigset)				);
 _PROTOTYPE( int getprocnr, (void)					);
 _PROTOTYPE( int getnprocnr, (pid_t pid)					);
 _PROTOTYPE( int getpprocnr, (void)					);
 _PROTOTYPE( int _pm_findproc, (char *proc_name, int *proc_nr)		);
-_PROTOTYPE( int mapdriver, (char *label, int major, int style,
-							int flags)	);
-_PROTOTYPE(int adddma, (endpoint_t proc_e,
-				phys_bytes start, phys_bytes size)	);
-_PROTOTYPE(int deldma, (endpoint_t proc_e,
-				phys_bytes start, phys_bytes size)	);
-_PROTOTYPE(int getdma, (endpoint_t *procp, phys_bytes *basep, 
-						phys_bytes *sizep)	);
+_PROTOTYPE( int allocmem, (phys_bytes size, phys_bytes *base)		);
+_PROTOTYPE( int freemem, (phys_bytes size, phys_bytes base)		);
+#define DEV_MAP 1
+#define DEV_UNMAP 2
+#define mapdriver(driver, device, style, force) \
+	devctl(DEV_MAP, driver, device, style, force)
+#define unmapdriver(device) devctl(DEV_UNMAP, 0, device, 0)
+_PROTOTYPE( int devctl, (int ctl_req, int driver, int device, int style, 
+	int force)							);
 
-_PROTOTYPE( pid_t getnpid, (endpoint_t proc_ep)				);
-_PROTOTYPE( uid_t getnuid, (endpoint_t proc_ep)				);
-_PROTOTYPE( gid_t getngid, (endpoint_t proc_ep)				);
-_PROTOTYPE( int getnucred, (endpoint_t proc_ep, struct ucred *ucred)	);
+/* For compatibility with other Unix systems */
+_PROTOTYPE( int getpagesize, (void)					);
+_PROTOTYPE( int setgroups, (int ngroups, const gid_t *gidset)		);
+_PROTOTYPE( int initgroups, (const char *name, gid_t basegid)		);
 
-#endif
-
-#ifdef _POSIX_SOURCE
-_PROTOTYPE( int getdtablesize, (void)                                   );
 #endif
 
 #endif /* _UNISTD_H */

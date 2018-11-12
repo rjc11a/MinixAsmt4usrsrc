@@ -4,35 +4,6 @@ ibm/rtl8139.h
 Created:	Aug 2003 by Philip Homburg <philip@cs.vu.nl>
 */
 
-#include <minix/drivers.h>
-#include <minix/netdriver.h>
-
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <stddef.h>
-#include <minix/com.h>
-#include <minix/ds.h>
-#include <minix/keymap.h>
-#include <minix/syslib.h>
-#include <minix/type.h>
-#include <minix/sysutil.h>
-#include <minix/endpoint.h>
-#include <timers.h>
-#include <net/hton.h>
-#include <net/gen/ether.h>
-#include <net/gen/eth_io.h>
-#include <machine/pci.h>
-
-#include <sys/types.h>
-#include <fcntl.h>
-#include <assert.h>
-#include <unistd.h>
-#include <sys/ioc_memory.h>
-#include "kernel/const.h"
-#include "kernel/config.h"
-#include "kernel/type.h"
-
 #define	RL_IDR		0x00	/* Ethernet address
 				 * Note: RL_9346CR_EEM_CONFIG mode is
 				 * required the change the ethernet
@@ -140,7 +111,7 @@ Created:	Aug 2003 by Philip Homburg <philip@cs.vu.nl>
 				 * Note: RL_CR_RE has to be set to
 				 * set/change RL_RCR.
 				 */
-#define		RL_RCR_RES0	0xF0000000 /* Reserved */
+#define		RL_RCR_RES0	0xF0000000 /& Reserved */
 #define		RL_RCR_ERTH_M	0x0F000000 /* Early Rx Threshold */
 #define			RL_RCR_ERTH_0		0x00000000 /* No threshold */
 #define			RL_RCR_ERTH_1		0x01000000 /* 1/16 */
@@ -452,84 +423,6 @@ d8	R/W	Config5		Configuration register 5
 	0	R/W	PME_STS	PME_Status bit
 d9-ff				reserved
 #endif
-
-#define Proc_number(p)		proc_number(p)
-#define debug			0
-#define printW()		((void)0)
-#define vm_1phys2bus(p)		(p)
-
-#define RX_BUFSIZE	RL_RCR_RBLEN_64K_SIZE
-#define RX_BUFBITS	RL_RCR_RBLEN_64K
-#define N_TX_BUF	RL_N_TX
-
-/* I/O vectors are handled IOVEC_NR entries at a time. */
-#define IOVEC_NR	16
-
-/* Configuration */
-#define RL_ENVVAR	"RTLETH"
-
-typedef struct re
-{
-	port_t re_base_port;
-	int re_irq;
-	int re_mode;
-	int re_flags;
-	int re_client;
-	int re_link_up;
-	int re_got_int;
-	int re_send_int;
-	int re_report_link;
-	int re_clear_rx;
-	int re_need_reset;
-	int re_tx_alive;
-	char *re_model;
-
-	/* Rx */
-	phys_bytes re_rx_buf;
-	char  *v_re_rx_buf;
-	vir_bytes re_read_s;
-
-	/* Tx */
-	int re_tx_head;
-	int re_tx_tail;
-	struct
-	{
-		int ret_busy;
-		phys_bytes ret_buf;
-		char * v_ret_buf;
-	} re_tx[N_TX_BUF];
-	u32_t re_ertxth;	/* Early Tx Threshold */
-
-	/* PCI related */
-	int re_seen;			/* TRUE iff device available */
-	u8_t re_pcibus;	
-	u8_t re_pcidev;	
-	u8_t re_pcifunc;	
-
-	/* 'large' items */
-	int re_hook_id;			/* IRQ hook id at kernel */
-	eth_stat_t re_stat;
-	ether_addr_t re_address;
-	message re_rx_mess;
-	message re_tx_mess;
-	char re_name[sizeof("rtl8139#n")];
-	iovec_t re_iovec[IOVEC_NR];
-	iovec_s_t re_iovec_s[IOVEC_NR];
-}
-re_t;
-
-#define REM_DISABLED	0x0
-#define REM_ENABLED	0x1
-
-#define REF_PACK_SENT	0x001
-#define REF_PACK_RECV	0x002
-#define REF_SEND_AVAIL	0x004
-#define REF_READING	0x010
-#define REF_EMPTY	0x000
-#define REF_PROMISC	0x040
-#define REF_MULTI	0x080
-#define REF_BROAD	0x100
-#define REF_ENABLED	0x200
 
 /*
  * $PchId: rtl8139.h,v 1.1 2003/09/05 10:58:50 philip Exp $

@@ -9,6 +9,7 @@ Copyright 1995 Philip Homburg
 #include "generic/assert.h"
 #include "generic/buf.h"
 #include "generic/clock.h"
+#include "generic/type.h"
 
 THIS_FILE
 
@@ -18,25 +19,48 @@ PRIVATE time_t curr_time;
 PRIVATE time_t prev_time;
 PRIVATE timer_t *timer_chain;
 PRIVATE time_t next_timeout;
+#ifdef __minix_vmd
+PRIVATE int clck_tasknr= ANY;
+#endif
 
 FORWARD _PROTOTYPE( void clck_fast_release, (timer_t *timer) );
 FORWARD _PROTOTYPE( void set_timer, (void) );
 
 PUBLIC void clck_init()
 {
+	int r;
+
 	clck_call_expire= 0;
 	curr_time= 0;
 	prev_time= 0;
 	next_timeout= 0;
 	timer_chain= 0;
+
+#ifdef __minix_vmd
+	r= sys_findproc(CLOCK_NAME, &clck_tasknr, 0);
+	if (r != OK)
+		ip_panic(( "unable to find clock task: %d\n", r ));
+#endif
 }
 
 PUBLIC time_t get_time()
 {
 	if (!curr_time)
 	{
-		if (getuptime(&curr_time) != OK)
+#ifdef __minix_vmd
+		static message mess;
+
+		mess.m_type= GET_UPTIME;
+		if (sendrec (clck_tasknr, &mess) < 0)
+			ip_panic(("unable to sendrec"));
+		if (mess.m_type != OK)
 			ip_panic(("can't read clock"));
+		curr_time= mess.NEW_TIME;
+#else /* Minix 3 */
+		int s;
+		if ((s=getuptime(&curr_time)) != OK)
+			ip_panic(("can't read clock"));
+#endif
 		assert(curr_time >= prev_time);
 	}
 	return curr_time;
@@ -149,11 +173,27 @@ PRIVATE void set_timer()
 
 	if (next_timeout == 0 || new_time < next_timeout)
 	{
+#ifdef __minix_vmd
+		static message mess;
+
+		next_timeout= new_time;
+
+		new_time -= curr_time;
+
+		mess.m_type= SET_SYNC_AL;
+		mess.CLOCK_PROC_NR= this_proc;
+		mess.DELTA_TICKS= new_time;
+		if (sendrec (clck_tasknr, &mess) < 0)
+			ip_panic(("unable to sendrec"));
+		if (mess.m_type != OK)
+			ip_panic(("can't set timer"));
+#else /* Minix 3 */
 		next_timeout= new_time;
 		new_time -= curr_time;
 
 		if (sys_setalarm(new_time, 0) != OK)
   			ip_panic(("can't set timer"));
+#endif
 	}
 }
 

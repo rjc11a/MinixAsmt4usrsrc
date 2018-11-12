@@ -17,6 +17,14 @@ Copyright 1995 Philip Homburg
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef __minix_vmd
+
+#include <minix/ansi.h>
+#include <minix/cfg_public.h>
+#include <minix/type.h>
+
+#else /* Assume at least Minix 3.x */
+
 #include <unistd.h>
 #include <sys/ioc_file.h>
 #include <sys/time.h>
@@ -26,6 +34,8 @@ Copyright 1995 Philip Homburg
 #define _NORETURN	/* Should be non empty for GCC */
 
 typedef int ioreq_t;
+
+#endif
 
 #include <minix/const.h>
 #include <minix/com.h>
@@ -78,7 +88,7 @@ _PROTOTYPE( void inet_panic, (void) ) _NORETURN;
 		printf("warning at %s, %d: ", this_file, __LINE__), \
 		printf print_list, \
 		printf("\ninet stacktrace: "), \
-		util_stacktrace() \
+		stacktrace() \
 	)
 #else
 #define ip_warning(print_list)	((void) 0)
@@ -99,11 +109,7 @@ _PROTOTYPE( void inet_panic, (void) ) _NORETURN;
 extern int this_proc;
 extern char version[];
 
-#ifndef HZ
-EXTERN u32_t system_hz;
-#define HZ system_hz
-#define HZ_DYNAMIC 1
-#endif
+void stacktrace ARGS(( void ));
 
 #endif /* INET__INET_H */
 

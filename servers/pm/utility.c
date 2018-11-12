@@ -1,17 +1,17 @@
 /* This file contains some utility routines for PM.
  *
  * The entry points are:
- *   get_free_pid:	get a free process or group id
- *   no_sys:		called for invalid system call numbers
  *   find_param:	look up a boot monitor parameter
- *   find_proc:		return process pointer from pid number
- *   nice_to_priority	convert nice level to priority queue
- *   pm_isokendpt:	check the validity of an endpoint
- *   tell_vfs:		send a request to VFS on behalf of a process
+ *   get_free_pid:	get a free process or group id
+ *   allowed:		see if an access is permitted
+ *   no_sys:		called for invalid system call numbers
+ *   panic:		PM has run aground of a fatal error 
+ *   get_mem_map:	get memory map of given process
+ *   get_stack_ptr:	get stack pointer of given process	
+ *   proc_from_pid:	return process pointer from pid number
  */
 
 #include "pm.h"
-#include <sys/resource.h>
 #include <sys/stat.h>
 #include <minix/callnr.h>
 #include <minix/com.h>
@@ -24,17 +24,12 @@
 #include <minix/config.h>
 #include <timers.h>
 #include <string.h>
-#include <machine/archtypes.h>
-#include "kernel/const.h"
-#include "kernel/config.h"
-#include "kernel/type.h"
-#include "kernel/proc.h"
-
-#define munmap _munmap
-#define munmap_text _munmap_text
-#include <sys/mman.h>
-#undef munmap
-#undef munmap_text
+#include <archconst.h>
+#include <archtypes.h>
+#include "../../kernel/const.h"
+#include "../../kernel/config.h"
+#include "../../kernel/type.h"
+#include "../../kernel/proc.h"
 
 /*===========================================================================*
  *				get_free_pid				     *
@@ -70,6 +65,27 @@ PUBLIC int no_sys()
 }
 
 /*===========================================================================*
+ *				panic					     *
+ *===========================================================================*/
+PUBLIC void panic(who, mess, num)
+char *who;			/* who caused the panic */
+char *mess;			/* panic message string */
+int num;			/* number to go with it */
+{
+/* An unrecoverable error has occurred.  Panics are caused when an internal
+ * inconsistency is detected, e.g., a programming error or illegal value of a
+ * defined constant. The process manager decides to exit.
+ */
+  printf("PM panic (%s): %s", who, mess);
+  if (num != NO_NUM) printf(": %d",num);
+  printf("\n");
+   
+  /* Exit PM. */
+  sys_exit(SELF);
+}
+
+
+/*===========================================================================*
  *				find_param				     *
  *===========================================================================*/
 PUBLIC char *find_param(name)
@@ -90,33 +106,50 @@ const char *name;
 }
 
 /*===========================================================================*
- *				find_proc  				     *
+ *				get_mem_map				     *
  *===========================================================================*/
-PUBLIC struct mproc *find_proc(lpid)
-pid_t lpid;
+PUBLIC int get_mem_map(proc_nr, mem_map)
+int proc_nr;					/* process to get map of */
+struct mem_map *mem_map;			/* put memory map here */
 {
-  register struct mproc *rmp;
+  struct proc p;
+  int s;
 
-  for (rmp = &mproc[0]; rmp < &mproc[NR_PROCS]; rmp++)
-	if ((rmp->mp_flags & IN_USE) && rmp->mp_pid == lpid)
-		return(rmp);
-
-  return(NULL);
+  if ((s=sys_getproc(&p, proc_nr)) != OK)
+  	return(s);
+  memcpy(mem_map, p.p_memmap, sizeof(p.p_memmap));
+  return(OK);
 }
 
 /*===========================================================================*
- *				nice_to_priority			     *
+ *				get_stack_ptr				     *
  *===========================================================================*/
-PUBLIC int nice_to_priority(int nice, unsigned* new_q)
+PUBLIC int get_stack_ptr(proc_nr_e, sp)
+int proc_nr_e;					/* process to get sp of */
+vir_bytes *sp;					/* put stack pointer here */
 {
-	if (nice < PRIO_MIN || nice > PRIO_MAX) return(EINVAL);
+  struct proc p;
+  int s;
 
-	*new_q = MAX_USER_Q + (nice-PRIO_MIN) * (MIN_USER_Q-MAX_USER_Q+1) /
-	    (PRIO_MAX-PRIO_MIN+1);
-	if (*new_q < MAX_USER_Q) *new_q = MAX_USER_Q;	/* shouldn't happen */
-	if (*new_q > MIN_USER_Q) *new_q = MIN_USER_Q;	/* shouldn't happen */
+  if ((s=sys_getproc(&p, proc_nr_e)) != OK)
+  	return(s);
+  *sp = p.p_reg.sp;
+  return(OK);
+}
 
-	return (OK);
+/*===========================================================================*
+ *				proc_from_pid				     *
+ *===========================================================================*/
+PUBLIC int proc_from_pid(mp_pid)
+pid_t mp_pid;
+{
+	int rmp;
+
+	for (rmp = 0; rmp < NR_PROCS; rmp++)
+		if (mproc[rmp].mp_pid == mp_pid)
+			return rmp;
+
+	return -1;
 }
 
 /*===========================================================================*
@@ -128,48 +161,9 @@ PUBLIC int pm_isokendpt(int endpoint, int *proc)
 	if(*proc < -NR_TASKS || *proc >= NR_PROCS)
 		return EINVAL;
 	if(*proc >= 0 && endpoint != mproc[*proc].mp_endpoint)
-		return EDEADEPT;
+		return EDEADSRCDST;
 	if(*proc >= 0 && !(mproc[*proc].mp_flags & IN_USE))
-		return EDEADEPT;
+		return EDEADSRCDST;
 	return OK;
 }
 
-/*===========================================================================*
- *				tell_vfs			 	     *
- *===========================================================================*/
-PUBLIC void tell_vfs(rmp, m_ptr)
-struct mproc *rmp;
-message *m_ptr;
-{
-/* Send a request to VFS, without blocking.
- */
-  int r;
-
-  if (rmp->mp_flags & VFS_CALL)
-	panic("tell_vfs: not idle: %d", m_ptr->m_type);
-
-  r = asynsend3(VFS_PROC_NR, m_ptr, AMF_NOREPLY);
-  if (r != OK)
-  	panic("unable to send to VFS: %d", r);
-
-  rmp->mp_flags |= VFS_CALL;
-}
-
-int unmap_ok = 0;
-
-PUBLIC int munmap(void *addrstart, vir_bytes len)
-{
-	if(!unmap_ok) 
-		return ENOSYS;
-
-	return _munmap(addrstart, len);
-}
-
-PUBLIC int munmap_text(void *addrstart, vir_bytes len)
-{
-	if(!unmap_ok)
-		return ENOSYS;
-
-	return _munmap_text(addrstart, len);
-
-}

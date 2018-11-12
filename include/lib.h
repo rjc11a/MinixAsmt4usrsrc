@@ -11,7 +11,7 @@
 
 /* The following are so basic, all the lib files get them automatically. */
 #include <minix/config.h>	/* must be first */
-#include <minix/types.h>
+#include <sys/types.h>
 #include <limits.h>
 #include <errno.h>
 #include <ansi.h>
@@ -23,10 +23,12 @@
 
 #include <minix/ipc.h>
 
+#define MM                 PM_PROC_NR
+#define FS                 FS_PROC_NR
 
 _PROTOTYPE( int __execve, (const char *_path, char *const _argv[], 
 			char *const _envp[], int _nargs, int _nenvps)	);
-_PROTOTYPE( int _syscall, (endpoint_t _who, int _syscallnr, message *_msgptr)	);
+_PROTOTYPE( int _syscall, (int _who, int _syscallnr, message *_msgptr)	);
 _PROTOTYPE( void _loadname, (const char *_name, message *_msgptr)	);
 _PROTOTYPE( int _len, (const char *_s)					);
 _PROTOTYPE( void _begsig, (int _dummy)					);

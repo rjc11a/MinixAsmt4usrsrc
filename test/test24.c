@@ -13,22 +13,24 @@
 #include <time.h>
 #include <stdio.h>
 
+_PROTOTYPE(void main, (int argc, char *argv[]));
 _PROTOTYPE(void chk_dir, (DIR * dirpntr));
 _PROTOTYPE(void test24a, (void));
 _PROTOTYPE(void test24b, (void));
 _PROTOTYPE(void test24c, (void));
 _PROTOTYPE(void makelongnames, (void));
+_PROTOTYPE(void e, (int number));
+_PROTOTYPE(void quit, (void));
 
 #define OVERFLOW_DIR_NR	(OPEN_MAX + 1)
 #define MAX_ERROR	4
 #define ITERATIONS 5
 
-#include "common.c"
-
 #define DIRENT0	((struct dirent *) NULL)
 #define System(cmd)	if (system(cmd) != 0) printf("``%s'' failed\n", cmd)
 #define Chdir(dir)	if (chdir(dir) != 0) printf("Can't goto %s\n", dir)
 
+int errct = 0;
 int subtest = 1;
 int superuser;
 
@@ -37,7 +39,9 @@ char MaxPath[PATH_MAX];		/* Same for path */
 char ToLongName[NAME_MAX + 2];	/* Name of maximum +1 length */
 char ToLongPath[PATH_MAX + 1];	/* Same for path, both too long */
 
-int main(int argc, char *argv[])
+void main(argc, argv)
+int argc;
+char *argv[];
 {
   int i, m = 0xFFFF;
 
@@ -244,7 +248,6 @@ void test24c()
 /* Test whether wrong things go wrong right. */
 
   DIR *dirp;
-  int does_truncate;
 
   subtest = 3;
 
@@ -273,15 +276,20 @@ void test24c()
   if (rmdir(MaxName) != 0) e(12);	/* then remove it */
   if ((dirp = opendir(MaxPath)) == ((DIR *) NULL)) e(13);	/* open '.'  */
   if (closedir(dirp) != 0) e(14);	/* close it */
-
-  does_truncate = does_fs_truncate();
+#if 0 /* XXX - anything could happen with the bad pointer */
+  if (closedir(dirp) != -1) e(15);	/* close it again */
+  if (closedir(dirp) != -1) e(16);	/* and again */
+#endif /* 0 */
   if (opendir(ToLongName) != ((DIR *) NULL)) e(17);	/* is too long */
-  if (does_truncate) {
-	if (errno != ENOENT) e(18);
-  } else {
-	if (errno != ENAMETOOLONG) e(19);
-  }
-
+#ifdef _POSIX_NO_TRUNC
+# if _POSIX_NO_TRUNC - 0 != -1
+  if (errno != ENAMETOOLONG) e(18);
+# else
+  if (errno != ENOENT) e(19);
+# endif
+#else
+# include "error, this case requires dynamic checks and is not handled"
+#endif
   if (opendir(ToLongPath) != ((DIR *) NULL)) e(20);	/* path is too long */
   if (errno != ENAMETOOLONG) e(21);
   System("touch foo/abc");	/* make a file */
@@ -359,3 +367,33 @@ void makelongnames()
   ToLongPath[PATH_MAX] = '\0';	/* inc ToLongPath by one */
 }
 
+void e(n)
+int n;
+{
+  int err_num = errno;		/* Save in case printf clobbers it. */
+
+  printf("Subtest %d,  error %d  errno=%d: ", subtest, n, errno);
+  errno = err_num;
+  perror("");
+  if (errct++ > MAX_ERROR) {
+	printf("Too many errors; test aborted\n");
+	chdir("..");
+	system("rm -rf DIR*");
+	exit(1);
+  }
+  errno = 0;
+}
+
+void quit()
+{
+  Chdir("..");
+  System("rm -rf DIR_24");
+
+  if (errct == 0) {
+	printf("ok\n");
+	exit(0);
+  } else {
+	printf("%d errors\n", errct);
+	exit(1);
+  }
+}

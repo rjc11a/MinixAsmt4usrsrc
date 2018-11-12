@@ -13,7 +13,7 @@ See the Linux PCI ID Repository <http://pciids.sourceforge.net/>.
  * 2004-08-08 (asw) add Intel 82371AB (0x8086, 0x7100) 
  */
 
-#include <minix/drivers.h>
+#include "../drivers.h"
 #include "pci.h"
 #if __minix_vmd
 #include "config.h"
@@ -37,14 +37,8 @@ struct pci_vendor pci_vendor_table[]=
 	{ 0x10EC, "Realtek" },
 	{ 0x1106, "VIA" },
 	{ 0x110A, "Siemens Nixdorf AG" },
-	{ 0x1186, "D-Link" },
 	{ 0x125D, "ESS Technology" },
-	{ 0x1259, "Allied Telesyn International" },
 	{ 0x1274, "Ensoniq" },
-	{ 0x1385, "Netgear" },
-	{ 0x16ec, "US Robotics" },
-	{ 0x1737, "Linksys" },
-	{ 0x1969, "Atheros Communications" },
 	{ 0x5333, "S3" },
 	{ 0x8086, "Intel" },
 	{ 0x9004, "Adaptec" },
@@ -89,10 +83,7 @@ struct pci_device pci_device_table[]=
 	{ 0x10DE, 0x0020, "nVidia Riva TnT [NV04]" },
 	{ 0x10DE, 0x0110, "nVidia GeForce2 MX [NV11]" },
 	{ 0x10EC, 0x8029, "Realtek RTL8029" },
-	{ 0x10EC, 0x8129, "Realtek RTL8129" },
 	{ 0x10EC, 0x8139, "Realtek RTL8139" },
-	{ 0x10EC, 0x8167, "Realtek RTL8169/8110 Family Gigabit NIC" },
-	{ 0x10EC, 0x8169, "Realtek RTL8169" },
 	{ 0x1106, 0x0305, "VIA VT8363/8365 [KT133/KM133]" },
 	{ 0x1106, 0x0571, "VIA IDE controller" },
 	{ 0x1106, 0x0686, "VIA VT82C686 (Apollo South Bridge)" },
@@ -116,28 +107,17 @@ struct pci_device pci_device_table[]=
 	{ 0x1106, 0xB188, "VT8237 PCI bridge" },
 	{ 0x110A, 0x0005, "Siemens Nixdorf Tulip Cntlr., Power Management" },
 	{ 0x1186, 0x1300, "D-Link RTL8139" },
-	{ 0x1186, 0x4300, "D-Link Gigabit adapter" },
-	{ 0x1259, 0xc107, "Allied Telesyn International Gigabit Ethernet Adapter" },
 	{ 0x125D, 0x1969, "ESS ES1969 Solo-1 Audiodrive" },
 	{ 0x1274, 0x1371, "Ensoniq ES1371 [AudioPCI-97]" },
 	{ 0x1274, 0x5000, "Ensoniq ES1370" },
 	{ 0x1274, 0x5880, "Ensoniq CT5880 [AudioPCI]" },
-	{ 0x1385, 0x8169, "Netgear Gigabit Ethernet Adapter" },
-	{ 0x16ec, 0x0116, "US Robotics Realtek 8169S chip" },
-	{ 0x1737, 0x1032, "Linksys Instant Gigabit Desktop Network Interface" },
-	{ 0x1969, 0x2048, "Atheros L2 Fast Ethernet Controller" },
 	{ 0x5333, 0x8811, "S3 86c764/765 [Trio32/64/64V+]" },
 	{ 0x5333, 0x883d, "S3 Virge/VX" },
 	{ 0x5333, 0x88d0, "S3 Vision 964 vers 0" },
 	{ 0x5333, 0x8a01, "S3 Virge/DX or /GX" },
 	{ 0x8086, 0x1004, "Intel 82543GC Gigabit Ethernet Controller" },
-	{ 0x8086, 0x100E, "Intel PRO/1000 MT Desktop Adapter" },
  	{ 0x8086, 0x1029, "Intel EtherExpressPro100 ID1029" },
  	{ 0x8086, 0x1030, "Intel Corporation 82559 InBusiness 10/100" },
- 	{ 0x8086, 0x103d, "Intel Corporation 82801DB PRO/100 VE (MOB)" },
- 	{ 0x8086, 0x1064, "Intel Corporation 82562 PRO/100 VE" },
-	{ 0x8086, 0x107C, "Intel PRO/1000 GT Desktop Adapter" },
-	{ 0x8086, 0x10CD, "Intel PRO/1000 Gigabit Network Connection" },
  	{ 0x8086, 0x1209, "Intel EtherExpressPro100 82559ER" },
  	{ 0x8086, 0x1229, "Intel EtherExpressPro100 82557/8/9" },
 	{ 0x8086, 0x122D, "Intel 82437FX" },
@@ -206,7 +186,6 @@ struct pci_subclass pci_subclass_table[]=
 	{ 0x01, 0x02, 0x00, "Floppy disk controller" },
 	{ 0x01, 0x03, 0x00, "IPI controller" },
 	{ 0x01, 0x04, 0x00, "RAID controller" },
-	{ 0x01, 0x06, 0x01, "AHCI controller" },
 	{ 0x01, 0x80, 0x00, "Other mass storage controller" },
 
 	{ 0x02, 0x00, 0x00, "Ethernet controller" },

@@ -32,24 +32,23 @@ bit_t origin;			/* number of bit to start searching at */
 /* Allocate a bit from a bit map and return its bit number. */
 
   block_t start_block;		/* first bit block */
-  block_t block;
   bit_t map_bits;		/* how many bits are there in the bit map? */
-  short bit_blocks;		/* how many blocks are there in the bit map? */
-  unsigned word, bcount;
+  unsigned bit_blocks;		/* how many blocks are there in the bit map? */
+  unsigned block, word, bcount;
   struct buf *bp;
   bitchunk_t *wptr, *wlim, k;
   bit_t i, b;
 
   if (sp->s_rd_only)
-	panic("can't allocate bit on read-only filesys");
+	panic(__FILE__,"can't allocate bit on read-only filesys.", NO_NUM);
 
   if (map == IMAP) {
 	start_block = START_BLOCK;
-	map_bits = (bit_t) (sp->s_ninodes + 1);
+	map_bits = sp->s_ninodes + 1;
 	bit_blocks = sp->s_imap_blocks;
   } else {
 	start_block = START_BLOCK + sp->s_imap_blocks;
-	map_bits = (bit_t) (sp->s_zones - (sp->s_firstdatazone - 1));
+	map_bits = sp->s_zones - (sp->s_firstdatazone - 1);
 	bit_blocks = sp->s_zmap_blocks;
   }
 
@@ -57,7 +56,7 @@ bit_t origin;			/* number of bit to start searching at */
   if (origin >= map_bits) origin = 0;	/* for robustness */
 
   /* Locate the starting place. */
-  block = (block_t) (origin / FS_BITS_PER_BLOCK(sp->s_block_size));
+  block = origin / FS_BITS_PER_BLOCK(sp->s_block_size);
   word = (origin % FS_BITS_PER_BLOCK(sp->s_block_size)) / FS_BITCHUNK_BITS;
 
   /* Iterate over all blocks plus one, because we start in the middle. */
@@ -73,7 +72,7 @@ bit_t origin;			/* number of bit to start searching at */
 		if (*wptr == (bitchunk_t) ~0) continue;
 
 		/* Find and allocate the free bit. */
-		k = (bitchunk_t) conv2(sp->s_native, (int) *wptr);
+		k = conv2(sp->s_native, (int) *wptr);
 		for (i = 0; (k & (1 << i)) != 0; ++i) {}
 
 		/* Bit number from the start of the bit map. */
@@ -86,14 +85,13 @@ bit_t origin;			/* number of bit to start searching at */
 
 		/* Allocate and return bit number. */
 		k |= 1 << i;
-		*wptr = (bitchunk_t) conv2(sp->s_native, (int) k);
+		*wptr = conv2(sp->s_native, (int) k);
 		bp->b_dirt = DIRTY;
 		put_block(bp, MAP_BLOCK);
 		return(b);
 	}
 	put_block(bp, MAP_BLOCK);
-	if (++block >= (unsigned int) bit_blocks) /* last block, wrap around */
-		block = 0;
+	if (++block >= bit_blocks) block = 0;	/* last block, wrap around */
 	word = 0;
   } while (--bcount > 0);
   return(NO_BIT);		/* no bit could be allocated */
@@ -115,7 +113,7 @@ bit_t bit_returned;		/* number of bit to insert into the map */
   block_t start_block;
 
   if (sp->s_rd_only)
-	panic("can't free bit on read-only filesys");
+	panic(__FILE__,"can't free bit on read-only filesys.", NO_NUM);
 
   if (map == IMAP) {
 	start_block = START_BLOCK;
@@ -131,50 +129,85 @@ bit_t bit_returned;		/* number of bit to insert into the map */
 
   bp = get_block(sp->s_dev, start_block + block, NORMAL);
 
-  k = (bitchunk_t) conv2(sp->s_native, (int) bp->b_bitmap[word]);
+  k = conv2(sp->s_native, (int) bp->b_bitmap[word]);
   if (!(k & mask)) {
-  	if (map == IMAP) panic("tried to free unused inode");
-  	else panic("tried to free unused block: %u", bit_returned);
+	panic(__FILE__,map == IMAP ? "tried to free unused inode" :
+	      "tried to free unused block", bit_returned);
   }
 
   k &= ~mask;
-  bp->b_bitmap[word] = (bitchunk_t) conv2(sp->s_native, (int) k);
+  bp->b_bitmap[word] = conv2(sp->s_native, (int) k);
   bp->b_dirt = DIRTY;
 
   put_block(bp, MAP_BLOCK);
 }
 
-
 /*===========================================================================*
  *				get_super				     *
  *===========================================================================*/
-PUBLIC struct super_block *get_super(
-  dev_t dev			/* device number whose super_block is sought */
-)
+PUBLIC struct super_block *get_super(dev)
+dev_t dev;			/* device number whose super_block is sought */
 {
+/* Search the superblock table for this device.  It is supposed to be there. */
+
+  register struct super_block *sp;
+
   if (dev == NO_DEV)
-  	panic("request for super_block of NO_DEV");
+  	panic(__FILE__,"request for super_block of NO_DEV", NO_NUM);
 
-  if(superblock.s_dev != dev)
-  	panic("wrong superblock: %d", (int) dev);
+  for (sp = &super_block[0]; sp < &super_block[NR_SUPERS]; sp++)
+	if (sp->s_dev == dev) return(sp);
+printf("MFS(%d)get_super: sp->s_dev: %d, dev: %d\n", SELF_E, sp->s_dev, dev);  
 
-  return(&superblock);
+  /* Search failed.  Something wrong. */
+  panic(__FILE__,"can't find superblock for device (in decimal)", (int) dev);
+
+  return(NIL_SUPER);		/* to keep the compiler and lint quiet */
 }
-
 
 /*===========================================================================*
  *				get_block_size				     *
  *===========================================================================*/
-PUBLIC unsigned int get_block_size(dev_t dev)
+PUBLIC int get_block_size(dev_t dev)
 {
+/* Search the superblock table for this device. */
+
+  register struct super_block *sp;
+
   if (dev == NO_DEV)
-  	panic("request for block size of NO_DEV");
+  	panic(__FILE__,"request for block size of NO_DEV", NO_NUM);
 
-  return(fs_block_size);
+  for (sp = &super_block[0]; sp < &super_block[NR_SUPERS]; sp++) {
+	if (sp->s_dev == dev) {
+		return(sp->s_block_size);
+	}
+  }
 
+  /* no mounted filesystem? use this block size then. */
+  return _MIN_BLOCK_SIZE;
 }
 
+/*===========================================================================*
+ *				mounted					     *
+ *===========================================================================*/
+/* Report on whether the given inode is on a mounted (or ROOT) file system. */
+/*
+PUBLIC int mounted(rip)
+register struct inode *rip;
+{
 
+  register struct super_block *sp;
+  register dev_t dev;
+
+  dev = (dev_t) rip->i_zone[0];
+  if (dev == root_dev) return(TRUE);
+
+  for (sp = &super_block[0]; sp < &super_block[NR_SUPERS]; sp++)
+	if (sp->s_dev == dev) return(TRUE);
+
+  return(FALSE);
+}
+*/
 /*===========================================================================*
  *				read_super				     *
  *===========================================================================*/
@@ -183,22 +216,19 @@ register struct super_block *sp; /* pointer to a superblock */
 {
 /* Read a superblock. */
   dev_t dev;
-  unsigned int magic;
+  int magic;
   int version, native, r;
-  static char *sbbuf;
-  block_t offset;
-
-  STATICINIT(sbbuf, _MIN_BLOCK_SIZE);
+  static char sbbuf[_MIN_BLOCK_SIZE];
 
   dev = sp->s_dev;		/* save device (will be overwritten by copy) */
   if (dev == NO_DEV)
-  	panic("request for super_block of NO_DEV");
+  	panic(__FILE__,"request for super_block of NO_DEV", NO_NUM);
   
-  r = block_dev_io(MFS_DEV_READ, dev, SELF_E, sbbuf, cvu64(SUPER_BLOCK_BYTES),
-  		   _MIN_BLOCK_SIZE);
-  if (r != _MIN_BLOCK_SIZE) 
-  	return(EINVAL);
-  
+  r = block_dev_io(MFS_DEV_READ, dev, SELF_E,
+  	sbbuf, cvu64(SUPER_BLOCK_BYTES), _MIN_BLOCK_SIZE, 0);
+  if (r != _MIN_BLOCK_SIZE) {
+  	return EINVAL;
+  }
   memcpy(sp, sbbuf, sizeof(*sp));
   sp->s_dev = NO_DEV;		/* restore later */
   magic = sp->s_magic;		/* determines file system type */
@@ -219,14 +249,14 @@ register struct super_block *sp; /* pointer to a superblock */
 
   /* If the super block has the wrong byte order, swap the fields; the magic
    * number doesn't need conversion. */
-  sp->s_ninodes =           (ino_t) conv4(native, (int) sp->s_ninodes);
-  sp->s_nzones =          (zone1_t) conv2(native, (int) sp->s_nzones);
-  sp->s_imap_blocks =       (short) conv2(native, (int) sp->s_imap_blocks);
-  sp->s_zmap_blocks =       (short) conv2(native, (int) sp->s_zmap_blocks);
-  sp->s_firstdatazone_old =(zone1_t)conv2(native,(int)sp->s_firstdatazone_old);
-  sp->s_log_zone_size =     (short) conv2(native, (int) sp->s_log_zone_size);
-  sp->s_max_size =          (off_t) conv4(native, sp->s_max_size);
-  sp->s_zones =             (zone_t)conv4(native, sp->s_zones);
+  sp->s_ninodes =       conv4(native, sp->s_ninodes);
+  sp->s_nzones =        conv2(native, (int) sp->s_nzones);
+  sp->s_imap_blocks =   conv2(native, (int) sp->s_imap_blocks);
+  sp->s_zmap_blocks =   conv2(native, (int) sp->s_zmap_blocks);
+  sp->s_firstdatazone = conv2(native, (int) sp->s_firstdatazone);
+  sp->s_log_zone_size = conv2(native, (int) sp->s_log_zone_size);
+  sp->s_max_size =      conv4(native, sp->s_max_size);
+  sp->s_zones =         conv4(native, sp->s_zones);
 
   /* In V1, the device size was kept in a short, s_nzones, which limited
    * devices to 32K zones.  For V2, it was decided to keep the size as a
@@ -241,7 +271,7 @@ register struct super_block *sp; /* pointer to a superblock */
    */
   if (version == V1) {
   	sp->s_block_size = _STATIC_BLOCK_SIZE;
-	sp->s_zones = (zone_t) sp->s_nzones;	/* only V1 needs this copy */
+	sp->s_zones = sp->s_nzones;	/* only V1 needs this copy */
 	sp->s_inodes_per_block = V1_INODES_PER_BLOCK;
 	sp->s_ndzones = V1_NR_DZONES;
 	sp->s_nindirs = V1_INDIRECTS;
@@ -256,38 +286,32 @@ register struct super_block *sp; /* pointer to a superblock */
 	sp->s_nindirs = V2_INDIRECTS(sp->s_block_size);
   }
 
-  /* For even larger disks, a similar problem occurs with s_firstdatazone.
-   * If the on-disk field contains zero, we assume that the value was too
-   * large to fit, and compute it on the fly.
-   */
-  if (sp->s_firstdatazone_old == 0) {
-	offset = START_BLOCK + sp->s_imap_blocks + sp->s_zmap_blocks;
-	offset += (sp->s_ninodes + sp->s_inodes_per_block - 1) /
-		sp->s_inodes_per_block;
-
-	sp->s_firstdatazone = (offset + (1 << sp->s_log_zone_size) - 1) >>
-		sp->s_log_zone_size;
-  } else {
-	sp->s_firstdatazone = (zone_t) sp->s_firstdatazone_old;
+  if (sp->s_block_size < _MIN_BLOCK_SIZE) {
+  	return EINVAL;
   }
-
-  if (sp->s_block_size < _MIN_BLOCK_SIZE) 
-  	return(EINVAL);
-  
-  if ((sp->s_block_size % 512) != 0) 
-  	return(EINVAL);
-  
-  if (SUPER_SIZE > sp->s_block_size) 
-  	return(EINVAL);
-  
+  if (sp->s_block_size > _MAX_BLOCK_SIZE) {
+  	printf("Filesystem block size is %d kB; maximum filesystem\n"
+ 	"block size is %d kB. This limit can be increased by recompiling.\n",
+  	sp->s_block_size/1024, _MAX_BLOCK_SIZE/1024);
+  	return EINVAL;
+  }
+  if ((sp->s_block_size % 512) != 0) {
+  	return EINVAL;
+  }
+  if (SUPER_SIZE > sp->s_block_size) {
+  	return EINVAL;
+  }
   if ((sp->s_block_size % V2_INODE_SIZE) != 0 ||
      (sp->s_block_size % V1_INODE_SIZE) != 0) {
-  	return(EINVAL);
+  	return EINVAL;
   }
 
   /* Limit s_max_size to LONG_MAX */
-  if ((unsigned long)sp->s_max_size > LONG_MAX) 
-	sp->s_max_size = LONG_MAX;
+  if ((unsigned long)sp->s_max_size > LONG_MAX)
+  {
+	printf("read_super: reducing s_max_size to LONG_MAX\n");
+	sp->s_max_size= LONG_MAX;
+  }
 
   sp->s_isearch = 0;		/* inode searches initially start at 0 */
   sp->s_zsearch = 0;		/* zone searches initially start at 0 */
@@ -297,15 +321,12 @@ register struct super_block *sp; /* pointer to a superblock */
   /* Make a few basic checks to see if super block looks reasonable. */
   if (sp->s_imap_blocks < 1 || sp->s_zmap_blocks < 1
 				|| sp->s_ninodes < 1 || sp->s_zones < 1
-				|| sp->s_firstdatazone <= 4
-				|| sp->s_firstdatazone >= sp->s_zones
 				|| (unsigned) sp->s_log_zone_size > 4) {
   	printf("not enough imap or zone map blocks, \n");
-  	printf("or not enough inodes, or not enough zones, \n"
-  		"or invalid first data zone, or zone size too large\n");
+  	printf("or not enough inodes, or not enough zones, "
+  		"or zone size too large\n");
 	return(EINVAL);
   }
   sp->s_dev = dev;		/* restore device number */
   return(OK);
 }
-

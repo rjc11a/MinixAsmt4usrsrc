@@ -67,11 +67,11 @@ __FBSDID("$FreeBSD: src/bin/sh/cd.c,v 1.34 2004/04/06 20:06:51 markm Exp $");
 #include "show.h"
 #include "cd.h"
 
-STATIC int cdlogical(const char *);
-STATIC int cdphysical(const char *);
-STATIC int docd(const char *, int, int);
+STATIC int cdlogical(char *);
+STATIC int cdphysical(char *);
+STATIC int docd(char *, int, int);
 STATIC char *getcomponent(void);
-STATIC int updatepwd(const char *);
+STATIC int updatepwd(char *);
 
 STATIC char *curdir = NULL;	/* current working directory */
 STATIC char *prevdir;		/* previous working directory */
@@ -145,7 +145,7 @@ cdcmd(int argc, char **argv)
  * directory name if "print" is nonzero.
  */
 STATIC int
-docd(const char *dest, int print, int phys)
+docd(char *dest, int print, int phys)
 {
 
 	TRACE(("docd(\"%s\", %d, %d) called\n", dest, print, phys));
@@ -161,7 +161,7 @@ docd(const char *dest, int print, int phys)
 }
 
 STATIC int
-cdlogical(const char *dest)
+cdlogical(char *dest)
 {
 	char *p;
 	char *q;
@@ -212,7 +212,7 @@ cdlogical(const char *dest)
 }
 
 STATIC int
-cdphysical(const char *dest)
+cdphysical(char *dest)
 {
 
 	INTOFF;
@@ -255,7 +255,7 @@ getcomponent(void)
  * that the current directory has changed.
  */
 STATIC int
-updatepwd(const char *dir)
+updatepwd(char *dir)
 {
 	char *new;
 	char *p;

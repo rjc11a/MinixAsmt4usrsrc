@@ -137,8 +137,7 @@ void do_parent(int data_pipe[])
 	exit(0);
 }
 
-int main(int argc, char *argv[])
-{
+void main(void) {
 	int pipes[2];
 	int retval;
 	int pid;	
@@ -160,5 +159,4 @@ int main(int argc, char *argv[])
 		do_child(pipes);
 	else
 		do_parent(pipes);
-	return 0;
 }

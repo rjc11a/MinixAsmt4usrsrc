@@ -6,13 +6,13 @@ Initialization of PCI DP8390-based ethernet cards
 Created:	April 2000 by Philip Homburg <philip@f-mnx.phicoh.com>
 */
 
-#include <minix/drivers.h>
+#include "../drivers.h"
 
 #include <stdlib.h>
 #include <sys/types.h>
 #include <net/gen/ether.h>
 #include <net/gen/eth_io.h>
-#include <machine/pci.h>
+#include <ibm/pci.h>
 
 #include "assert.h"
 
@@ -21,6 +21,8 @@ Created:	April 2000 by Philip Homburg <philip@f-mnx.phicoh.com>
 #include "rtl8029.h"
 
 #if ENABLE_PCI
+
+#define MICROS_TO_TICKS(m)  (((m)*HZ/1000000)+1)
 
 PRIVATE struct pcitab
 {
@@ -38,13 +40,13 @@ _PROTOTYPE( static void rtl_init, (struct dpeth *dep)			);
 #if 0
 _PROTOTYPE( static u16_t get_ee_word, (dpeth_t *dep, int a)		);
 _PROTOTYPE( static void ee_wen, (dpeth_t *dep)				);
-_PROTOTYPE( static void set_ee_word, (dpeth_t *dep, int a, u16_t w)	);
+_PROTOTYPE( static void set_ee_word, (dpeth_t *dep, int a, U16_t w)	);
 _PROTOTYPE( static void ee_wds, (dpeth_t *dep)				);
 #endif
+_PROTOTYPE( static void micro_delay, (unsigned long usecs)		);
 
-PUBLIC int rtl_probe(dep, skip)
+PUBLIC int rtl_probe(dep)
 struct dpeth *dep;
-int skip;
 {
 	int i, r, devind, just_one;
 	u16_t vid, did;
@@ -85,16 +87,16 @@ int skip;
 				continue;
 			if (pcitab[i].did != did)
 				continue;
-			if (pcitab[i].checkclass) {
-				panic("rtl_probe: class check not implemented");
+			if (pcitab[i].checkclass)
+			{
+				panic("",
+				"rtl_probe: class check not implemented",
+					NO_NUM);
 			}
 			break;
 		}
-		if (pcitab[i].vid != 0 || pcitab[i].did != 0) {
-			if (just_one || !skip)
-				break;
-			skip--;
-		}
+		if (pcitab[i].vid != 0 || pcitab[i].did != 0)
+			break;
 
 		if (just_one)
 		{
@@ -122,7 +124,7 @@ int skip;
 	bar= pci_attr_r32(devind, PCI_BAR) & 0xffffffe0;
 
 	if (bar < 0x400)
-		panic("base address is not properly configured");
+		panic("", "base address is not properly configured", NO_NUM);
 
 	dep->de_base_port= bar;
 
@@ -341,7 +343,7 @@ u16_t w;
 		micro_delay(1);
 	}
 	if (!(inb_reg3(dep, 1) & 1))
-		panic("set_ee_word: device remains busy");
+		panic("", "set_ee_word: device remains busy", NO_NUM);
 }
 
 static void ee_wds(dep)
@@ -370,6 +372,11 @@ dpeth_t *dep;
 	outb_reg0(dep, DP_CR, CR_PS_P0);	/* back to bank 0 */
 }
 #endif
+
+static void micro_delay(unsigned long usecs)
+{
+	tickdelay(MICROS_TO_TICKS(usecs));
+}
 
 #endif /* ENABLE_PCI */
 

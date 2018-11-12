@@ -8,5 +8,3 @@ EXTERN struct file_lock {
   off_t lock_first;		/* offset of first byte locked */
   off_t lock_last;		/* offset of last byte locked */
 } file_lock[NR_LOCKS];
-
-

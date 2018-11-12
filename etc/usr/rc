@@ -54,33 +54,19 @@ daemonize()
 
 up()
 {
-    # Function to dynamically start a system service
-    opt=""
-    prefix=$(expr "$1 " : '\(-\)')
-    if [ "$prefix" = "-" ];
-    then
-         opt=$1
-         shift
-    fi
     service=$1
     shift
+
+    # Function to dynamically start a system service
 
     # First check if this service is disabled at the boot monitor.
     if disabled $service; then return; fi
 
     # Service is not disabled. Try to bring it up.
     echo -n " $service"
-    service $opt up /usr/sbin/$service "$@" 
+    service up /usr/sbin/$service "$@" 
 }
 
-get_eth_labels() {
-  # Filter out the non-vlan ethernet entries from inet.conf.
-  # Produce as output a list of "drivername_instancenr"-formatted labels.
-  # The first sed is taken from /bin as older GNU sed versions don't know '\t'.
-  /bin/sed 's/\t/ /g' /etc/inet.conf | \
-    sed -n 's/^ *eth[0-9][0-9]* *\([^ ][^ ]*\) *\([0-9][0-9]*\).*$/\1_\2/p' | \
-    grep -v '^vlan_'
-}
 
 DAEMONS=/etc/rc.daemons
 
@@ -94,7 +80,7 @@ start)
 
     # Start servers and drivers set at the boot monitor.
     echo -n "Starting services:"
-    up -n random -dev /dev/random -devstyle STYLE_DEVA -period 3HZ
+    up random -dev /dev/random -period 3HZ
 
     # load random number generator
     if [ -f $RANDOM_FILE ]
@@ -104,18 +90,18 @@ start)
     	dd if=/dev/random of=$RANDOM_FILE bs=1024 count=1 2> /dev/null
     fi
 
-    # start network driver instances for all configured ethernet devices
-    for label in $(get_eth_labels); do
-        driver=$(echo $label | sed 's/\(.*\)_.*/\1/')
-        instance=$(echo $label | sed 's/.*_//')
-        eval arg=\$${label}_arg
-        if [ ! -z "$arg" ]; then arg=" $arg"; fi
-        arg="-args \"instance=$instance$arg\""
-        eval up $driver -label $label $arg -period 5HZ
+    # start only network drivers that are in use
+    for driver in lance rtl8139 fxp dpeth dp8390
+    do
+        if grep " $driver " /etc/inet.conf > /dev/null  2>&1
+        then 
+            eval arg=\$${driver}_arg
+	    if [ ! -z "$arg" ]; then arg="-args \"$arg\""; fi
+            eval up $driver $arg -period 5HZ
+        fi
     done
-    up inet -script /etc/rs.inet -dev /dev/ip -devstyle STYLE_CLONE
-    up -n printer -dev /dev/lp -period 10HZ
-    up -n ipc
+    up inet 
+    up printer -dev /dev/lp -period 10HZ
     echo .
 
     # Network initialization.
@@ -147,10 +133,10 @@ start)
 	else
 	    # Standard network daemons.
     	    echo -n "Starting networking:"
-	    if grep -s 'psip0.*default' /etc/inet.conf >/dev/null
+	    if grep -s 'psip0.*default' /etc/inet.conf 
 	    then	ifconfig -h 10.0.0.1
-	    else
-	    		daemonize dhcpd
+	    else	sleep 5
+			daemonize dhcpd
 	    fi
 	    daemonize nonamed -L
 	    if [ -f "$DAEMONS" ]
@@ -189,12 +175,10 @@ stop|down)
 	fi
 esac
 
-d=
+d=/usr/local/etc/rc.d
 # Let packages run their own scripts
-for d in /usr/local/etc/rc.d /usr/pkg/etc/rc.d
-do
 if [ -d "$d" ]
-then	( if cd $d
+then	if cd $d
 	then
 		echo -n "Local packages ($action): "
 		for f in *
@@ -206,6 +190,5 @@ then	( if cd $d
 		done
 		echo " done."
 	fi
-	)
 fi
-done
+

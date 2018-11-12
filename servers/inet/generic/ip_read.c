@@ -16,12 +16,11 @@ Copyright 1995 Philip Homburg
 #include "ip.h"
 #include "ip_int.h"
 #include "ipr.h"
-#include "sr.h"
 
 THIS_FILE
 
-FORWARD ip_ass_t *find_ass_ent ARGS(( ip_port_t *ip_port, u16_t id,
-	ipproto_t proto, ipaddr_t src, ipaddr_t dst ));
+FORWARD ip_ass_t *find_ass_ent ARGS(( ip_port_t *ip_port, U16_t id,
+	int proto, ipaddr_t src, ipaddr_t dst ));
 FORWARD acc_t *merge_frags ARGS(( acc_t *first, acc_t *second ));
 FORWARD int ip_frag_chk ARGS(( acc_t *pack ));
 FORWARD acc_t *reassemble ARGS(( ip_port_t *ip_port, acc_t *pack, 
@@ -29,7 +28,9 @@ FORWARD acc_t *reassemble ARGS(( ip_port_t *ip_port, acc_t *pack,
 FORWARD void route_packets ARGS(( event_t *ev, ev_arg_t ev_arg ));
 FORWARD int broadcast_dst ARGS(( ip_port_t *ip_port, ipaddr_t dest ));
 
-PUBLIC int ip_read(int fd, size_t count)
+PUBLIC int ip_read (fd, count)
+int fd;
+size_t count;
 {
 	ip_fd_t *ip_fd;
 	acc_t *pack;
@@ -71,7 +72,7 @@ acc_t *pack;
 ip_hdr_t *pack_hdr;
 {
 	ip_ass_t *ass_ent;
-	size_t pack_hdr_len, pack_offset, tmp_offset;
+	size_t pack_hdr_len, pack_data_len, pack_offset, tmp_offset;
 	u16_t pack_flags_fragoff;
 	acc_t *prev_acc, *curr_acc, *next_acc, *head_acc, *tmp_acc;
 	ip_hdr_t *tmp_hdr;
@@ -82,6 +83,7 @@ ip_hdr_t *pack_hdr;
 
 	pack_flags_fragoff= ntohs(pack_hdr->ih_flags_fragoff);
 	pack_hdr_len= (pack_hdr->ih_vers_ihl & IH_IHL_MASK) * 4;
+	pack_data_len= ntohs(pack_hdr->ih_length)-pack_hdr_len;
 	pack_offset= (pack_flags_fragoff & IH_FRAGOFF_MASK)*8;
 	pack->acc_ext_link= NULL;
 
@@ -237,8 +239,12 @@ assert (first_hdr_size + first_datasize == bf_bufsize(first));
 	return first;
 }
 
-PRIVATE ip_ass_t *find_ass_ent ARGS(( ip_port_t *ip_port, u16_t id,
-	ipproto_t proto, ipaddr_t src, ipaddr_t dst ))
+PRIVATE ip_ass_t *find_ass_ent (ip_port, id, proto, src, dst)
+ip_port_t *ip_port;
+u16_t id;
+ipproto_t proto;
+ipaddr_t src;
+ipaddr_t dst;
 {
 	ip_ass_t *new_ass_ent, *tmp_ass_ent;
 	int i;
@@ -362,28 +368,6 @@ acc_t *pack;
 	return TRUE;
 }
 
-PUBLIC int ip_sel_read (ip_fd_t *ip_fd)
-{
-	acc_t *pack;
-
-	if (!(ip_fd->if_flags & IFF_OPTSET))
-		return 1;	/* Read will not block */
-
-	if (ip_fd->if_rdbuf_head)
-	{
-		if (get_time() <= ip_fd->if_exp_time)
-			return 1;
-
-		while (ip_fd->if_rdbuf_head)
-		{
-			pack= ip_fd->if_rdbuf_head;
-			ip_fd->if_rdbuf_head= pack->acc_ext_link;
-			bf_afree(pack);
-		}
-	}
-	return 0;
-}
-
 PUBLIC void ip_packet2user (ip_fd, pack, exp_time, data_len)
 ip_fd_t *ip_fd;
 acc_t *pack;
@@ -414,16 +398,6 @@ size_t data_len;
 		else
 			ip_fd->if_rdbuf_tail->acc_ext_link= pack;
 		ip_fd->if_rdbuf_tail= pack;
-
-		if (ip_fd->if_flags & IFF_SEL_READ)
-		{
-			ip_fd->if_flags &= ~IFF_SEL_READ;
-			if (ip_fd->if_select_res)
-				ip_fd->if_select_res(ip_fd->if_srfd,
-					SR_SELECT_READ);
-			else
-				printf("ip_packet2user: no select_res\n");
-		}
 		return;
 	}
 
@@ -848,7 +822,7 @@ ev_arg_t ev_arg;
 				r= next_port->ip_dev_send(next_port,
 					iroute->irt_gateway,
 					pack, IP_LT_NORMAL);
-				if (r == EHOSTUNREACH)
+				if (r == EDSTNOTRCH)
 				{
 					printf("ip[%d]: gw ",
 						ip_port-ip_port_table);
@@ -920,7 +894,7 @@ ev_arg_t ev_arg;
 			/* Just send the packet to it's destination */
 			pack->acc_linkC++; /* Extra ref for ICMP */
 			r= next_port->ip_dev_send(next_port, dest, pack, type);
-			if (r == EHOSTUNREACH)
+			if (r == EDSTNOTRCH)
 			{
 				DBLOCK(1, printf("ip[%d]: next hop ",
 					ip_port-ip_port_table);

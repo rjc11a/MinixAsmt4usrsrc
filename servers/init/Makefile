@@ -1,13 +1,38 @@
 # Makefile for the init program (INIT)
-PROG=	init
-SRCS=	init.c
+SERVER = init
 
-DPADD+=	${LIBSYS}
-LDADD+=	-lsys
+# directories
+u = /usr
+i = $u/include
+s = $i/sys
+h = $i/minix
+k = $u/src/kernel
 
-MAN=
+# programs, flags, etc.
+CC =	exec cc
+CFLAGS = -I$i -O -D_MINIX -D_POSIX_SOURCE
+LDFLAGS = -i
 
-BINDIR?= /usr/sbin
-INSTALLFLAGS+=	-S 64k
+OBJ = 	init.o
 
-.include <bsd.prog.mk>
+# build local binary
+all build:	$(SERVER)
+$(SERVER):	$(OBJ)
+	$(CC) $(CFLAGS) -o $@ $(LDFLAGS) $(OBJ) -lsysutil
+	install -S 8k $@
+
+# install with other servers
+install:	/usr/sbin/$(SERVER)
+/usr/sbin/$(SERVER):	$(SERVER)
+	install -o root -cs $? $@
+
+# clean up local files
+clean:
+	rm -f $(SERVER) *.o *.bak 
+
+depend: 
+	mkdep "$(CC) -E $(CPPFLAGS)" *.c > .depend
+
+# Include generated dependencies.
+include .depend
+

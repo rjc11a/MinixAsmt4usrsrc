@@ -15,26 +15,23 @@
  */
 
 #include "fs.h"
+#include <minix/com.h>
 #include <minix/u64.h>
-#include <stdlib.h>
-#include <assert.h>
 #include "buf.h"
 #include "super.h"
-#include "inode.h"
 
 FORWARD _PROTOTYPE( void rm_lru, (struct buf *bp) );
-FORWARD _PROTOTYPE( void rw_block, (struct buf *, int) );
+FORWARD _PROTOTYPE( int rw_block, (struct buf *, int) );
 
-PRIVATE int vmcache_avail = -1; /* 0 if not available, >0 if available. */
+#define ENABLE_CACHE2 0
 
 /*===========================================================================*
  *				get_block				     *
  *===========================================================================*/
-PUBLIC struct buf *get_block(
-  register dev_t dev,		/* on which device is the block? */
-  register block_t block,	/* which block is wanted? */
-  int only_search		/* if NO_READ, don't read, else act normal */
-)
+PUBLIC struct buf *get_block(dev, block, only_search)
+register dev_t dev;		/* on which device is the block? */
+register block_t block;		/* which block is wanted? */
+int only_search;		/* if NO_READ, don't read, else act normal */
 {
 /* Check to see if the requested block is in the block cache.  If so, return
  * a pointer to it.  If not, evict some other block and fetch it (unless
@@ -52,30 +49,7 @@ PUBLIC struct buf *get_block(
  */
 
   int b;
-  static struct buf *bp, *prev_ptr;
-  u64_t yieldid = VM_BLOCKID_NONE, getid = make64(dev, block);
-  int vmcache = 0;
-
-  assert(buf_hash);
-  assert(buf);
-  assert(nr_bufs > 0);
-
-  if(vmcache_avail < 0) {
-	/* Test once for the availability of the vm yield block feature. */
-	if(vm_forgetblock(VM_BLOCKID_NONE) == ENOSYS) {
-		vmcache_avail = 0;
-	} else {
-		vmcache_avail = 1;
-	}
-  }
-
-  /* use vmcache if it's available, and allowed, and we're not doing
-   * i/o on a ram disk device.
-   */
-  if(vmcache_avail && may_use_vmcache && major(dev) != MEMORY_MAJOR)
-	vmcache = 1;
-
-  ASSERT(fs_block_size > 0);
+  register struct buf *bp, *prev_ptr;
 
   /* Search the hash chain for (dev, block). Do_read() can use 
    * get_block(NO_DEV ...) to get an unnamed block to fill with zeros when
@@ -83,17 +57,14 @@ PUBLIC struct buf *get_block(
    * is skipped
    */
   if (dev != NO_DEV) {
-	b = BUFHASH(block);
+	b = (int) block & HASH_MASK;
 	bp = buf_hash[b];
-	while (bp != NULL) {
+	while (bp != NIL_BUF) {
 		if (bp->b_blocknr == block && bp->b_dev == dev) {
 			/* Block needed has been found. */
 			if (bp->b_count == 0) rm_lru(bp);
 			bp->b_count++;	/* record that block is in use */
-			ASSERT(bp->b_bytes == fs_block_size);
-			ASSERT(bp->b_dev == dev);
-			ASSERT(bp->b_dev != NO_DEV);
-			ASSERT(bp->bp);
+
 			return(bp);
 		} else {
 			/* This block is not the one sought. */
@@ -103,39 +74,17 @@ PUBLIC struct buf *get_block(
   }
 
   /* Desired block is not on available chain.  Take oldest block ('front'). */
-  if ((bp = front) == NULL) panic("all buffers in use: %d", nr_bufs);
-
-  if(bp->b_bytes < fs_block_size) {
-	ASSERT(!bp->bp);
-	ASSERT(bp->b_bytes == 0);
-	if(!(bp->bp = alloc_contig( (size_t) fs_block_size, 0, NULL))) {
-		printf("MFS: couldn't allocate a new block.\n");
-		for(bp = front;
-			bp && bp->b_bytes < fs_block_size; bp = bp->b_next)
-			;
-		if(!bp) {
-			panic("no buffer available");
-		}
-	} else {
-  		bp->b_bytes = fs_block_size;
-	}
-  }
-
-  ASSERT(bp);
-  ASSERT(bp->bp);
-  ASSERT(bp->b_bytes == fs_block_size);
-  ASSERT(bp->b_count == 0);
-
+  if ((bp = front) == NIL_BUF) panic(__FILE__,"all buffers in use", NR_BUFS);
   rm_lru(bp);
 
   /* Remove the block that was just taken from its hash chain. */
-  b = BUFHASH(bp->b_blocknr);
+  b = (int) bp->b_blocknr & HASH_MASK;
   prev_ptr = buf_hash[b];
   if (prev_ptr == bp) {
 	buf_hash[b] = bp->b_hash;
   } else {
 	/* The block just taken is not on the front of its hash chain. */
-	while (prev_ptr->b_hash != NULL)
+	while (prev_ptr->b_hash != NIL_BUF)
 		if (prev_ptr->b_hash == bp) {
 			prev_ptr->b_hash = bp->b_hash;	/* found it */
 			break;
@@ -149,66 +98,31 @@ PUBLIC struct buf *get_block(
    */
   if (bp->b_dev != NO_DEV) {
 	if (bp->b_dirt == DIRTY) flushall(bp->b_dev);
-
-	/* Are we throwing out a block that contained something?
-	 * Give it to VM for the second-layer cache.
-	 */
-	yieldid = make64(bp->b_dev, bp->b_blocknr);
-	assert(bp->b_bytes == fs_block_size);
-	bp->b_dev = NO_DEV;
+#if ENABLE_CACHE2
+	put_block2(bp);
+#endif
   }
 
   /* Fill in block's parameters and add it to the hash chain where it goes. */
   bp->b_dev = dev;		/* fill in device number */
   bp->b_blocknr = block;	/* fill in block number */
   bp->b_count++;		/* record that block is being used */
-  b = BUFHASH(bp->b_blocknr);
+  b = (int) bp->b_blocknr & HASH_MASK;
   bp->b_hash = buf_hash[b];
-
   buf_hash[b] = bp;		/* add to hash list */
 
-  if(dev == NO_DEV) {
-	if(vmcache && cmp64(yieldid, VM_BLOCKID_NONE) != 0) {
-		vm_yield_block_get_block(yieldid, VM_BLOCKID_NONE,
-			bp->bp, fs_block_size);
-	}
-	return(bp);	/* If the caller wanted a NO_DEV block, work is done. */
-  }
-
   /* Go get the requested block unless searching or prefetching. */
-  if(only_search == PREFETCH || only_search == NORMAL) {
-	/* Block is not found in our cache, but we do want it
-	 * if it's in the vm cache.
-	 */
-	if(vmcache) {
-		/* If we can satisfy the PREFETCH or NORMAL request 
-		 * from the vm cache, work is done.
-		 */
-		if(vm_yield_block_get_block(yieldid, getid,
-			bp->bp, fs_block_size) == OK) {
-			return bp;
-		}
+  if (dev != NO_DEV) {
+#if ENABLE_CACHE2
+	if (get_block2(bp, only_search)) /* in 2nd level cache */;
+	else
+#endif
+	if (only_search == PREFETCH) bp->b_dev = NO_DEV;
+	else
+	if (only_search == NORMAL) {
+		rw_block(bp, READING);
 	}
   }
-
-  if(only_search == PREFETCH) {
-	/* PREFETCH: don't do i/o. */
-	bp->b_dev = NO_DEV;
-  } else if (only_search == NORMAL) {
-	rw_block(bp, READING);
-  } else if(only_search == NO_READ) {
-	/* we want this block, but its contents
-	 * will be overwritten. VM has to forget
-	 * about it.
-	 */
-	if(vmcache) {
-		vm_forgetblock(getid);
-	}
-  } else
-	panic("unexpected only_search value: %d", only_search);
-
-  assert(bp->bp);
-
   return(bp);			/* return the newly acquired block */
 }
 
@@ -227,7 +141,7 @@ int block_type;			/* INODE_BLOCK, DIRECTORY_BLOCK, or whatever */
  * the integrity of the file system (e.g., inode blocks) are written to
  * disk immediately if they are dirty.
  */
-  if (bp == NULL) return;	/* it is easier to check here than in caller */
+  if (bp == NIL_BUF) return;	/* it is easier to check here than in caller */
 
   bp->b_count--;		/* there is one use fewer now */
   if (bp->b_count != 0) return;	/* block is still in use */
@@ -243,9 +157,9 @@ int block_type;			/* INODE_BLOCK, DIRECTORY_BLOCK, or whatever */
 	/* Block probably won't be needed quickly. Put it on front of chain.
   	 * It will be the next block to be evicted from the cache.
   	 */
-	bp->b_prev = NULL;
+	bp->b_prev = NIL_BUF;
 	bp->b_next = front;
-	if (front == NULL)
+	if (front == NIL_BUF)
 		rear = bp;	/* LRU chain was empty */
 	else
 		front->b_prev = bp;
@@ -256,8 +170,8 @@ int block_type;			/* INODE_BLOCK, DIRECTORY_BLOCK, or whatever */
   	 * It will not be evicted from the cache for a long time.
   	 */
 	bp->b_prev = rear;
-	bp->b_next = NULL;
-	if (rear == NULL)
+	bp->b_next = NIL_BUF;
+	if (rear == NIL_BUF)
 		front = bp;
 	else
 		rear->b_next = bp;
@@ -276,10 +190,9 @@ int block_type;			/* INODE_BLOCK, DIRECTORY_BLOCK, or whatever */
 /*===========================================================================*
  *				alloc_zone				     *
  *===========================================================================*/
-PUBLIC zone_t alloc_zone(
-  dev_t dev,			/* device where zone wanted */
-  zone_t z			/* try to allocate new zone near this one */
-)
+PUBLIC zone_t alloc_zone(dev, z)
+dev_t dev;			/* device where zone wanted */
+zone_t z;			/* try to allocate new zone near this one */
 {
 /* Allocate a new zone on the indicated device and return its number. */
 
@@ -300,7 +213,7 @@ PUBLIC zone_t alloc_zone(
   if (z == sp->s_firstdatazone) {
 	bit = sp->s_zsearch;
   } else {
-	bit = (bit_t) (z - (sp->s_firstdatazone - 1));
+	bit = (bit_t) z - (sp->s_firstdatazone - 1);
   }
   b = alloc_bit(sp, ZMAP, bit);
   if (b == NO_BIT) {
@@ -311,16 +224,15 @@ PUBLIC zone_t alloc_zone(
 	return(NO_ZONE);
   }
   if (z == sp->s_firstdatazone) sp->s_zsearch = b;	/* for next time */
-  return( (zone_t) (sp->s_firstdatazone - 1) + (zone_t) b);
+  return(sp->s_firstdatazone - 1 + (zone_t) b);
 }
 
 /*===========================================================================*
  *				free_zone				     *
  *===========================================================================*/
-PUBLIC void free_zone(
-  dev_t dev,				/* device where zone located */
-  zone_t numb				/* zone to be returned */
-)
+PUBLIC void free_zone(dev, numb)
+dev_t dev;				/* device where zone located */
+zone_t numb;				/* zone to be returned */
 {
 /* Return a zone. */
 
@@ -330,7 +242,7 @@ PUBLIC void free_zone(
   /* Locate the appropriate super_block and return bit. */
   sp = get_super(dev);
   if (numb < sp->s_firstdatazone || numb >= sp->s_zones) return;
-  bit = (bit_t) (numb - (zone_t) (sp->s_firstdatazone - 1));
+  bit = (bit_t) (numb - (sp->s_firstdatazone - 1));
   free_bit(sp, ZMAP, bit);
   if (bit < sp->s_zsearch) sp->s_zsearch = bit;
 }
@@ -338,7 +250,7 @@ PUBLIC void free_zone(
 /*===========================================================================*
  *				rw_block				     *
  *===========================================================================*/
-PRIVATE void rw_block(bp, rw_flag)
+PRIVATE int rw_block(bp, rw_flag)
 register struct buf *bp;	/* buffer pointer */
 int rw_flag;			/* READING or WRITING */
 {
@@ -347,79 +259,67 @@ int rw_flag;			/* READING or WRITING */
  * is not reported to the caller.  If the error occurred while purging a block
  * from the cache, it is not clear what the caller could do about it anyway.
  */
-  int r, op, op_failed;
+  int r, op;
   u64_t pos;
   dev_t dev;
+  int block_size;
 
-  op_failed = 0;
+  block_size = get_block_size(bp->b_dev);
 
   if ( (dev = bp->b_dev) != NO_DEV) {
-	pos = mul64u(bp->b_blocknr, fs_block_size);
-	op = (rw_flag == READING ? MFS_DEV_READ : MFS_DEV_WRITE);
-	r = block_dev_io(op, dev, SELF_E, bp->b_data, pos, fs_block_size);
-	if (r < 0) {
-		printf("MFS(%d) I/O error on device %d/%d, block %lu\n",
-		SELF_E, major(dev), minor(dev), bp->b_blocknr);
-		op_failed = 1;
-	} else if( (unsigned) r != fs_block_size) {
-		r = END_OF_FILE;
-		op_failed = 1;
-	}
+	  pos = mul64u(bp->b_blocknr, block_size);
+	  op = (rw_flag == READING ? MFS_DEV_READ : MFS_DEV_WRITE);
+	  r = block_dev_io(op, dev, SELF_E, bp->b_data, pos, block_size, 0);
+	  if (r != block_size) {
+		  if (r >= 0) r = END_OF_FILE;
+		  if (r != END_OF_FILE)
+			printf("MFS(%d) I/O error on device %d/%d, block %ld\n",
+			SELF_E, (dev>>MAJOR)&BYTE, (dev>>MINOR)&BYTE, 
+			bp->b_blocknr);
+		  
+		  bp->b_dev = NO_DEV;	/* invalidate block */
 
-	if (op_failed) {
-		bp->b_dev = NO_DEV;	/* invalidate block */
-
-		/* Report read errors to interested parties. */
-		if (rw_flag == READING) rdwt_err = r;
-	}
+		  /* Report read errors to interested parties. */
+		  if (rw_flag == READING) rdwt_err = r;
+	  }
   }
 
   bp->b_dirt = CLEAN;
 
+  return OK;
 }
 
 /*===========================================================================*
  *				invalidate				     *
  *===========================================================================*/
-PUBLIC void invalidate(
-  dev_t device			/* device whose blocks are to be purged */
-)
+PUBLIC void invalidate(device)
+dev_t device;			/* device whose blocks are to be purged */
 {
 /* Remove all the blocks belonging to some device from the cache. */
 
   register struct buf *bp;
 
-  for (bp = &buf[0]; bp < &buf[nr_bufs]; bp++)
+  for (bp = &buf[0]; bp < &buf[NR_BUFS]; bp++)
 	if (bp->b_dev == device) bp->b_dev = NO_DEV;
 
-  vm_forgetblocks();
+#if ENABLE_CACHE2
+  invalidate2(device);
+#endif
 }
 
 /*===========================================================================*
  *				flushall				     *
  *===========================================================================*/
-PUBLIC void flushall(
-  dev_t dev			/* device to flush */
-)
+PUBLIC void flushall(dev)
+dev_t dev;			/* device to flush */
 {
 /* Flush all dirty blocks for one device. */
 
   register struct buf *bp;
-  static struct buf **dirty;	/* static so it isn't on stack */
-  static unsigned int dirtylistsize = 0;
+  static struct buf *dirty[NR_BUFS];	/* static so it isn't on stack */
   int ndirty;
 
-  if(dirtylistsize != nr_bufs) {
-	if(dirtylistsize > 0) {
-		assert(dirty != NULL);
-		free(dirty);
-	}
-	if(!(dirty = malloc(sizeof(dirty[0])*nr_bufs)))
-		panic("couldn't allocate dirty buf list");
-	dirtylistsize = nr_bufs;
-  }
-
-  for (bp = &buf[0], ndirty = 0; bp < &buf[nr_bufs]; bp++)
+  for (bp = &buf[0], ndirty = 0; bp < &buf[NR_BUFS]; bp++)
 	if (bp->b_dirt == DIRTY && bp->b_dev == dev) dirty[ndirty++] = bp;
   rw_scattered(dev, dirty, ndirty, WRITING);
 }
@@ -427,12 +327,11 @@ PUBLIC void flushall(
 /*===========================================================================*
  *				rw_scattered				     *
  *===========================================================================*/
-PUBLIC void rw_scattered(
-  dev_t dev,			/* major-minor device number */
-  struct buf **bufq,		/* pointer to array of buffers */
-  int bufqsize,			/* number of buffers */
-  int rw_flag			/* READING or WRITING */
-)
+PUBLIC void rw_scattered(dev, bufq, bufqsize, rw_flag)
+dev_t dev;			/* major-minor device number */
+struct buf **bufq;		/* pointer to array of buffers */
+int bufqsize;			/* number of buffers */
+int rw_flag;			/* READING or WRITING */
 {
 /* Read or write scattered data from a device. */
 
@@ -440,10 +339,11 @@ PUBLIC void rw_scattered(
   int gap;
   register int i;
   register iovec_t *iop;
-  static iovec_t *iovec = NULL;
+  static iovec_t iovec[NR_IOREQS];  /* static so it isn't on stack */
   int j, r;
+  int block_size;
 
-  STATICINIT(iovec, NR_IOREQS);
+  block_size = get_block_size(dev);
 
   /* (Shell) sort buffers on b_blocknr. */
   gap = 1;
@@ -469,13 +369,13 @@ PUBLIC void rw_scattered(
   while (bufqsize > 0) {
 	for (j = 0, iop = iovec; j < NR_IOREQS && j < bufqsize; j++, iop++) {
 		bp = bufq[j];
-		if (bp->b_blocknr != (block_t) bufq[0]->b_blocknr + j) break;
+		if (bp->b_blocknr != bufq[0]->b_blocknr + j) break;
 		iop->iov_addr = (vir_bytes) bp->b_data;
-		iop->iov_size = (vir_bytes) fs_block_size;
+		iop->iov_size = block_size;
 	}
 	r = block_dev_io(rw_flag == WRITING ? MFS_DEV_SCATTER : MFS_DEV_GATHER,
 		dev, SELF_E, iovec,
-		mul64u(bufq[0]->b_blocknr, fs_block_size), j);
+		mul64u(bufq[0]->b_blocknr, block_size), j, 0);
 
 	/* Harvest the results.  Dev_io reports the first error it may have
 	 * encountered, but we only care if it's the first block that failed.
@@ -487,9 +387,9 @@ PUBLIC void rw_scattered(
 			if (r != OK && i == 0) {
 				printf(
 				"fs: I/O error on device %d/%d, block %lu\n",
-					major(dev), minor(dev), bp->b_blocknr);
+					(dev>>MAJOR)&BYTE, (dev>>MINOR)&BYTE,
+					bp->b_blocknr);
 				bp->b_dev = NO_DEV;	/* invalidate block */
-  				vm_forgetblocks();
 			}
 			break;
 		}
@@ -534,89 +434,13 @@ struct buf *bp;
   bufs_in_use++;
   next_ptr = bp->b_next;	/* successor on LRU chain */
   prev_ptr = bp->b_prev;	/* predecessor on LRU chain */
-  if (prev_ptr != NULL)
+  if (prev_ptr != NIL_BUF)
 	prev_ptr->b_next = next_ptr;
   else
 	front = next_ptr;	/* this block was at front of chain */
 
-  if (next_ptr != NULL)
+  if (next_ptr != NIL_BUF)
 	next_ptr->b_prev = prev_ptr;
   else
 	rear = prev_ptr;	/* this block was at rear of chain */
 }
-
-/*===========================================================================*
- *				set_blocksize				     *
- *===========================================================================*/
-PUBLIC void set_blocksize(unsigned int blocksize)
-{
-  struct buf *bp;
-  struct inode *rip;
-
-  ASSERT(blocksize > 0);
-
-  for (bp = &buf[0]; bp < &buf[nr_bufs]; bp++)
-	if(bp->b_count != 0) panic("change blocksize with buffer in use");
-
-  for (rip = &inode[0]; rip < &inode[NR_INODES]; rip++)
-	if (rip->i_count > 0) panic("change blocksize with inode in use");
-
-  buf_pool(nr_bufs);
-  fs_block_size = blocksize;
-}
-
-/*===========================================================================*
- *                              buf_pool                                     *
- *===========================================================================*/
-PUBLIC void buf_pool(int new_nr_bufs)
-{
-/* Initialize the buffer pool. */
-  register struct buf *bp;
-
-  assert(new_nr_bufs > 0);
-
-  if(nr_bufs > 0) {
-	assert(buf);
-	(void) fs_sync();
-  	for (bp = &buf[0]; bp < &buf[nr_bufs]; bp++) {
-		if(bp->bp) {
-			assert(bp->b_bytes > 0);
-			free_contig(bp->bp, bp->b_bytes);
-		}
-	}
-  }
-
-  if(buf)
-	free(buf);
-
-  if(!(buf = calloc(sizeof(buf[0]), new_nr_bufs)))
-	panic("couldn't allocate buf list (%d)", new_nr_bufs);
-
-  if(buf_hash)
-	free(buf_hash);
-  if(!(buf_hash = calloc(sizeof(buf_hash[0]), new_nr_bufs)))
-	panic("couldn't allocate buf hash list (%d)", new_nr_bufs);
-
-  nr_bufs = new_nr_bufs;
-
-  bufs_in_use = 0;
-  front = &buf[0];
-  rear = &buf[nr_bufs - 1];
-
-  for (bp = &buf[0]; bp < &buf[nr_bufs]; bp++) {
-        bp->b_blocknr = NO_BLOCK;
-        bp->b_dev = NO_DEV;
-        bp->b_next = bp + 1;
-        bp->b_prev = bp - 1;
-        bp->bp = NULL;
-        bp->b_bytes = 0;
-  }
-  front->b_prev = NULL;
-  rear->b_next = NULL;
-
-  for (bp = &buf[0]; bp < &buf[nr_bufs]; bp++) bp->b_hash = bp->b_next;
-  buf_hash[0] = front;
-
-  vm_forgetblocks();
-}
-

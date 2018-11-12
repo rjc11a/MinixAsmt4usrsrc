@@ -156,6 +156,10 @@ static int readpool(int fd, pool_t *entry)
     return 1;
 }
 
+#if !__minix_vmd	/* No fsync() for Minix. */
+#define fsync(fd)	sync()
+#endif
+
 static void writepool(int fd, pool_t *entry)
 {
     /* (Over)write a pool table entry. */
@@ -382,7 +386,7 @@ static udpport_t portbyname(const char *name)
     return se->s_port;
 }
 
-static int sendpacket(network_t *np, void *data, size_t len)
+static int send(network_t *np, void *data, size_t len)
 {
     /* Send out a packet using a filedescriptor that is probably in async mode,
      * so first dup() a sync version, then write.  Return true on success.
@@ -669,13 +673,10 @@ int main(int argc, char **argv)
     int i;
     network_t *np;
     struct sigaction sa;
-    ssize_t r;
-    buf_t *bp;
+    ssize_t r= -1;
+    buf_t *bp= nil;
     static struct timeval eventtv;
 
-main:
-    r = -1;
-    bp = nil;
     program= argv[0];
     start= now= time(nil);
 
@@ -956,8 +957,7 @@ main:
 		if (!(np->flags & NF_BOUND)) {
 		    /* Rebind over Ethernet. */
 		    udp2ether(bp, np);
-		    if (sendpacket(np, bp->eth, 
-		    			sizeof(eth_hdr_t) + sizeof(ip_hdr_t)
+		    if (send(np, bp->eth, sizeof(eth_hdr_t) + sizeof(ip_hdr_t)
 					+ sizeof(udp_hdr_t) + sizeof(dhcp_t))) {
 			if (debug >= 1) {
 			    printf("%s: Broadcast DHCP %s\n",
@@ -967,7 +967,7 @@ main:
 		    }
 		} else {
 		    /* Renew over UDP. */
-		    if (sendpacket(np, bp->udpio, sizeof(udp_io_hdr_t)
+		    if (send(np, bp->udpio, sizeof(udp_io_hdr_t)
 							+ sizeof(dhcp_t))) {
 			if (debug >= 1) {
 			    printf("%s: Sent DHCP %s to %s\n",
@@ -1123,7 +1123,7 @@ main:
 		     * is in use already.
 		     */
 		    make_arp(bp, np);
-		    if (sendpacket(np, bp->eth, sizeof(arp46_t))) {
+		    if (send(np, bp->eth, sizeof(arp46_t))) {
 			if (debug >= 2) {
 			    printf("Sent ARP for %s\n", inet_ntoa(np->ip));
 			}
@@ -1191,8 +1191,7 @@ main:
 		    bp->udpio->uih_data_len= sizeof(dhcp_t);
 		    udp2ether(bp, np);
 
-		    if (sendpacket(np, bp->eth, 
-		    			sizeof(eth_hdr_t) + sizeof(ip_hdr_t)
+		    if (send(np, bp->eth, sizeof(eth_hdr_t) + sizeof(ip_hdr_t)
 					+ sizeof(udp_hdr_t) + sizeof(dhcp_t))) {
 			if (debug >= 1) {
 			    printf("%s: Broadcast DHCP %s\n",
@@ -1256,7 +1255,7 @@ main:
 		     * by DHCP to my own interface.
 		     */
 		    icmp_advert(bp, np);
-		    if (sendpacket(np, bp->ip, sizeof(ip_hdr_t) + 16)) {
+		    if (send(np, bp->ip, sizeof(ip_hdr_t) + 16)) {
 			if (debug >= 2) {
 			    printf("%s: Sent advert for %s to self\n",
 				np->fdp->device, inet_ntoa(np->gateway));
@@ -1268,7 +1267,7 @@ main:
 		if (np->sol_ct >= 0 && --np->sol_ct >= 0) {
 		    /* Send a router solicitation. */
 		    icmp_solicit(bp);
-		    if (sendpacket(np, bp->ip, sizeof(*bp->ip) + 8)) {
+		    if (send(np, bp->ip, sizeof(*bp->ip) + 8)) {
 			if (debug >= 2) {
 			    printf("%s: Broadcast router solicitation\n",
 				np->fdp->device);
@@ -1366,7 +1365,7 @@ main:
 	    /* Can we do something with this DHCP packet? */
 	    if ((r= servdhcp(np, bp, r)) > 0) {
 		/* Yes, we have something to send somewhere. */
-		if (sendpacket(np, bp->udpio, r)) {
+		if (send(np, bp->udpio, r)) {
 		    if (debug >= 1) {
 			printf("%s: Sent DHCP packet to %s\n",
 			    np->fdp->device,
@@ -1402,9 +1401,6 @@ main:
 	    }
 	}
     }
-    if (debug >= 1) printf("Nothing more to do! Starting over...\n");
-    sleep(2);
-    goto main;
-
+    if (debug >= 1) printf("Nothing more to do! Bailing out...\n");
     return 0;
 }

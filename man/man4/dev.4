@@ -178,8 +178,8 @@ The
 .B lp
 device sends any bytes written to it to the printer.
 .SS "TCP/IP (major 7)"
-The TCP/IP task is not a kernel task, but a server like PM and VFS.  It sits
-between VFS and the DP8390 task that manages the ethernet boards.  Together
+The TCP/IP task is not a kernel task, but a server like MM and FS.  It sits
+between FS and the DP8390 task that manages the ethernet boards.  Together
 they implement the TCP/IP protocol.  See also
 .BR ip (4).
 .SS "Controller 1 (major 8)"
@@ -199,10 +199,6 @@ device can be used to produce or record air vibrations using a Soundblaster
 The
 .B mixer
 device is used to control the audio driver.
-.SS "uds (major 18)"
-The
-.B uds
-device is used to implement unix domain sockets.
 .SH FILES
 .TP 10
 .B /dev/*
@@ -216,7 +212,6 @@ All MINIX 3 devices
 .BR fd (4),
 .BR controller (4),
 .BR ip (4),
-.BR uds (4),
 .BR tty (4),
 .BR MAKEDEV (8).
 .SH DIAGNOSTICS

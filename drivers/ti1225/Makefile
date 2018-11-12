@@ -1,12 +1,40 @@
 # Makefile for the Texas Instruments PCI1225 PC Card controller driver (ti1225)
-PROG=	ti1225
-SRCS=	ti1225.c
+DRIVER = ti1225
 
-DPADD+=	${LIBDRIVER} ${LIBSYS} ${LIBTIMERS}
-LDADD+=	-ldriver -lsys -ltimers
+# directories
+u = /usr
+i = $u/include
+s = $i/sys
+m = $i/minix
+b = $i/ibm
+d = ..
 
-MAN=
+# programs, flags, etc.
+CC =	exec cc
+CFLAGS = -I$i $(CPROFILE)
+LDFLAGS = -i 
+LIBS = -lsysutil  -lsys -ltimers
 
-BINDIR?= /usr/sbin
+OBJ = ti1225.o
 
-.include <bsd.prog.mk>
+# build local binary
+all build:	$(DRIVER)
+$(DRIVER):	$(OBJ) 
+	$(CC) -o $@ $(LDFLAGS) $(OBJ) $(LIBS)
+	install -S 8k $(DRIVER)
+
+# install with other drivers
+install:	/usr/sbin/$(DRIVER)
+/usr/sbin/$(DRIVER):	$(DRIVER)
+	install -o root -cs $? $@
+
+# clean up local files
+clean:
+	rm -f *.o *.bak $(DRIVER)
+
+depend: 
+	mkdep "$(CC) -E $(CPPFLAGS)" *.c > .depend
+
+# Include generated dependencies.
+include .depend
+

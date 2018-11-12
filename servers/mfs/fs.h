@@ -1,6 +1,3 @@
-#ifndef __MFS_FS_H__
-#define __MFS_FS_H__
-
 /* This is the master header for fs.  It includes some other files
  * and defines the principal constants.
  */
@@ -28,6 +25,3 @@
 #include "type.h"
 #include "proto.h"
 #include "glo.h"
-
-#endif
-

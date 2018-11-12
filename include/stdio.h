@@ -13,8 +13,6 @@
 #include <ansi.h>
 #endif
 
-#include <sys/null.h>   /* For NULL */
-
 /*
  * Focus point of all stdio activity.
  */
@@ -52,16 +50,16 @@ typedef struct __iobuf {
 #define	stderr		(&__stderr)
 
 #define	BUFSIZ		4096
+#define	NULL		((void *)0)
 #define	EOF		(-1)
 
 #define	FOPEN_MAX	20
 
-#include <minix/dir.h>
+#include <sys/dir.h>
 #define	FILENAME_MAX	DIRSIZ
 
 #define	TMP_MAX		999
 #define	L_tmpnam	(sizeof("/tmp/") + FILENAME_MAX)
-#define P_tmpdir "/tmp"
 #define __STDIO_VA_LIST__	void *
 
 typedef long int	fpos_t;
@@ -117,10 +115,8 @@ _PROTOTYPE( size_t fwrite,
 	(const void *_ptr, size_t _size, size_t _nmemb, FILE *_stream)	);
 _PROTOTYPE( int fgetpos, (FILE *_stream, fpos_t *_pos)			);
 _PROTOTYPE( int fseek, (FILE *_stream, long _offset, int _whence)	);
-_PROTOTYPE( int fseeko, (FILE *_stream, off_t _offset, int _whence)	);
 _PROTOTYPE( int fsetpos, (FILE *_stream, fpos_t *_pos)			);
 _PROTOTYPE( long ftell, (FILE *_stream)					);
-_PROTOTYPE( off_t ftello, (FILE *_stream)				);
 _PROTOTYPE( void rewind, (FILE *_stream)				);
 _PROTOTYPE( void clearerr, (FILE *_stream)				);
 _PROTOTYPE( int feof, (FILE *_stream)					);
@@ -147,18 +143,14 @@ _PROTOTYPE (FILE *fdopen, (int _fildes, const char *_types) );
 #define	fileno(stream)		((stream)->_fd)
 #define L_ctermid 255	/* required by POSIX */
 #define L_cuserid 255	/* required by POSIX */
+#endif
 
+#ifdef _MINIX
 _PROTOTYPE(FILE *popen, (const char *_command, const char *_type));
 _PROTOTYPE(int pclose, (FILE *_stream));
 _PROTOTYPE(int snprintf, (char *_s, size_t _n, const char *_format, ...));
 _PROTOTYPE(int vsnprintf, (char *_s, size_t _n, const char *_format,
 							char *_arg)	);
-_PROTOTYPE(char *fgetln, (FILE *stream, size_t *len));
 #endif
-
-#ifdef _MINIX
-_PROTOTYPE(int asprintf, (char **ret, const char *fmt, ...));
-_PROTOTYPE(int vasprintf, (char **ret, const char *fmt, char *_arg));
-#endif /* _MINIX */
 
 #endif /* _STDIO_H */

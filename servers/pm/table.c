@@ -10,9 +10,12 @@
 #include "mproc.h"
 #include "param.h"
 
-_PROTOTYPE (int (*call_vec[]), (void) ) = {
+/* Miscellaneous */
+char core_name[] = "core";	/* file name where core images are produced */
+
+_PROTOTYPE (int (*call_vec[NCALLS]), (void) ) = {
 	no_sys,		/*  0 = unused	*/
-	do_exit,	/*  1 = exit	*/
+	do_pm_exit,	/*  1 = exit	*/
 	do_fork,	/*  2 = fork	*/
 	no_sys,		/*  3 = read	*/
 	no_sys,		/*  4 = write	*/
@@ -31,11 +34,11 @@ _PROTOTYPE (int (*call_vec[]), (void) ) = {
 	do_brk,		/* 17 = break	*/
 	no_sys,		/* 18 = stat	*/
 	no_sys,		/* 19 = lseek	*/
-	do_get,		/* 20 = getpid	*/
+	do_getset,	/* 20 = getpid	*/
 	no_sys,		/* 21 = mount	*/
 	no_sys,		/* 22 = umount	*/
-	do_set,		/* 23 = setuid	*/
-	do_get,		/* 24 = getuid	*/
+	do_getset,	/* 23 = setuid	*/
+	do_getset,	/* 24 = getuid	*/
 	do_stime,	/* 25 = stime	*/
 	do_trace,	/* 26 = ptrace	*/
 	do_alarm,	/* 27 = alarm	*/
@@ -57,8 +60,8 @@ _PROTOTYPE (int (*call_vec[]), (void) ) = {
 	do_times,	/* 43 = times	*/
 	no_sys,		/* 44 = (prof)	*/
 	no_sys,		/* 45 = unused	*/
-	do_set,		/* 46 = setgid	*/
-	do_get,		/* 47 = getgid	*/
+	do_getset,	/* 46 = setgid	*/
+	do_getset,	/* 47 = getgid	*/
 	no_sys,		/* 48 = (signal)*/
 	no_sys,		/* 49 = unused	*/
 	no_sys,		/* 50 = unused	*/
@@ -73,13 +76,14 @@ _PROTOTYPE (int (*call_vec[]), (void) ) = {
 	do_exec,	/* 59 = execve	*/
 	no_sys,		/* 60 = umask	*/
 	no_sys,		/* 61 = chroot	*/
-	do_set,		/* 62 = setsid	*/
-	do_get,		/* 63 = getpgrp	*/
-	do_itimer,	/* 64 = itimer  */
-	do_get,		/* 65 = getgroups */
-	do_set, 	/* 66 = setgroups */
-	do_getmcontext,	/* 67 = getmcontext */
-	do_setmcontext,	/* 68 = setmcontext */
+	do_getset,	/* 62 = setsid	*/
+	do_getset,	/* 63 = getpgrp	*/
+
+	no_sys,		/* 64 = unused  */
+	no_sys,		/* 65 = unused	*/
+	no_sys, 	/* 66 = unused  */
+	no_sys,		/* 67 = unused	*/
+	no_sys,		/* 68 = unused  */
 	no_sys,		/* 69 = unused	*/
 	no_sys,		/* 70 = unused	*/
 	do_sigaction,	/* 71 = sigaction   */
@@ -102,8 +106,8 @@ _PROTOTYPE (int (*call_vec[]), (void) ) = {
 	do_getsetpriority, /* 88 = getpriority */
 	do_getsetpriority, /* 89 = setpriority */
 	do_time,	/* 90 = gettimeofday */
-	do_set,		/* 91 = seteuid	*/
-	do_set,		/* 92 = setegid	*/
+	do_getset,	/* 91 = seteuid	*/
+	do_getset,	/* 92 = setegid	*/
 	no_sys,		/* 93 = (truncate) */
 	no_sys,		/* 94 = (ftruncate) */
 	no_sys,		/* 95 = (fchmod) */
@@ -111,20 +115,6 @@ _PROTOTYPE (int (*call_vec[]), (void) ) = {
 	do_getsysinfo_up,/* 97 = getsysinfo_up */
 	do_sprofile,	/* 98 = sprofile */
 	do_cprofile,	/* 99 = cprofile */
-	/* THE MINIX3 ABI ENDS HERE */
-	do_exec_newmem,	/* 100 = exec_newmem */
-	do_srv_fork,	/* 101 = srv_fork */
-	do_execrestart,	/* 102 = exec_restart */
-	do_procstat,	/* 103 = procstat */
-	do_getprocnr,	/* 104 = getprocnr */
-	no_sys,		/* 105 = unused */
-	no_sys,		/* 106 = unused */
-	do_getepinfo,	/* 107 = getepinfo */
-	do_adddma,	/* 108 = adddma */
-	do_deldma,	/* 109 = deldma */
-	do_getdma,	/* 110 = getdma */
-	do_srv_kill,	/* 111 = srv_kill */
- 	no_sys, 	/* 112 = gcov_flush */
 };
 /* This should not fail with "array size is negative": */
 extern int dummy[sizeof(call_vec) == NCALLS * sizeof(call_vec[0]) ? 1 : -1];

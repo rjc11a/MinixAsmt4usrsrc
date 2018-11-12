@@ -8,7 +8,7 @@
  *
  */
 
-#include "kernel/system.h"
+#include "../system.h"
 #include <signal.h>
 #include <string.h>
 #include <sys/sigcontext.h>
@@ -18,51 +18,48 @@
 /*===========================================================================*
  *			      do_sigsend				     *
  *===========================================================================*/
-PUBLIC int do_sigsend(struct proc * caller, message * m_ptr)
+PUBLIC int do_sigsend(m_ptr)
+message *m_ptr;			/* pointer to request message */
 {
 /* Handle sys_sigsend, POSIX-style signal handling. */
 
   struct sigmsg smsg;
   register struct proc *rp;
+  phys_bytes src_phys, dst_phys;
   struct sigcontext sc, *scp;
   struct sigframe fr, *frp;
-  int proc_nr, r;
+  int proc;
 
-  if (!isokendpt(m_ptr->SIG_ENDPT, &proc_nr)) return(EINVAL);
-  if (iskerneln(proc_nr)) return(EPERM);
-  rp = proc_addr(proc_nr);
+  if (!isokendpt(m_ptr->SIG_ENDPT, &proc)) return(EINVAL);
+  if (iskerneln(proc)) return(EPERM);
+  rp = proc_addr(proc);
 
   /* Get the sigmsg structure into our address space.  */
-  if((r=data_copy_vmcheck(caller, caller->p_endpoint,
-		(vir_bytes) m_ptr->SIG_CTXT_PTR, KERNEL, (vir_bytes) &smsg,
-		(phys_bytes) sizeof(struct sigmsg))) != OK)
-	return r;
+  src_phys = umap_local(proc_addr(PM_PROC_NR), D, (vir_bytes) 
+      m_ptr->SIG_CTXT_PTR, (vir_bytes) sizeof(struct sigmsg));
+  if (src_phys == 0) return(EFAULT);
+  phys_copy(src_phys,vir2phys(&smsg),(phys_bytes) sizeof(struct sigmsg));
 
   /* Compute the user stack pointer where sigcontext will be stored. */
   scp = (struct sigcontext *) smsg.sm_stkptr - 1;
 
   /* Copy the registers to the sigcontext structure. */
-  memcpy(&sc.sc_regs, (char *) &rp->p_reg, sizeof(sigregs));
-  #if (_MINIX_CHIP == _CHIP_INTEL)
-    if(proc_used_fpu(rp)) {
-	    /* save the FPU context before saving it to the sig context */
-	    if (fpu_owner == rp) {
-		    disable_fpu_exception();
-		    save_fpu(rp);
-	    }
-	    memcpy(&sc.sc_fpu_state, rp->p_fpu_state.fpu_save_area_p,
-	   	 FPU_XFP_SIZE);
-    }
-  #endif
+  memcpy(&sc.sc_regs, (char *) &rp->p_reg, sizeof(struct sigregs));
+#ifdef POWERPC
+  memcpy(&sc.sc_regs, (char *) &rp->p_reg, struct(stackframe_s));
+#else
+  memcpy(&sc.sc_regs, (char *) &rp->p_reg, sizeof(struct sigregs));
+#endif
 
   /* Finish the sigcontext initialization. */
+  sc.sc_flags = 0;	/* unused at this time */
   sc.sc_mask = smsg.sm_mask;
-  sc.sc_flags = 0 | rp->p_misc_flags & MF_FPU_INITIALIZED;
 
   /* Copy the sigcontext structure to the user's stack. */
-  if((r=data_copy_vmcheck(caller, KERNEL, (vir_bytes) &sc, m_ptr->SIG_ENDPT,
-	(vir_bytes) scp, (vir_bytes) sizeof(struct sigcontext))) != OK)
-      return r;
+  dst_phys = umap_local(rp, D, (vir_bytes) scp,
+      (vir_bytes) sizeof(struct sigcontext));
+  if (dst_phys == 0) return(EFAULT);
+  phys_copy(vir2phys(&sc), dst_phys, (phys_bytes) sizeof(struct sigcontext));
 
   /* Initialize the sigframe structure. */
   frp = (struct sigframe *) scp - 1;
@@ -71,30 +68,35 @@ PUBLIC int do_sigsend(struct proc * caller, message * m_ptr)
   fr.sf_fp = rp->p_reg.fp;
   rp->p_reg.fp = (reg_t) &frp->sf_fp;
   fr.sf_scp = scp;
-
-  fpu_sigcontext(rp, &fr, &sc);
-
+  fr.sf_code = 0;	/* XXX - should be used for type of FP exception */
   fr.sf_signo = smsg.sm_signo;
   fr.sf_retadr = (void (*)()) smsg.sm_sigreturn;
 
   /* Copy the sigframe structure to the user's stack. */
-  if((r=data_copy_vmcheck(caller, KERNEL, (vir_bytes) &fr,
-	m_ptr->SIG_ENDPT, (vir_bytes) frp, 
-      (vir_bytes) sizeof(struct sigframe))) != OK)
-      return r;
+  dst_phys = umap_local(rp, D, (vir_bytes) frp, 
+      (vir_bytes) sizeof(struct sigframe));
+  if (dst_phys == 0) return(EFAULT);
+  phys_copy(vir2phys(&fr), dst_phys, (phys_bytes) sizeof(struct sigframe));
+
+#if ( _MINIX_CHIP == _CHIP_POWERPC )  /* stuff that can't be done in the assembler code. */  
+  /* When the signal handlers C code is called it will write this value
+   * into the signal frame (over the sf_retadr value).
+   */   
+  rp->p_reg.lr = smsg.sm_sigreturn;  
+  /* The first (and only) parameter for the user signal handler function.
+   */  
+  rp->p_reg.retreg = smsg.sm_signo;  /* note the retreg == first argument */
+#endif
 
   /* Reset user registers to execute the signal handler. */
   rp->p_reg.sp = (reg_t) frp;
   rp->p_reg.pc = (reg_t) smsg.sm_sighandler;
 
-  /* Signal handler should get clean FPU. */
-  rp->p_misc_flags &= ~MF_FPU_INITIALIZED;
-
-  if(!RTS_ISSET(rp, RTS_PROC_STOP)) {
-	printf("system: warning: sigsend a running process\n");
-	printf("caller stack: ");
-	proc_stacktrace(caller);
-  }
+  /* Reschedule if necessary. */
+  if(RTS_ISSET(rp, NO_PRIORITY))
+	RTS_LOCK_UNSET(rp, NO_PRIORITY);
+  else
+	kprintf("system: warning: sigsend a running process\n");
 
   return(OK);
 }

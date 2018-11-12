@@ -3,6 +3,7 @@
  *
  * Either make a device bootable or make an image from kernel, mm, fs, etc.
  */
+#define nil 0
 #define _POSIX_SOURCE	1
 #define _MINIX		1
 #include <stdio.h>
@@ -39,13 +40,13 @@
 
 #define BOOT_BLOCK_SIZE 1024
 
-static void report(const char *label)
+void report(char *label)
 /* installboot: label: No such file or directory */
 {
 	fprintf(stderr, "installboot: %s: %s\n", label, strerror(errno));
 }
 
-static void fatal(const char *label)
+void fatal(char *label)
 {
 	report(label);
 	exit(1);
@@ -60,12 +61,12 @@ char *basename(char *name)
 	static char base[IM_NAME_MAX];
 	char *p, *bp= base;
 
-	if ((p= strchr(name, ':')) != NULL) {
+	if ((p= strchr(name, ':')) != nil) {
 		while (name <= p && bp < base + IM_NAME_MAX - 1)
 			*bp++ = *name++;
 	}
 	for (;;) {
-		if ((p= strrchr(name, '/')) == NULL) { p= name; break; }
+		if ((p= strrchr(name, '/')) == nil) { p= name; break; }
 		if (*++p != 0) break;
 		*--p= 0;
 	}
@@ -74,7 +75,7 @@ char *basename(char *name)
 	return base;
 }
 
-static void bread(FILE *f, char *name, void *buf, size_t len)
+void bread(FILE *f, char *name, void *buf, size_t len)
 /* Read len bytes.  Don't dare return without them. */
 {
 	if (len > 0 && fread(buf, len, 1, f) != 1) {
@@ -84,7 +85,7 @@ static void bread(FILE *f, char *name, void *buf, size_t len)
 	}
 }
 
-static void bwrite(FILE *f, const char *name, const void *buf, size_t len)
+void bwrite(FILE *f, char *name, void *buf, size_t len)
 {
 	if (len > 0 && fwrite(buf, len, 1, f) != 1) fatal(name);
 }
@@ -94,14 +95,14 @@ int making_image= 0;
 
 void read_header(int talk, char *proc, FILE *procf, struct image_header *ihdr)
 /* Read the a.out header of a program and check it.  If procf happens to be
- * NULL then the header is already in *image_hdr and need only be checked.
+ * nil then the header is already in *image_hdr and need only be checked.
  */
 {
 	int n, big= 0;
 	static int banner= 0;
 	struct exec *phdr= &ihdr->process;
 
-	if (procf == NULL) {
+	if (procf == nil) {
 		/* Header already present. */
 		n= phdr->a_hdrlen;
 	} else {
@@ -121,7 +122,7 @@ void read_header(int talk, char *proc, FILE *procf, struct image_header *ihdr)
 	}
 
 	/* Get the rest of the exec header. */
-	if (procf != NULL) {
+	if (procf != nil) {
 		bread(procf, proc, ((char *) phdr) + A_MINHDR,
 						phdr->a_hdrlen - A_MINHDR);
 	}
@@ -159,7 +160,7 @@ void read_header(int talk, char *proc, FILE *procf, struct image_header *ihdr)
 	}
 }
 
-void padimage(const char *image, FILE *imagef, int n)
+void padimage(char *image, FILE *imagef, int n)
 /* Add n zeros to image to pad it to a sector boundary. */
 {
 	while (n > 0) {
@@ -205,16 +206,16 @@ void make_image(char *image, char **procv)
 
 	making_image= 1;
 
-	if ((imagef= fopen(image, "w")) == NULL) fatal(image);
+	if ((imagef= fopen(image, "w")) == nil) fatal(image);
 
-	for (procn= 0; (proc= *procv++) != NULL; procn++) {
+	for (procn= 0; (proc= *procv++) != nil; procn++) {
 		/* Remove the label from the file name. */
-		if ((file= strchr(proc, ':')) != NULL) file++; else file= proc;
+		if ((file= strchr(proc, ':')) != nil) file++; else file= proc;
 
 		/* Real files please, may need to seek. */
 		if (stat(file, &st) < 0
 			|| (errno= EISDIR, !S_ISREG(st.st_mode))
-			|| (procf= fopen(file, "r")) == NULL
+			|| (procf= fopen(file, "r")) == nil
 		) fatal(proc);
 
 		/* Read a.out header. */
@@ -295,7 +296,7 @@ void extract_image(char *image)
 	/* Size of the image. */
 	len= S_ISREG(st.st_mode) ? st.st_size : -1;
 
-	if ((imagef= fopen(image, "r")) == NULL) fatal(image);
+	if ((imagef= fopen(image, "r")) == nil) fatal(image);
 
 	while (len != 0) {
 		/* Extract a program, first sector is an extended header. */
@@ -306,9 +307,9 @@ void extract_image(char *image)
 		phdr= ihdr.process;
 
 		/* Check header. */
-		read_header(1, ihdr.name, NULL, &ihdr);
+		read_header(1, ihdr.name, nil, &ihdr);
 
-		if ((procf= fopen(ihdr.name, "w")) == NULL) fatal(ihdr.name);
+		if ((procf= fopen(ihdr.name, "w")) == nil) fatal(ihdr.name);
 
 		if (phdr.a_flags & A_PAL) {
 			/* A page aligned process contains a header in text. */
@@ -332,8 +333,8 @@ void extract_image(char *image)
 	}
 }
 
-static int rawfd;	/* File descriptor to open device. */
-static const char *rawdev;	/* Name of device. */
+int rawfd;	/* File descriptor to open device. */
+char *rawdev;	/* Name of device. */
 
 void readblock(off_t blk, char *buf, int block_size)
 /* For rawfs, so that it can read blocks. */
@@ -350,7 +351,7 @@ void readblock(off_t blk, char *buf, int block_size)
 	}
 }
 
-void writeblock(off_t blk, const char *buf, int block_size)
+void writeblock(off_t blk, char *buf, int block_size)
 /* Add a function to write blocks for local use. */
 {
 	if (lseek(rawfd, blk * block_size, SEEK_SET) < 0
@@ -377,7 +378,7 @@ int raw_install(char *file, off_t *start, off_t *len, int block_size)
 	devsize= -1;
 	if (ioctl(rawfd, DIOCGETP, &entry) == 0) devsize= cv64ul(entry.size);
 
-	if ((f= fopen(file, "r")) == NULL) fatal(file);
+	if ((f= fopen(file, "r")) == nil) fatal(file);
 
 	/* Copy sectors from file onto the boot device. */
 	sec= *start;
@@ -485,7 +486,7 @@ void make_bootable(enum howto how, char *device, char *bootblock,
 		 */
 		if (stat(bootcode, &st) < 0) fatal(bootcode);
 
-		if ((bootf= fopen(bootcode, "r")) == NULL) fatal(bootcode);
+		if ((bootf= fopen(bootcode, "r")) == nil) fatal(bootcode);
 	} else {
 		/* Boot code is present in the file system. */
 		r_stat(ino, &st);
@@ -497,14 +498,14 @@ void make_bootable(enum howto how, char *device, char *bootblock,
 			readblock(addr, buf, block_size);
 			memcpy(&boothdr, buf, sizeof(struct exec));
 		}
-		bootf= NULL;
+		bootf= nil;
 		dummy.process= boothdr;
 	}
 	/* See if it is an executable (read_header does the check). */
 	read_header(0, bootcode, bootf, &dummy);
 	boothdr= dummy.process;
 
-	if (bootf != NULL) fclose(bootf);
+	if (bootf != nil) fclose(bootf);
 
 	/* Get all the sector addresses of the secondary boot code. */
 	max_sector= (boothdr.a_hdrlen + boothdr.a_text
@@ -549,7 +550,7 @@ void make_bootable(enum howto how, char *device, char *bootblock,
 	/* Get the boot block and patch the pieces in. */
 	readblock(BOOTBLOCK, buf, BOOT_BLOCK_SIZE);
 
-	if ((bootf= fopen(bootblock, "r")) == NULL) fatal(bootblock);
+	if ((bootf= fopen(bootblock, "r")) == nil) fatal(bootblock);
 
 	read_header(0, bootblock, bootf, &dummy);
 	boothdr= dummy.process;
@@ -594,7 +595,7 @@ void make_bootable(enum howto how, char *device, char *bootblock,
 	 * necessary.
 	 */
 	for (parmp= buf + SECTOR_SIZE; parmp < buf + 2*SECTOR_SIZE; parmp++) {
-		if (*imagev != NULL || (control(*parmp) && *parmp != '\n')) {
+		if (*imagev != nil || (control(*parmp) && *parmp != '\n')) {
 			/* Param sector must be initialized. */
 			memset(buf + SECTOR_SIZE, '\n', SECTOR_SIZE);
 			break;
@@ -627,10 +628,10 @@ void make_bootable(enum howto how, char *device, char *bootblock,
 		parmp+= strlen(parmp);
 	}
 
-	while ((labels= *imagev++) != NULL) {
+	while ((labels= *imagev++) != nil) {
 		/* Place each kernel image on the boot device. */
 
-		if ((image= strchr(labels, ':')) != NULL)
+		if ((image= strchr(labels, ':')) != nil)
 			*image++= 0;
 		else {
 			if (nolabel) {
@@ -640,23 +641,23 @@ void make_bootable(enum howto how, char *device, char *bootblock,
 			}
 			nolabel= 1;
 			image= labels;
-			labels= NULL;
+			labels= nil;
 		}
 		len= 0;
 		if (!raw_install(image, &pos, &len, block_size)) exit(1);
 
-		if (labels == NULL) {
+		if (labels == nil) {
 			/* Let this image be the default. */
 			sprintf(parmp, "image=%ld:%ld\n", pos-len, len);
 			parmp+= strlen(parmp);
 		}
 
-		while (labels != NULL) {
+		while (labels != nil) {
 			/* Image is prefixed by a comma separated list of
 			 * labels.  Define functions to select label and image.
 			 */
 			label= labels;
-			if ((labels= strchr(labels, ',')) != NULL) *labels++ = 0;
+			if ((labels= strchr(labels, ',')) != nil) *labels++ = 0;
 
 			sprintf(parmp,
 		"%s(%c){label=%s;image=%ld:%ld;echo %s kernel selected;menu}\n",
@@ -683,7 +684,7 @@ void make_bootable(enum howto how, char *device, char *bootblock,
 	}
 }
 
-static void install_master(const char *device, char *masterboot, char **guide)
+void install_master(char *device, char *masterboot, char **guide)
 /* Booting a hard disk is a two stage process:  The master bootstrap in sector
  * 0 loads the bootstrap from sector 0 of the active partition which in turn
  * starts the operating system.  This code installs such a master bootstrap
@@ -700,7 +701,7 @@ static void install_master(const char *device, char *masterboot, char **guide)
 	if ((rawfd= open(rawdev= device, O_RDWR)) < 0) fatal(device);
 
 	/* Open the master boot code. */
-	if ((masf= fopen(masterboot, "r")) == NULL) fatal(masterboot);
+	if ((masf= fopen(masterboot, "r")) == nil) fatal(masterboot);
 
 	/* See if the user is cloning a device. */
 	if (fstat(fileno(masf), &st) >=0 && S_ISBLK(st.st_mode))
@@ -723,10 +724,10 @@ static void install_master(const char *device, char *masterboot, char **guide)
 	memset(buf, 0, PARTPOS);
 	(void) bread(masf, masterboot, buf, size);
 
-	if (guide[0] != NULL) {
+	if (guide[0] != nil) {
 		/* Fixate partition to boot. */
-		const char *keys= guide[0];
-		const char *logical= guide[1];
+		char *keys= guide[0];
+		char *logical= guide[1];
 		size_t i;
 		int logfd;
 		u32_t offset;
@@ -753,7 +754,7 @@ static void install_master(const char *device, char *masterboot, char **guide)
 		size += i;
 		buf[size]= '\r';
 
-		if (logical != NULL) {
+		if (logical != nil) {
 			if ((logfd= open(logical, O_RDONLY)) < 0
 				|| ioctl(logfd, DIOCGETP, &geometry) < 0
 			) {
@@ -780,7 +781,7 @@ static void install_master(const char *device, char *masterboot, char **guide)
 	writeblock(BOOTBLOCK, buf, BOOT_BLOCK_SIZE);
 }
 
-static void usage(void)
+void usage(void)
 {
 	fprintf(stderr,
 	  "Usage: installboot -i(mage) image kernel mm fs ... init\n"
@@ -791,7 +792,7 @@ static void usage(void)
 	exit(1);
 }
 
-static int isoption(const char *option, const char *test)
+int isoption(char *option, char *test)
 /* Check if the option argument is equals "test".  Also accept -i as short
  * for -image, and the special case -x for -extract.
  */

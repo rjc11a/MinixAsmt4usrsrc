@@ -4,7 +4,7 @@
 #define _GRP_H
 
 #ifndef _TYPES_H
-#include <minix/types.h>
+#include <sys/types.h>
 #endif
 
 struct	group { 
@@ -15,7 +15,7 @@ struct	group {
 };
 
 /* Function Prototypes. */
-_PROTOTYPE( struct group *getgrgid, (gid_t _gid)  			);
+_PROTOTYPE( struct group *getgrgid, (_mnx_Gid_t _gid)  			);
 _PROTOTYPE( struct group *getgrnam, (const char *_name)			);
 
 #ifdef _MINIX
@@ -23,7 +23,6 @@ _PROTOTYPE( void endgrent, (void)					);
 _PROTOTYPE( struct group *getgrent, (void)				);
 _PROTOTYPE( int setgrent, (void)					);
 _PROTOTYPE( void setgrfile, (const char *_file)				);
-_PROTOTYPE( const char *group_from_gid, (gid_t, int)                    );
 #endif
 
 #endif /* _GRP_H */

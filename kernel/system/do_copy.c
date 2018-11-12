@@ -2,16 +2,16 @@
  *   m_type:	SYS_VIRCOPY, SYS_PHYSCOPY
  *
  * The parameters for this kernel call are:
- *    m5_s1:	CP_SRC_SPACE		source virtual segment
+ *    m5_c1:	CP_SRC_SPACE		source virtual segment
  *    m5_l1:	CP_SRC_ADDR		source offset within segment
- *    m5_i1:	CP_SRC_ENDPT		source process number
- *    m5_s2:	CP_DST_SPACE		destination virtual segment
+ *    m5_i1:	CP_SRC_PROC_NR		source process number
+ *    m5_c2:	CP_DST_SPACE		destination virtual segment
  *    m5_l2:	CP_DST_ADDR		destination offset within segment
- *    m5_i2:	CP_DST_ENDPT		destination process number
+ *    m5_i2:	CP_DST_PROC_NR		destination process number
  *    m5_l3:	CP_NR_BYTES		number of bytes to copy
  */
 
-#include "kernel/system.h"
+#include "../system.h"
 #include <minix/type.h>
 
 #if (USE_VIRCOPY || USE_PHYSCOPY)
@@ -19,7 +19,8 @@
 /*===========================================================================*
  *				do_copy					     *
  *===========================================================================*/
-PUBLIC int do_copy(struct proc * caller, message * m_ptr)
+PUBLIC int do_copy(m_ptr)
+register message *m_ptr;	/* pointer to request message */
 {
 /* Handle sys_vircopy() and sys_physcopy().  Copy data using virtual or
  * physical addressing. Although a single handler function is used, there 
@@ -30,17 +31,16 @@ PUBLIC int do_copy(struct proc * caller, message * m_ptr)
   int i;
 
 #if 0
-  if (caller->p_endpoint != PM_PROC_NR && caller->p_endpoint != VFS_PROC_NR &&
-	caller->p_endpoint != RS_PROC_NR && caller->p_endpoint != MEM_PROC_NR &&
-	caller->p_endpoint != VM_PROC_NR)
+  if (m_ptr->m_source != 0 && m_ptr->m_source != 1 &&
+	m_ptr->m_source != 2 && m_ptr->m_source != 3)
   {
 	static int first=1;
 	if (first)
 	{
 		first= 0;
-		printf(
+		kprintf(
 "do_copy: got request from %d (source %d, seg %d, destination %d, seg %d)\n",
-			caller->p_endpoint,
+			m_ptr->m_source,
 			m_ptr->CP_SRC_ENDPT,
 			m_ptr->CP_SRC_SPACE,
 			m_ptr->CP_DST_ENDPT,
@@ -65,24 +65,23 @@ PUBLIC int do_copy(struct proc * caller, message * m_ptr)
 	int p;
       /* Check if process number was given implictly with SELF and is valid. */
       if (vir_addr[i].proc_nr_e == SELF)
-	vir_addr[i].proc_nr_e = caller->p_endpoint;
-      if (vir_addr[i].segment != PHYS_SEG) {
-	if(! isokendpt(vir_addr[i].proc_nr_e, &p)) {
-	  printf("do_copy: %d: seg 0x%x, %d not ok endpoint\n",
-		i, vir_addr[i].segment, vir_addr[i].proc_nr_e);
+	vir_addr[i].proc_nr_e = m_ptr->m_source;
+      if (vir_addr[i].segment != PHYS_SEG &&
+	! isokendpt(vir_addr[i].proc_nr_e, &p))
           return(EINVAL); 
-        }
-      }
+
+      /* Check if physical addressing is used without SYS_PHYSCOPY. */
+      if ((vir_addr[i].segment & PHYS_SEG) &&
+          m_ptr->m_type != SYS_PHYSCOPY) return(EPERM);
   }
 
   /* Check for overflow. This would happen for 64K segments and 16-bit 
    * vir_bytes. Especially copying by the PM on do_fork() is affected. 
    */
-  if (bytes != (phys_bytes) (vir_bytes) bytes) return(E2BIG);
+  if (bytes != (vir_bytes) bytes) return(E2BIG);
 
   /* Now try to make the actual virtual copy. */
-  return( virtual_copy_vmcheck(caller, &vir_addr[_SRC_],
-			  	&vir_addr[_DST_], bytes) );
+  return( virtual_copy(&vir_addr[_SRC_], &vir_addr[_DST_], bytes) );
 }
 #endif /* (USE_VIRCOPY || USE_PHYSCOPY) */
 

@@ -31,6 +31,7 @@ int subtest = 1;
 int superuser;
 int signumber = 0;
 
+_PROTOTYPE(void main, (int argc, char *argv[]));
 _PROTOTYPE(void test38a, (void));
 _PROTOTYPE(void test38b, (void));
 _PROTOTYPE(void test38c, (void));
@@ -38,7 +39,9 @@ _PROTOTYPE(void setsignumber, (int _signumber));
 _PROTOTYPE(void e, (int number));
 _PROTOTYPE(void quit, (void));
 
-int main(int argc, char *argv[])
+void main(argc, argv)
+int argc;
+char *argv[];
 {
   int i, m = 0xFFFF;
 
@@ -57,7 +60,6 @@ int main(int argc, char *argv[])
 	if (m & 0004) test38c();
   }
   quit();
-  return 1;
 }
 
 void test38a()

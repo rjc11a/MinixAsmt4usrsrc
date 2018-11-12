@@ -31,7 +31,7 @@ struct lconv {
   char n_sign_posn;		/* CHAR_MAX */
 };
 
-#include <sys/null.h>
+#define NULL    ((void *)0)
 
 #define LC_ALL             1
 #define LC_COLLATE         2
@@ -39,7 +39,6 @@ struct lconv {
 #define LC_MONETARY        4
 #define LC_NUMERIC         5
 #define LC_TIME            6
-#define LC_MESSAGES        7
 
 /* Function Prototypes. */
 _PROTOTYPE( char *setlocale, (int _category, const char *_locale)	);

@@ -1,24 +1,45 @@
 # Makefile for inet.
-PROG=	inet
-SRCS=	buf.c clock.c inet.c inet_config.c \
-	mnx_eth.c mq.c qp.c sr.c \
-	udp.c arp.c eth.c event.c \
-	icmp.c io.c ip.c ip_ioctl.c \
-	ip_lib.c ip_read.c ip_write.c \
-	ipr.c rand256.c tcp.c tcp_lib.c \
-	tcp_recv.c tcp_send.c ip_eth.c \
-	ip_ps.c psip.c \
-	queryparam.c sha2.c version.c
 
-.PATH:	${.CURDIR}/generic
+# Directories
+g = generic
 
-DPADD+=	${LIBDRIVER} ${LIBSYS}
-LDADD+=	-ldriver -lsys
+# Programs, flags, and libraries
+CC =		cc
+CPPFLAGS =	-I. -D_MINIX
+CFLAGS =	$(OPT) $(CPPFLAGS) $(CPROFILE)
+LDFLAGS =
+LIBS =          -lsysutil -lsys
 
-MAN=
+.c.o:
+	$(CC) $(CFLAGS) -o $@ -c $<
 
-BINDIR?= /usr/sbin
+OBJ = 	buf.o clock.o inet.o inet_config.o \
+	mnx_eth.o mq.o qp.o sr.o stacktrace.o \
+	$g/udp.o $g/arp.o $g/eth.o $g/event.o \
+	$g/icmp.o $g/io.o $g/ip.o $g/ip_ioctl.o \
+	$g/ip_lib.o $g/ip_read.o $g/ip_write.o \
+	$g/ipr.o $g/rand256.o $g/tcp.o $g/tcp_lib.o \
+	$g/tcp_recv.o $g/tcp_send.o $g/ip_eth.o \
+	$g/ip_ps.o $g/psip.o \
+	minix3/queryparam.o sha2.o
 
-CPPFLAGS+=  -I${.CURDIR} -D_MINIX
+all:	inet
 
-.include <bsd.prog.mk>
+inet:	$(OBJ)
+	$(CC) -o $@ $(LDFLAGS) $(OBJ) version.c $(LIBS)
+
+install: inet
+	install -c $? /usr/sbin/inet
+
+clean:
+	rm -f $(OBJ) inet *.bak
+
+depend: 
+	mkdep "$(CC) -E $(CPPFLAGS)" *.c generic/*.c > .depend
+
+# Include generated dependencies.
+include .depend
+
+#
+# $PchId: Makefile.mnx3,v 1.1 2005/06/28 14:28:45 philip Exp $
+#

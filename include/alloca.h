@@ -5,7 +5,7 @@
 #define _ALLOCA_H
 
 #ifndef _TYPES_H
-#include <minix/types.h>
+#include <sys/types.h>
 #endif
 
 #if __GNUC__

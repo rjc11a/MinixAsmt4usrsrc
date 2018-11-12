@@ -11,34 +11,28 @@
 #include	<stdlib.h>
 #include	"advent.h"
 
+_PROTOTYPE(int main, (void));
 _PROTOTYPE(void file_error, (char *));
 _PROTOTYPE(void encode, (unsigned char *));
 
-int main(int argc, char *argv[])
+int main()
 {
 
     FILE *isam, *src, *dest;
     char itxt[255];
     int cnt, i;
     long llen;
-    char filename[100];
-    char *inputprefix = ".";
+    char filename[12];
     static char *headername[] = {
        "idx1[MAXLOC]", "idx2[MAXLOC]", "idx3[MAXOBJ]", "idx4[MAXMSG]",
     };
 
     long x29 = (1L << 29), x30 = (1L << 30);
-
-    if(argc > 1) {
-	inputprefix=argv[1];
-    }
-
     if (!(x30 / 2 == x29 && 0L < x30 && x29 < x30)) {
 	fprintf(stderr, "Sorry, advent needs 32-bit `long int's.\n");
 	exit(EXIT_FAILURE);
     }
-    sprintf(filename, "%s/advtext.h", inputprefix);
-    isam = fopen(filename, "w");
+    isam = fopen("advtext.h", "w");
     if (!isam) {
 	fprintf(stderr, "Sorry, I can't open advtext.h...\n");
 	exit(EXIT_FAILURE);
@@ -48,7 +42,7 @@ int main(int argc, char *argv[])
     for (i = 1; i <= 4; i++) {
 	cnt = -1;
 	llen = 0L;
-	sprintf(filename, "%s/advent%d.txt", inputprefix, i);
+	sprintf(filename, "advent%d.txt", i);
 	src = fopen(filename, "r");
 	if (!src)
 	    file_error(filename);

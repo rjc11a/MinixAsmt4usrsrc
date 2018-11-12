@@ -13,7 +13,6 @@ netinet/in.h
 /* Open Group Base Specifications Issue 6 (not complete) */
 #define    INADDR_ANY              (uint32_t)0x00000000
 #define    INADDR_BROADCAST        (uint32_t)0xFFFFFFFF
-#define    INADDR_LOOPBACK         (uint32_t)0x7F000001
 
 #define    IN_LOOPBACKNET          127
 
@@ -63,27 +62,6 @@ struct ip_mreq
 	struct  in_addr imr_multiaddr;
 	struct  in_addr imr_interface;
 };
-
-/* 
- * IPv6 is not supported, but some programs need these declarations 
- * nevertheless; these declarations are based on
- * http://www.opengroup.org/onlinepubs/000095399/basedefs/netinet/in.h.html
- */
-struct in6_addr
-{
-	uint8_t	s6_addr[16];
-};
-
-struct sockaddr_in6
-{
-	sa_family_t	sin6_family;
-	in_port_t	sin6_port;
-	uint32_t	sin6_flowinfo;
-	struct in6_addr	sin6_addr;
-	uint32_t	sin6_scope_id;
-};
-
-#define	INET6_ADDRSTRLEN	46
 
 /* Definitions that are not part of the Open Group Base Specifications */
 #define IN_CLASSA(i)	(((uint32_t)(i) & 0x80000000) == 0)

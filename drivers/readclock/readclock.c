@@ -40,23 +40,28 @@
 
 
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include <errno.h>
+#include <signal.h>
 #include <minix/type.h>
-#include <minix/const.h>
 #include <minix/syslib.h>
-#include <minix/sysutil.h>
 #include <minix/com.h>
-#include <machine/cmos.h>
+#include <minix/portio.h>
+#include <ibm/cmos.h>
 #include <sys/svrctl.h>
 
 int nflag = 0;		/* Tell what, but don't do it. */
 int wflag = 0;		/* Set the CMOS clock. */
 int Wflag = 0;		/* Also set the CMOS clock register bits. */
 int y2kflag = 0;	/* Interpret 1980 as 2000 for clock with Y2K bug. */
+
+char clocktz[128];	/* Timezone of the clock. */
 
 #define MACH_ID_ADDR	0xFFFFE		/* BIOS Machine ID at FFFF:000E */
 
@@ -82,9 +87,6 @@ int bcd_to_dec(int n);
 int dec_to_bcd(int n);
 void usage(void);
 
-/* SEF functions and variables. */
-FORWARD _PROTOTYPE( void sef_local_startup, (void) );
-
 int main(int argc, char **argv)
 {
   struct tm time1;
@@ -94,10 +96,7 @@ int main(int argc, char **argv)
   time_t now, rtc;
   int i, s;
   unsigned char mach_id, cmos_state;
-
-  /* SEF local startup. */
-  env_setargs(argc, argv);
-  sef_local_startup();
+  struct sysgetenv sysgetenv;
 
   if((s=sys_readbios(MACH_ID_ADDR, &mach_id, sizeof(mach_id))) != OK) {
 	printf("readclock: sys_readbios failed: %d.\n", s);
@@ -144,6 +143,21 @@ int main(int argc, char **argv)
 	argc--;
   }
   if (Wflag) wflag = 1;		/* -W implies -w */
+
+#if 0
+  /* The hardware clock may run in a different time zone, likely GMT or
+   * winter time.  Select that time zone.
+   */
+  strcpy(clocktz, "TZ=");
+  sysgetenv.key = "TZ";
+  sysgetenv.keylen = 2+1;
+  sysgetenv.val = clocktz+3;
+  sysgetenv.vallen = sizeof(clocktz)-3;
+  if (svrctl(SYSGETENV, &sysgetenv) == 0) {
+	putenv(clocktz);
+	tzset();
+  }
+#endif
 
   /* Read the CMOS real time clock. */
   for (i = 0; i < 10; i++) {
@@ -198,15 +212,6 @@ int main(int argc, char **argv)
   exit(0);
 }
 
-/*===========================================================================*
- *			       sef_local_startup			     *
- *===========================================================================*/
-PRIVATE void sef_local_startup()
-{
-  /* Let SEF perform startup. */
-  sef_startup();
-}
-
 void errmsg(char *s)
 {
   static char *prompt = "readclock: ";
@@ -227,14 +232,32 @@ void errmsg(char *s)
 /*                                                                     */
 /***********************************************************************/
 
+int dead;
+void timeout(int sig) { dead= 1; }
+
 void get_time(struct tm *t)
 {
   int osec, n;
+  unsigned long i;
+  struct sigaction sa;
+
+  /* Start a timer to keep us from getting stuck on a dead clock. */
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  sa.sa_handler = timeout;
+  sigaction(SIGALRM, &sa, NULL);
+  dead = 0;
+  alarm(5);
 
   do {
 	osec = -1;
 	n = 0;
 	do {
+		if (dead) {
+			printf("readclock: CMOS clock appears dead\n");
+			exit(1);
+		}
+
 		/* Clock update in progress? */
 		if (read_register(RTC_REG_A) & RTC_A_UIP) continue;
 

@@ -1,2 +1,0 @@
-
-getopt.o:	getopt.c

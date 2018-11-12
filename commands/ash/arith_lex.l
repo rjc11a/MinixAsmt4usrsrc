@@ -44,7 +44,8 @@ __FBSDID("$FreeBSD: src/bin/sh/arith_lex.l,v 1.22 2004/04/06 20:06:51 markm Exp 
 #include <string.h>
 
 #include "shell.h"
-#include "arith.h"
+#include "arith_lex.h"
+#include "arith_y.h"
 #include "error.h"
 #include "memalloc.h"
 #include "var.h"
@@ -131,3 +132,7 @@ arith_lex_reset(void)
 {
 	YY_NEW_FILE;
 }
+
+/*
+ * $PchId: arith_lex.l,v 1.5 2006/04/10 14:35:29 philip Exp $
+ */

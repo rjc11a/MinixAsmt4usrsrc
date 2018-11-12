@@ -12,19 +12,14 @@
  * In addition to the main sys_task() entry point, which starts the main loop,
  * there are several other minor entry points:
  *   get_priv:		assign privilege structure to user or system process
- *   set_sendto_bit:	allow a process to send messages to a new target
- *   unset_sendto_bit:	disallow a process from sending messages to a target
- *   fill_sendto_mask:	fill the target mask of a given process
  *   send_sig:		send a signal directly to a system process
- *   cause_sig:		take action to cause a signal to occur via a signal mgr
- *   sig_delay_done:	tell PM that a process is not sending
+ *   cause_sig:		take action to cause a signal to occur via PM
  *   umap_bios:		map virtual address in BIOS_SEG to physical 
+ *   virtual_copy:	copy bytes from one virtual address to another 
  *   get_randomness:	accumulate randomness in a buffer
  *   clear_endpoint:	remove a process' ability to send and receive messages
- *   sched_proc:	schedule a process
  *
  * Changes:
-*    Nov 22, 2009   get_priv supports static priv ids (Cristiano Giuffrida)
  *   Aug 04, 2005   check if system call is allowed  (Jorrit N. Herder)
  *   Jul 20, 2005   send signal to services with message  (Jorrit N. Herder) 
  *   Jan 15, 2005   new, generalized virtual copy function  (Jorrit N. Herder)
@@ -36,10 +31,7 @@
 #include "kernel.h"
 #include "system.h"
 #include "proc.h"
-#include "vm.h"
-#include "kernel/clock.h"
 #include <stdlib.h>
-#include <assert.h>
 #include <signal.h>
 #include <unistd.h>
 #include <sys/sigcontext.h>
@@ -52,117 +44,75 @@
  * because the dummy is declared extern. If an illegal call is given, the 
  * array size will be negative and this won't compile. 
  */
-PRIVATE int (*call_vec[NR_SYS_CALLS])(struct proc * caller, message *m_ptr);
+PUBLIC int (*call_vec[NR_SYS_CALLS])(message *m_ptr);
 
 #define map(call_nr, handler) \
     {extern int dummy[NR_SYS_CALLS>(unsigned)(call_nr-KERNEL_CALL) ? 1:-1];} \
     call_vec[(call_nr-KERNEL_CALL)] = (handler)  
 
-PRIVATE void kernel_call_finish(struct proc * caller, message *msg, int result)
-{
-  if(result == VMSUSPEND) {
-	  /* Special case: message has to be saved for handling
-	   * until VM tells us it's allowed. VM has been notified
-	   * and we must wait for its reply to restart the call.
-	   */
-	  assert(RTS_ISSET(caller, RTS_VMREQUEST));
-	  assert(caller->p_vmrequest.type == VMSTYPE_KERNELCALL);
-	  caller->p_vmrequest.saved.reqmsg = *msg;
-	  caller->p_misc_flags |= MF_KCALL_RESUME;
-  } else {
-	  /*
-	   * call is finished, we could have been suspended because of VM,
-	   * remove the request message
-	   */
-	  caller->p_vmrequest.saved.reqmsg.m_source = NONE;
-	  if (result != EDONTREPLY) {
-		  /* copy the result as a message to the original user buffer */
-		  msg->m_source = SYSTEM;
-		  msg->m_type = result;		/* report status of call */
-#if DEBUG_DUMPIPC
-	printmsgkresult(msg, caller);
-#endif
-		  if (copy_msg_to_user(caller, msg,
-				  (message *)caller->p_delivermsg_vir)) {
-			  printf("WARNING wrong user pointer 0x%08x from "
-					  "process %s / %d\n",
-					  caller->p_delivermsg_vir,
-					  caller->p_name,
-					  caller->p_endpoint);
-		  }
-	  }
-  }
-}
-
-PRIVATE int kernel_call_dispatch(struct proc * caller, message *msg)
-{
-  int result = OK;
-  int call_nr;
-  
-#if DEBUG_DUMPIPC
-	printmsgkcall(msg, caller);
-#endif
-  call_nr = msg->m_type - KERNEL_CALL;
-
-  /* See if the caller made a valid request and try to handle it. */
-  if (call_nr < 0 || call_nr >= NR_SYS_CALLS) {	/* check call number */
-	  printf("SYSTEM: illegal request %d from %d.\n",
-			  call_nr,msg->m_source);
-	  result = EBADREQUEST;			/* illegal message type */
-  }
-  else if (!GET_BIT(priv(caller)->s_k_call_mask, call_nr)) {
-	  printf("SYSTEM: denied request %d from %d.\n",
-			  call_nr,msg->m_source);
-	  result = ECALLDENIED;			/* illegal message type */
-  } else {
-	  /* handle the system call */
-	  if (call_vec[call_nr])
-		  result = (*call_vec[call_nr])(caller, msg);
-	  else {
-		  printf("Unused kernel call %d from %d\n",
-				  call_nr, caller->p_endpoint);
-		  result = EBADREQUEST;
-	  }
-  }
-
-  return result;
-}
+FORWARD _PROTOTYPE( void initialize, (void));
 
 /*===========================================================================*
- *				kernel_call				     *
+ *				sys_task				     *
  *===========================================================================*/
-/*
- * this function checks the basic syscall parameters and if accepted it
- * dispatches its handling to the right handler
- */
-PUBLIC void kernel_call(message *m_user, struct proc * caller)
+PUBLIC void sys_task()
 {
-  int result = OK;
-  message msg;
+/* Main entry point of sys_task.  Get the message and dispatch on type. */
+  static message m;
+  register int result;
+  register struct proc *caller_ptr;
+  int s;
+  int call_nr;
 
-  caller->p_delivermsg_vir = (vir_bytes) m_user;
-  /*
-   * the ldt and cr3 of the caller process is loaded because it just've trapped
-   * into the kernel or was already set in switch_to_user() before we resume
-   * execution of an interrupted kernel call
-   */
-  if (copy_msg_from_user(caller, m_user, &msg) == 0) {
-	  msg.m_source = caller->p_endpoint;
-	  result = kernel_call_dispatch(caller, &msg);
-  }
-  else {
-	  printf("WARNING wrong user pointer 0x%08x from process %s / %d\n",
-			  m_user, caller->p_name, caller->p_endpoint);
-	  result = EBADREQUEST;
-  }
+  /* Initialize the system task. */
+  initialize();
 
-  kernel_call_finish(caller, &msg, result);
+  while (TRUE) {
+      int r;
+      /* Get work. Block and wait until a request message arrives. */
+      if((r=receive(ANY, &m)) != OK) panic("system: receive() failed", r);
+      sys_call_code = (unsigned) m.m_type;
+      call_nr = sys_call_code - KERNEL_CALL;	
+      who_e = m.m_source;
+      okendpt(who_e, &who_p);
+      caller_ptr = proc_addr(who_p);
+
+      /* See if the caller made a valid request and try to handle it. */
+      if (call_nr < 0 || call_nr >= NR_SYS_CALLS) {	/* check call number */
+#if DEBUG_ENABLE_IPC_WARNINGS
+	  kprintf("SYSTEM: illegal request %d from %d.\n",
+		call_nr,m.m_source);
+#endif
+	  result = EBADREQUEST;			/* illegal message type */
+      } 
+      else if (!GET_BIT(priv(caller_ptr)->s_k_call_mask, call_nr)) {
+#if DEBUG_ENABLE_IPC_WARNINGS
+	  kprintf("SYSTEM: request %d from %d denied.\n",
+		call_nr,m.m_source);
+#endif
+	  result = ECALLDENIED;			/* illegal message type */
+      }
+      else {
+          result = (*call_vec[call_nr])(&m); /* handle the system call */
+      }
+
+      /* Send a reply, unless inhibited by a handler function. Use the kernel
+       * function lock_send() to prevent a system call trap. The destination
+       * is known to be blocked waiting for a message.
+       */
+      if (result != EDONTREPLY) {
+  	  m.m_type = result;			/* report status of call */
+          if (OK != (s=lock_send(m.m_source, &m))) {
+              kprintf("SYSTEM, reply to %d failed: %d\n", m.m_source, s);
+          }
+      }
+  }
 }
 
 /*===========================================================================*
  *				initialize				     *
  *===========================================================================*/
-PUBLIC void system_init(void)
+PRIVATE void initialize(void)
 {
   register struct priv *sp;
   int i;
@@ -183,25 +133,22 @@ PUBLIC void system_init(void)
    * if an illegal call number is used. The ordering is not important here.
    */
   for (i=0; i<NR_SYS_CALLS; i++) {
-      call_vec[i] = NULL;
+      call_vec[i] = do_unused;
   }
 
   /* Process management. */
   map(SYS_FORK, do_fork); 		/* a process forked a new process */
   map(SYS_EXEC, do_exec);		/* update process after execute */
-  map(SYS_CLEAR, do_clear);		/* clean up after process exit */
-  map(SYS_EXIT, do_exit);		/* a system process wants to exit */
+  map(SYS_EXIT, do_exit);		/* clean up after process exit */
+  map(SYS_NICE, do_nice);		/* set scheduling priority */
   map(SYS_PRIVCTL, do_privctl);		/* system privileges control */
   map(SYS_TRACE, do_trace);		/* request a trace operation */
   map(SYS_SETGRANT, do_setgrant);	/* get/set own parameters */
-  map(SYS_RUNCTL, do_runctl);		/* set/clear stop flag of a process */
-  map(SYS_UPDATE, do_update);		/* update a process into another */
-  map(SYS_STATECTL, do_statectl);	/* let a process control its state */
 
   /* Signal handling. */
   map(SYS_KILL, do_kill); 		/* cause a process to be signaled */
-  map(SYS_GETKSIG, do_getksig);		/* signal manager checks for signals */
-  map(SYS_ENDKSIG, do_endksig);		/* signal manager finished signal */
+  map(SYS_GETKSIG, do_getksig);		/* PM checks for pending signals */
+  map(SYS_ENDKSIG, do_endksig);		/* PM finished processing signal */
   map(SYS_SIGSEND, do_sigsend);		/* start POSIX-style signal */
   map(SYS_SIGRETURN, do_sigreturn);	/* return from POSIX-style signal */
 
@@ -214,31 +161,26 @@ PUBLIC void system_init(void)
   map(SYS_NEWMAP, do_newmap);		/* set up a process memory map */
   map(SYS_SEGCTL, do_segctl);		/* add segment and get selector */
   map(SYS_MEMSET, do_memset);		/* write char to memory area */
-  map(SYS_VMCTL, do_vmctl);		/* various VM process settings */
+  map(SYS_VM_SETBUF, do_vm_setbuf); 	/* PM passes buffer for page tables */
+  map(SYS_VM_MAP, do_vm_map); 		/* Map/unmap physical (device) memory */
 
   /* Copying. */
   map(SYS_UMAP, do_umap);		/* map virtual to physical address */
   map(SYS_VIRCOPY, do_vircopy); 	/* use pure virtual addressing */
-  map(SYS_PHYSCOPY, do_copy);	 	/* use physical addressing */
-  map(SYS_SAFECOPYFROM, do_safecopy_from);/* copy with pre-granted permission */
-  map(SYS_SAFECOPYTO, do_safecopy_to);	/* copy with pre-granted permission */
+  map(SYS_PHYSCOPY, do_physcopy); 	/* use physical addressing */
+  map(SYS_VIRVCOPY, do_virvcopy);	/* vector with copy requests */
+  map(SYS_PHYSVCOPY, do_physvcopy);	/* vector with copy requests */
+  map(SYS_SAFECOPYFROM, do_safecopy);	/* copy with pre-granted permission */
+  map(SYS_SAFECOPYTO, do_safecopy);	/* copy with pre-granted permission */
   map(SYS_VSAFECOPY, do_vsafecopy);	/* vectored safecopy */
-
-  /* Mapping. */
-  map(SYS_SAFEMAP, do_safemap);		/* map pages from other process */
-  map(SYS_SAFEREVMAP, do_saferevmap);	/* grantor revokes the map grant */
-  map(SYS_SAFEUNMAP, do_safeunmap);	/* requestor unmaps the mapped pages */
 
   /* Clock functionality. */
   map(SYS_TIMES, do_times);		/* get uptime and process times */
   map(SYS_SETALARM, do_setalarm);	/* schedule a synchronous alarm */
-  map(SYS_STIME, do_stime);		/* set the boottime */
-  map(SYS_VTIMER, do_vtimer);		/* set or retrieve a virtual timer */
 
   /* System control. */
   map(SYS_ABORT, do_abort);		/* abort MINIX */
   map(SYS_GETINFO, do_getinfo); 	/* request system information */ 
-  map(SYS_SYSCTL, do_sysctl); 		/* misc system manipulation */ 
 
   /* Profiling. */
   map(SYS_SPROF, do_sprofile);         /* start/stop statistical profiling */
@@ -251,201 +193,113 @@ PUBLIC void system_init(void)
   map(SYS_READBIOS, do_readbios);	/* read from BIOS locations */
   map(SYS_IOPENABLE, do_iopenable); 	/* Enable I/O */
   map(SYS_SDEVIO, do_sdevio);		/* phys_insb, _insw, _outsb, _outsw */
-
-  /* Machine state switching. */
-  map(SYS_SETMCONTEXT, do_setmcontext); /* set machine context */
-  map(SYS_GETMCONTEXT, do_getmcontext); /* get machine context */
 #endif
-
-  /* Scheduling */
-  map(SYS_SCHEDULE, do_schedule);	/* reschedule a process */
-  map(SYS_SCHEDCTL, do_schedctl);	/* change process scheduler */
-
 }
+
 /*===========================================================================*
  *				get_priv				     *
  *===========================================================================*/
-PUBLIC int get_priv(rc, priv_id)
+PUBLIC int get_priv(rc, proc_type)
 register struct proc *rc;		/* new (child) process pointer */
-int priv_id;				/* privilege id */
+int proc_type;				/* system or user process flag */
 {
-/* Allocate a new privilege structure for a system process. Privilege ids
- * can be assigned either statically or dynamically.
+/* Get a privilege structure. All user processes share the same privilege 
+ * structure. System processes get their own privilege structure. 
  */
-  register struct priv *sp;                 /* privilege structure */
+  register struct priv *sp;			/* privilege structure */
 
-  if(priv_id == NULL_PRIV_ID) {             /* allocate slot dynamically */
-      for (sp = BEG_DYN_PRIV_ADDR; sp < END_DYN_PRIV_ADDR; ++sp) 
-          if (sp->s_proc_nr == NONE) break;	
-      if (sp >= END_DYN_PRIV_ADDR) return(ENOSPC);
-  }
-  else {                                    /* allocate slot from id */
-      if(!is_static_priv_id(priv_id)) {
-          return EINVAL;                    /* invalid static priv id */
-      }
-      if(priv[priv_id].s_proc_nr != NONE) {
-          return EBUSY;                     /* slot already in use */
-      }
-      sp = &priv[priv_id];
-  }
-  rc->p_priv = sp;			    /* assign new slot */
-  rc->p_priv->s_proc_nr = proc_nr(rc);	    /* set association */
+  if (proc_type == SYS_PROC) {			/* find a new slot */
+      for (sp = BEG_PRIV_ADDR; sp < END_PRIV_ADDR; ++sp) 
+          if (sp->s_proc_nr == NONE && sp->s_id != USER_PRIV_ID) break;	
+      if (sp->s_proc_nr != NONE) return(ENOSPC);
+      rc->p_priv = sp;				/* assign new slot */
+      rc->p_priv->s_proc_nr = proc_nr(rc);	/* set association */
+      rc->p_priv->s_flags = SYS_PROC;		/* mark as privileged */
+  } else {
+      rc->p_priv = &priv[USER_PRIV_ID];		/* use shared slot */
+      rc->p_priv->s_proc_nr = INIT_PROC_NR;	/* set association */
 
+      /* s_flags of this shared structure are to be once at system startup. */
+  }
   return(OK);
 }
 
 /*===========================================================================*
- *				set_sendto_bit				     *
+ *				get_randomness				     *
  *===========================================================================*/
-PUBLIC void set_sendto_bit(const struct proc *rp, int id)
+PUBLIC void get_randomness(source)
+int source;
 {
-/* Allow a process to send messages to the process(es) associated with the
- * system privilege structure with the given ID. 
+/* Use architecture-dependent high-resolution clock for
+ * raw entropy gathering.
  */
+  int r_next;
+  unsigned long tsc_high, tsc_low;
 
-  /* Disallow the process from sending to a process privilege structure with no
-   * associated process, and disallow the process from sending to itself.
-   */
-  if (id_to_nr(id) == NONE || priv_id(rp) == id) {
-	unset_sys_bit(priv(rp)->s_ipc_to, id);
-	return;
+  source %= RANDOM_SOURCES;
+  r_next= krandom.bin[source].r_next;
+  read_tsc(&tsc_high, &tsc_low);
+  krandom.bin[source].r_buf[r_next] = tsc_low;
+  if (krandom.bin[source].r_size < RANDOM_ELEMENTS) {
+  	krandom.bin[source].r_size ++;
   }
-
-  set_sys_bit(priv(rp)->s_ipc_to, id);
-
-  /* The process that this process can now send to, must be able to reply (or
-   * vice versa). Therefore, its send mask should be updated as well. Ignore
-   * receivers that don't support traps other than RECEIVE, they can't reply
-   * or send messages anyway.
-   */
-  if (priv_addr(id)->s_trap_mask & ~((1 << RECEIVE)))
-      set_sys_bit(priv_addr(id)->s_ipc_to, priv_id(rp));
-}
-
-/*===========================================================================*
- *				unset_sendto_bit			     *
- *===========================================================================*/
-PUBLIC void unset_sendto_bit(const struct proc *rp, int id)
-{
-/* Prevent a process from sending to another process. Retain the send mask
- * symmetry by also unsetting the bit for the other direction.
- */
-
-  unset_sys_bit(priv(rp)->s_ipc_to, id);
-
-  unset_sys_bit(priv_addr(id)->s_ipc_to, priv_id(rp));
-}
-
-/*===========================================================================*
- *			      fill_sendto_mask				     *
- *===========================================================================*/
-PUBLIC void fill_sendto_mask(const struct proc *rp, int mask)
-{
-  int i;
-
-  for (i=0; i < NR_SYS_PROCS; i++) {
-  	if (mask & (1 << i))
-  		set_sendto_bit(rp, i);
-  	else
-  		unset_sendto_bit(rp, i);
-  }
+  krandom.bin[source].r_next = (r_next + 1 ) % RANDOM_ELEMENTS;
 }
 
 /*===========================================================================*
  *				send_sig				     *
  *===========================================================================*/
-PUBLIC void send_sig(endpoint_t ep, int sig_nr)
+PUBLIC void send_sig(int proc_nr, int sig_nr)
 {
 /* Notify a system process about a signal. This is straightforward. Simply
  * set the signal that is to be delivered in the pending signals map and 
  * send a notification with source SYSTEM.
+ *
+ * Process number is verified to avoid writing in random places, but we
+ * don't kprintf() or panic() because that causes send_sig() invocations.
  */ 
   register struct proc *rp;
-  int proc_nr;
+  static int n;
 
-  if(!isokendpt(ep, &proc_nr) || isemptyn(proc_nr))
-	panic("send_sig to empty process: %d",  ep);
+  if(!isokprocn(proc_nr) || isemptyn(proc_nr))
+	return;
 
   rp = proc_addr(proc_nr);
-  (void) sigaddset(&priv(rp)->s_sig_pending, sig_nr);
-  mini_notify(proc_addr(SYSTEM), rp->p_endpoint);
+  sigaddset(&priv(rp)->s_sig_pending, sig_nr);
+  lock_notify(SYSTEM, rp->p_endpoint); 
 }
 
 /*===========================================================================*
  *				cause_sig				     *
  *===========================================================================*/
 PUBLIC void cause_sig(proc_nr, sig_nr)
-proc_nr_t proc_nr;		/* process to be signalled */
-int sig_nr;			/* signal to be sent */
+int proc_nr;			/* process to be signalled */
+int sig_nr;			/* signal to be sent, 1 to _NSIG */
 {
 /* A system process wants to send a signal to a process.  Examples are:
  *  - HARDWARE wanting to cause a SIGSEGV after a CPU exception
  *  - TTY wanting to cause SIGINT upon getting a DEL
  *  - FS wanting to cause SIGPIPE for a broken pipe 
- * Signals are handled by sending a message to the signal manager assigned to
- * the process. This function handles the signals and makes sure the signal
- * manager gets them by sending a notification. The process being signaled
- * is blocked while the signal manager has not finished all signals for it.
+ * Signals are handled by sending a message to PM.  This function handles the 
+ * signals and makes sure the PM gets them by sending a notification. The 
+ * process being signaled is blocked while PM has not finished all signals 
+ * for it. 
  * Race conditions between calls to this function and the system calls that
  * process pending kernel signals cannot exist. Signal related functions are
  * only called when a user process causes a CPU exception and from the kernel 
  * process level, which runs to completion.
  */
-  register struct proc *rp, *sig_mgr_rp;
-  endpoint_t sig_mgr;
-  int sig_mgr_proc_nr;
-
-  /* Lookup signal manager. */
-  rp = proc_addr(proc_nr);
-  sig_mgr = priv(rp)->s_sig_mgr;
-  if(sig_mgr == SELF) sig_mgr = rp->p_endpoint;
-
-  /* If the target is the signal manager of itself, send the signal directly. */
-  if(rp->p_endpoint == sig_mgr) {
-       if(SIGS_IS_LETHAL(sig_nr)) {
-           /* If the signal is lethal, see if a backup signal manager exists. */
-           sig_mgr = priv(rp)->s_bak_sig_mgr;
-           if(sig_mgr != NONE && isokendpt(sig_mgr, &sig_mgr_proc_nr)) {
-               priv(rp)->s_sig_mgr = sig_mgr;
-               priv(rp)->s_bak_sig_mgr = NONE;
-               sig_mgr_rp = proc_addr(sig_mgr_proc_nr);
-               RTS_UNSET(sig_mgr_rp, RTS_NO_PRIV);
-               cause_sig(proc_nr, sig_nr); /* try again with the new sig mgr. */
-               return;
-           }
-           /* We are out of luck. Time to panic. */
-           proc_stacktrace(rp);
-           panic("cause_sig: sig manager %d gets lethal signal %d for itself",
-	   	rp->p_endpoint, sig_nr);
-       }
-       (void) sigaddset(&priv(rp)->s_sig_pending, sig_nr);
-       send_sig(rp->p_endpoint, SIGKSIGSM);
-       return;
-  }
+  register struct proc *rp;
 
   /* Check if the signal is already pending. Process it otherwise. */
+  rp = proc_addr(proc_nr);
   if (! sigismember(&rp->p_pending, sig_nr)) {
-      (void) sigaddset(&rp->p_pending, sig_nr);
-      if (! (RTS_ISSET(rp, RTS_SIGNALED))) {		/* other pending */
-	  RTS_SET(rp, RTS_SIGNALED | RTS_SIG_PENDING);
-          send_sig(sig_mgr, SIGKSIG);
+      sigaddset(&rp->p_pending, sig_nr);
+      if (! (RTS_ISSET(rp, SIGNALED))) {		/* other pending */
+	  RTS_LOCK_SET(rp, SIGNALED | SIG_PENDING);
+          send_sig(PM_PROC_NR, SIGKSIG);
       }
   }
-}
-
-/*===========================================================================*
- *				sig_delay_done				     *
- *===========================================================================*/
-PUBLIC void sig_delay_done(struct proc *rp)
-{
-/* A process is now known not to send any direct messages.
- * Tell PM that the stop delay has ended, by sending a signal to the process.
- * Used for actual signal delivery.
- */
-
-  rp->p_misc_flags &= ~MF_SIG_DELAY;
-
-  cause_sig(proc_nr(rp), SIGSNDELAY);
 }
 
 #if _MINIX_CHIP == _CHIP_INTEL
@@ -453,7 +307,8 @@ PUBLIC void sig_delay_done(struct proc *rp)
 /*===========================================================================*
  *				umap_bios				     *
  *===========================================================================*/
-PUBLIC phys_bytes umap_bios(vir_addr, bytes)
+PUBLIC phys_bytes umap_bios(rp, vir_addr, bytes)
+register struct proc *rp;	/* pointer to proc table entry for process */
 vir_bytes vir_addr;		/* virtual address in BIOS segment */
 vir_bytes bytes;		/* # of bytes to be copied */
 {
@@ -470,10 +325,41 @@ vir_bytes bytes;		/* # of bytes to be copied */
   else if (vir_addr >= BASE_MEM_TOP && vir_addr + bytes <= UPPER_MEM_END)
   	return (phys_bytes) vir_addr;
 
-  printf("Warning, error in umap_bios, virtual address 0x%x\n", vir_addr);
+  kprintf("Warning, error in umap_bios, virtual address 0x%x\n", vir_addr);
   return 0;
 }
 #endif
+
+/*===========================================================================*
+ *				umap_verify_grant			     *
+ *===========================================================================*/
+PUBLIC phys_bytes umap_verify_grant(rp, grantee, grant, offset, bytes, access)
+struct proc *rp;		/* pointer to proc table entry for process */
+endpoint_t grantee;		/* who wants to do this */
+cp_grant_id_t grant;		/* grant no. */
+vir_bytes offset;		/* offset into grant */
+vir_bytes bytes;		/* size */
+int access;			/* does grantee want to CPF_READ or _WRITE? */
+{
+	int proc_nr;
+	vir_bytes v_offset;
+	endpoint_t granter;
+
+	/* See if the grant in that process is sensible, and
+	 * find out the virtual address and (optionally) new
+	 * process for that address.
+	 *
+	 * Then convert that process to a slot number.
+	 */
+	if(verify_grant(rp->p_endpoint, grantee, grant, bytes, access, offset,
+		&v_offset, &granter) != OK
+	   || !isokendpt(granter, &proc_nr)) {
+		return 0;
+	}
+
+	/* Do the mapping from virtual to physical. */
+	return umap_local(proc_addr(proc_nr), D, v_offset, bytes);
+}
 
 /*===========================================================================*
  *                              umap_grant                                   *
@@ -484,9 +370,9 @@ cp_grant_id_t grant;            /* grant no. */
 vir_bytes bytes;                /* size */
 {
         int proc_nr;
-        vir_bytes offset, ret;
+        vir_bytes offset;
         endpoint_t granter;
-
+ 
         /* See if the grant in that process is sensible, and 
          * find out the virtual address and (optionally) new
          * process for that address.
@@ -495,55 +381,87 @@ vir_bytes bytes;                /* size */
          */
         if(verify_grant(rp->p_endpoint, ANY, grant, bytes, 0, 0,
                 &offset, &granter) != OK) {
-		printf("SYSTEM: umap_grant: verify_grant failed\n");
                 return 0;
         }
 
         if(!isokendpt(granter, &proc_nr)) {
-		printf("SYSTEM: umap_grant: isokendpt failed\n");
                 return 0;
         }
  
         /* Do the mapping from virtual to physical. */
-        ret = umap_virtual(proc_addr(proc_nr), D, offset, bytes);
-	if(!ret) {
-		printf("SYSTEM:umap_grant:umap_virtual failed; grant %s:%d -> %s: vir 0x%lx\n",
-			rp->p_name, grant, 
-			proc_addr(proc_nr)->p_name, offset);
-	}
-	return ret;
+        return umap_local(proc_addr(proc_nr), D, offset, bytes);
 }
 
 /*===========================================================================*
- *			         clear_ipc				     *
+ *				virtual_copy				     *
  *===========================================================================*/
-PRIVATE void clear_ipc(
-  register struct proc *rc	/* slot of process to clean up */
-)
+PUBLIC int virtual_copy(src_addr, dst_addr, bytes)
+struct vir_addr *src_addr;	/* source virtual address */
+struct vir_addr *dst_addr;	/* destination virtual address */
+vir_bytes bytes;		/* # of bytes to copy  */
 {
-/* Clear IPC data for a given process slot. */
-  struct proc **xpp;			/* iterate over caller queue */
+/* Copy bytes from virtual address src_addr to virtual address dst_addr. 
+ * Virtual addresses can be in ABS, LOCAL_SEG, REMOTE_SEG, or BIOS_SEG.
+ */
+  struct vir_addr *vir_addr[2];	/* virtual source and destination address */
+  phys_bytes phys_addr[2];	/* absolute source and destination */ 
+  int seg_index;
+  int i;
 
-  if (RTS_ISSET(rc, RTS_SENDING)) {
-      int target_proc;
+  /* Check copy count. */
+  if (bytes <= 0) return(EDOM);
 
-      okendpt(rc->p_sendto_e, &target_proc);
-      xpp = &proc_addr(target_proc)->p_caller_q; /* destination's queue */
-      while (*xpp) {		/* check entire queue */
-          if (*xpp == rc) {			/* process is on the queue */
-              *xpp = (*xpp)->p_q_link;		/* replace by next process */
-#if DEBUG_ENABLE_IPC_WARNINGS
-	      printf("endpoint %d / %s removed from queue at %d\n",
-	          rc->p_endpoint, rc->p_name, rc->p_sendto_e);
+  /* Do some more checks and map virtual addresses to physical addresses. */
+  vir_addr[_SRC_] = src_addr;
+  vir_addr[_DST_] = dst_addr;
+  for (i=_SRC_; i<=_DST_; i++) {
+	int proc_nr, type;
+	struct proc *p;
+
+ 	type = vir_addr[i]->segment & SEGMENT_TYPE;
+	if(type != PHYS_SEG && isokendpt(vir_addr[i]->proc_nr_e, &proc_nr))
+	   p = proc_addr(proc_nr);
+	else
+	   p = NULL;
+
+      /* Get physical address. */
+      switch(type) {
+      case LOCAL_SEG:
+	  if(!p) return EDEADSRCDST;
+          seg_index = vir_addr[i]->segment & SEGMENT_INDEX;
+          phys_addr[i] = umap_local(p, seg_index, vir_addr[i]->offset, bytes);
+          break;
+      case REMOTE_SEG:
+	  if(!p) return EDEADSRCDST;
+          seg_index = vir_addr[i]->segment & SEGMENT_INDEX;
+          phys_addr[i] = umap_remote(p, seg_index, vir_addr[i]->offset, bytes);
+          break;
+#if _MINIX_CHIP == _CHIP_INTEL
+      case BIOS_SEG:
+	  if(!p) return EDEADSRCDST;
+          phys_addr[i] = umap_bios(p, vir_addr[i]->offset, bytes );
+          break;
 #endif
-              break;				/* can only be queued once */
-          }
-          xpp = &(*xpp)->p_q_link;		/* proceed to next queued */
+      case PHYS_SEG:
+          phys_addr[i] = vir_addr[i]->offset;
+          break;
+      case GRANT_SEG:
+	  phys_addr[i] = umap_grant(p, vir_addr[i]->offset, bytes);
+	  break;
+      default:
+          return(EINVAL);
       }
-      rc->p_rts_flags &= ~RTS_SENDING;
+
+      /* Check if mapping succeeded. */
+      if (phys_addr[i] <= 0 && vir_addr[i]->segment != PHYS_SEG) 
+          return(EFAULT);
   }
-  rc->p_rts_flags &= ~RTS_RECEIVING;
+
+  /* Now copy bytes between physical addresseses. */
+  phys_copy(phys_addr[_SRC_], phys_addr[_DST_], (phys_bytes) bytes);
+  return(OK);
 }
+
 
 /*===========================================================================*
  *			         clear_endpoint				     *
@@ -551,38 +469,41 @@ PRIVATE void clear_ipc(
 PUBLIC void clear_endpoint(rc)
 register struct proc *rc;		/* slot of process to clean up */
 {
-  if(isemptyp(rc)) panic("clear_proc: empty process: %d",  rc->p_endpoint);
+  register struct proc *rp;		/* iterate over process table */
+  register struct proc **xpp;		/* iterate over caller queue */
+
+  if(isemptyp(rc)) panic("clear_proc: empty process", proc_nr(rc));
 
   /* Make sure that the exiting process is no longer scheduled. */
-  RTS_SET(rc, RTS_NO_ENDPOINT);
-  if (priv(rc)->s_flags & SYS_PROC)
-  {
-	priv(rc)->s_asynsize= 0;
-  }
+  RTS_LOCK_SET(rc, NO_ENDPOINT);
 
   /* If the process happens to be queued trying to send a
    * message, then it must be removed from the message queues.
    */
-  clear_ipc(rc);
+  if (RTS_ISSET(rc, SENDING)) {
+      int target_proc;
+
+      okendpt(rc->p_sendto_e, &target_proc);
+      xpp = &proc_addr(target_proc)->p_caller_q; /* destination's queue */
+      while (*xpp != NIL_PROC) {		/* check entire queue */
+          if (*xpp == rc) {			/* process is on the queue */
+              *xpp = (*xpp)->p_q_link;		/* replace by next process */
+#if DEBUG_ENABLE_IPC_WARNINGS
+	      kprintf("Proc %d removed from queue at %d\n",
+	          proc_nr(rc), rc->p_sendto_e);
+#endif
+              break;				/* can only be queued once */
+          }
+          xpp = &(*xpp)->p_q_link;		/* proceed to next queued */
+      }
+      rc->p_rts_flags &= ~SENDING;
+  }
+  rc->p_rts_flags &= ~RECEIVING;
 
   /* Likewise, if another process was sending or receive a message to or from 
    * the exiting process, it must be alerted that process no longer is alive.
    * Check all processes. 
    */
-  clear_ipc_refs(rc, EDEADSRCDST);
-
-}
-
-/*===========================================================================*
- *			       clear_ipc_refs				     *
- *===========================================================================*/
-PUBLIC void clear_ipc_refs(rc, caller_ret)
-register struct proc *rc;		/* slot of process to clean up */
-int caller_ret;				/* code to return on callers */
-{
-/* Clear IPC references for a given process slot. */
-  struct proc *rp;			/* iterate over process table */
-
   for (rp = BEG_PROC_ADDR; rp < END_PROC_ADDR; rp++) {
       if(isemptyp(rp))
 	continue;
@@ -590,78 +511,23 @@ int caller_ret;				/* code to return on callers */
       /* Unset pending notification bits. */
       unset_sys_bit(priv(rp)->s_notify_pending, priv(rc)->s_id);
 
-      /* XXX FIXME: Cleanup should be done for senda() as well. For this to be
-       * done in a realistic way, we need a better implementation of senda
-       * with a bitmap similar to s_notify_pending for notify() rather than
-       * a single global MF_ASYNMSG flag. The current arrangement exposes
-       * several performance issues.
-       */
-
-      /* Check if process depends on given process. */
-      if (P_BLOCKEDON(rp) == rc->p_endpoint) {
-          rp->p_reg.retreg = caller_ret;	/* return requested code */
-	  RTS_UNSET(rp, (RTS_RECEIVING|RTS_SENDING)); /* no longer blocking */
-      }
+      /* Check if process is receiving from exiting process. */
+      if (RTS_ISSET(rp, RECEIVING) && rp->p_getfrom_e == rc->p_endpoint) {
+          rp->p_reg.retreg = ESRCDIED;		/* report source died */
+	  RTS_LOCK_UNSET(rp, RECEIVING);	/* no longer receiving */
+#if DEBUG_ENABLE_IPC_WARNINGS
+	  kprintf("Proc %d receive dead src %d\n", proc_nr(rp), proc_nr(rc));
+#endif
+      } 
+      if (RTS_ISSET(rp, SENDING) &&
+	  rp->p_sendto_e == rc->p_endpoint) {
+          rp->p_reg.retreg = EDSTDIED;		/* report destination died */
+	  RTS_LOCK_UNSET(rp, SENDING);
+#if DEBUG_ENABLE_IPC_WARNINGS
+	  kprintf("Proc %d send dead dst %d\n", proc_nr(rp), proc_nr(rc));
+#endif
+      } 
   }
 }
 
-/*===========================================================================*
- *                              kernel_call_resume                           *
- *===========================================================================*/
-PUBLIC void kernel_call_resume(struct proc *caller)
-{
-	int result;
-
-	assert(!RTS_ISSET(caller, RTS_SLOT_FREE));
-	assert(!RTS_ISSET(caller, RTS_VMREQUEST));
-
-	assert(caller->p_vmrequest.saved.reqmsg.m_source == caller->p_endpoint);
-
-	/*
-	printf("KERNEL_CALL restart from %s / %d rts 0x%08x misc 0x%08x\n",
-			caller->p_name, caller->p_endpoint,
-			caller->p_rts_flags, caller->p_misc_flags);
-	 */
-
-	/* re-execute the kernel call, with MF_KCALL_RESUME still set so
-	 * the call knows this is a retry.
-	 */
-	result = kernel_call_dispatch(caller, &caller->p_vmrequest.saved.reqmsg);
-	/*
-	 * we are resuming the kernel call so we have to remove this flag so it
-	 * can be set again
-	 */
-	caller->p_misc_flags &= ~MF_KCALL_RESUME;
-	kernel_call_finish(caller, &caller->p_vmrequest.saved.reqmsg, result);
-}
-
-/*===========================================================================*
- *                               sched_proc                                  *
- *===========================================================================*/
-PUBLIC int sched_proc(struct proc *rp, unsigned priority, unsigned quantum)
-{
-	/* Make sure the priority number given is within the allowed range.*/
-	if (priority < TASK_Q || priority > NR_SCHED_QUEUES)
-		return EINVAL;
-
-	/* Make sure the quantum given is within the allowed range.*/
-	if(quantum <= 0)
-		return EINVAL;
-
-	/* In some cases, we might be rescheduling a runnable process. In such
-	 * a case (i.e. if we are updating the priority) we set the NO_QUANTUM
-	 * flag before the generic unset to dequeue/enqueue the process
-	 */
-	if (proc_is_runnable(rp))
-		RTS_SET(rp, RTS_NO_QUANTUM);
-
-	/* Clear the scheduling bit and enqueue the process */
-	rp->p_priority = priority;
-	rp->p_quantum_size_ms = quantum;
-	rp->p_cpu_time_left = ms_2_cpu_time(quantum);
-
-	RTS_UNSET(rp, RTS_NO_QUANTUM);
-
-	return OK;
-}
 

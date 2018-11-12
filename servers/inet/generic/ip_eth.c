@@ -251,7 +251,6 @@ int for_ioctl;
 	printf("ip_port->ip_dl.dl_eth.de_state= 0x%x",
 		ip_port->ip_dl.dl_eth.de_state);
 	ip_panic (( "strange status" ));
-	return -1;
 }
 
 PRIVATE void ipeth_set_ipaddr(ip_port)
@@ -273,7 +272,7 @@ int type;
 	size_t pack_size;
 	eth_hdr_t *eth_hdr;
 	xmit_hdr_t *xmit_hdr;
-	ipaddr_t tmpaddr;
+	ipaddr_t hostpart, tmpaddr;
 	time_t t;
 	u32_t *p;
 
@@ -322,6 +321,7 @@ int type;
 			ip_panic(( "invalid destination" ));
 		}
 
+		hostpart= (dest & ~ip_port->ip_subnetmask);
 		assert(dest != ip_port->ip_ipaddr);
 
 		r= arp_ip_eth(ip_port->ip_dl.dl_eth.de_port,
@@ -346,10 +346,10 @@ int type;
 			ip_port->ip_dl.dl_eth.de_arp_tail= eth_pack;
 			return NW_OK;
 		}
-		if (r == EHOSTUNREACH)
+		if (r == EDSTNOTRCH)
 		{
 			bf_afree(eth_pack);
-			return r;
+			return EDSTNOTRCH;
 		}
 		assert(r == NW_OK);
 	}
@@ -599,7 +599,7 @@ ether_addr_t *eth_addr;
 		/* Dequeue the packet */
 		ip_port->ip_dl.dl_eth.de_arp_head= eth_pack->acc_ext_link;
 
-		if (r == EHOSTUNREACH)
+		if (r == EDSTNOTRCH)
 		{
 			bf_afree(eth_pack);
 			continue;

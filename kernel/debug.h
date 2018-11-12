@@ -8,7 +8,6 @@
  */
 
 #include <ansi.h>
-#include <minix/debug.h>
 #include "config.h"
 
 /* Enable prints such as
@@ -20,53 +19,38 @@
  * Of course the call still fails, but nothing is printed if these warnings
  * are disabled.
  */
-#define DEBUG_ENABLE_IPC_WARNINGS	1
+#define DEBUG_ENABLE_IPC_WARNINGS	0
 #define DEBUG_STACKTRACE		1
-#define DEBUG_TIME_LOCKS		1
 
-/* Sanity checks. */
-#define DEBUG_SANITYCHECKS		0
-
-/* Verbose messages. */
-#define DEBUG_TRACE			0
-
-/* DEBUG_RACE makes every process preemptible, schedules
- * every process on the same priority queue, and randomizes
- * the next process to run, in order to help catch race
- * conditions that could otherwise be masked.
+/* It's interesting to measure the time spent withing locked regions, because
+ * this is the time that the system is deaf to interrupts.
  */
-#define DEBUG_RACE			0
+#if DEBUG_TIME_LOCKS
 
-/* DEBUG_DUMPIPC dumps all IPC to serial; due to the amount of logging it is 
- * strongly recommended to set "ctty 0" in the boot monitor and run inside a 
- * virtual machine if you enable this; on the hardware it would take forever 
- * just to boot
- */
-#define DEBUG_DUMPIPC			0
+#define TIMING_POINTS		20	/* timing resolution */
+#define TIMING_CATEGORIES	20
+#define TIMING_NAME		10
 
-#if DEBUG_TRACE
+/* Definition of the data structure to store lock() timing data. */ 
+struct lock_timingdata {
+	char names[TIMING_NAME];
+	unsigned long lock_timings[TIMING_POINTS];
+	unsigned long lock_timings_range[2];
+	unsigned long binsize, resets, misses, measurements;
+};
 
-#define VF_SCHEDULING		(1L << 1)
-#define VF_PICKPROC		(1L << 2)
+/* The data is declared here, but allocated in debug.c. */
+extern struct lock_timingdata timingdata[TIMING_CATEGORIES];
 
-#define TRACE(code, statement) if(verboseflags & code) { printf("%s:%d: ", __FILE__, __LINE__); statement }
+/* Prototypes for the timing functionality. */
+_PROTOTYPE( void timer_start, (int cat, char *name) );
+_PROTOTYPE( void timer_end, (int cat) );
 
+#define locktimestart(c, v) timer_start(c, v)
+#define locktimeend(c) timer_end(c)
 #else
-#define TRACE(code, statement)
-#endif
-
-#ifdef CONFIG_BOOT_VERBOSE
-#define BOOT_VERBOSE(x)	x
-#else
-#define BOOT_VERBOSE(x)
-#endif
-
-#ifdef _SYSTEM
-#define DEBUG_PRINT(params, level) do { \
-	if (verboseboot >= (level)) printf params; } while (0)
-#define DEBUGBASIC(params) DEBUG_PRINT(params, VERBOSEBOOT_BASIC)
-#define DEBUGEXTRA(params) DEBUG_PRINT(params, VERBOSEBOOT_EXTRA)
-#define DEBUGMAX(params)   DEBUG_PRINT(params, VERBOSEBOOT_MAX)
-#endif
+#define locktimestart(c, v)
+#define locktimeend(c)
+#endif /* DEBUG_TIME_LOCKS */
 
 #endif /* DEBUG_H */

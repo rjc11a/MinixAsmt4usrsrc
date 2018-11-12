@@ -1,11 +1,22 @@
-#	$NetBSD: Makefile,v 1.13 2006/06/02 19:44:48 mrg Exp $
-#	from: @(#)Makefile	8.1 (Berkeley) 6/6/93
+# Makefile for minised
 
-.include <bsd.own.mk>
+# If your compiler does not support this flags, just remove them.
+# They only ensure that no new warning regressions make it into the source.
+CFLAGS = -Wall -Wwrite-strings
 
-PROG=	sed
-SRCS=	compile.c main.c misc.c process.c
+minised: sedcomp.o sedexec.o
+	$(CC) $(LFLAGS) sedcomp.o sedexec.o -o minised
 
-BINDIR=/bin
+sedcomp.o: sedcomp.c sed.h
+sedexec.o: sedexec.c sed.h
 
-.include <bsd.prog.mk>
+install: minised
+	install -o bin -m 755 minised /usr/bin/
+	install -o bin -m 755 minised /bin/
+
+clean:
+	rm -f minised sedcomp.o sedexec.o
+
+check: minised
+	cd tests; ./run ../minised
+

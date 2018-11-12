@@ -10,9 +10,11 @@
 **
 **  Modified:	Jun. 08, 2000 by Giovanni Falzoni <gfalzoni@inwind.it>
 **  		Adapted to interface new main network task.
+**
+**  $Id$
 */
 
-#include <minix/drivers.h>
+#include "drivers.h"
 #include <net/gen/ether.h>
 #include <net/gen/eth_io.h>
 #include "dp.h"

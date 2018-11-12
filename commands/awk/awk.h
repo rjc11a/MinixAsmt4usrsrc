@@ -1,233 +1,186 @@
-/****************************************************************
-Copyright (C) Lucent Technologies 1997
-All Rights Reserved
+/*
+ * a small awk clone
+ *
+ * (C) 1989 Saeko Hirabauashi & Kouichi Hirabayashi
+ *
+ * Absolutely no warranty. Use this software with your own risk.
+ *
+ * Permission to use, copy, modify and distribute this software for any
+ * purpose and without fee is hereby granted, provided that the above
+ * copyright and disclaimer notice.
+ *
+ * This program was written to fit into 64K+64K memory of the Minix 1.2.
+ */
 
-Permission to use, copy, modify, and distribute this software and
-its documentation for any purpose and without fee is hereby
-granted, provided that the above copyright notice appear in all
-copies and that both that the copyright notice and this
-permission notice and warranty disclaimer appear in supporting
-documentation, and that the name Lucent Technologies or any of
-its entities not be used in advertising or publicity pertaining
-to distribution of the software without specific, written prior
-permission.
+/* lexical/parser tokens and executable statements */
 
-LUCENT DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
-INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS.
-IN NO EVENT SHALL LUCENT OR ANY OF ITS ENTITIES BE LIABLE FOR ANY
-SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER
-IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
-ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
-THIS SOFTWARE.
-****************************************************************/
+#define FIRSTP	256
+#define ARG	256
+#define ARITH	257
+#define ARRAY	258
+#define ASSIGN	259
+#define CALL	260
+#define CAT	261
+#define COND	262
+#define DELETE	263
+#define DO	264
+#define ELEMENT	265
+#define FIELD	266
+#define FOR	267
+#define FORIN	268
+#define GETLINE	269
+#define IF	270
+#define IN	271
+#define JUMP	272
+#define MATHFUN	273
+#define NULPROC	274
+#define P1STAT	275
+#define P2STAT	276
+#define PRINT	277
+#define PRINT0	278
+#define STRFUN	279
+#define SUBST	280
+#define USRFUN	281
+#define WHILE	282
+#define LASTP	282
+	/* lexical token */
 
-#include <assert.h>
+#define ADD	300	/* + */
+#define ADDEQ	301	/* += */
+#define AND	302	/* && */
+#define BEGIN	303	/* BEGIN */
+#define BINAND	304	/* & */
+#define BINOR	305	/* | */
+#define BREAK	306	/* break */
+#define CLOSE	307	/* close */
+#define CONTIN	308	/* continue */
+#define DEC	309	/* -- */
+#define DIV	310	/* / */
+#define DIVEQ	311	/* /= */
+#define	ELSE	312	/* else */
+#define END	313	/* END */
+#define EOL	314	/* ; or '\n' */
+#define EQ	315	/* == */
+#define EXIT	316	/* exit */
+#define FUNC	317	/* function */
+#define GE	318	/* >= */
+#define GT	319	/* > */
+#define IDENT	320	/* identifier */
+#define INC	321	/* ++ */
+#define LE	322	/* <= */
+#define LT	323	/* < */
+#define MATCH	324	/* ~ */
+#define MOD	325	/* % */
+#define MODEQ	326	/* %= */
+#define MULT	327	/* * */
+#define MULTEQ	328	/* *= */
+#define NE	329	/* != */
+#define NEXT	330	/* next */
+#define NOMATCH	331	/* !~ */
+#define NOT	332	/* ! */
+#define NUMBER	333	/* integer or floating number */
+#define OR	334	/* || */
+#define POWEQ	335	/* ^= */
+#define POWER	336	/* ^ */
+#define PRINTF	337	/* printf */
+#define REGEXP	338	/* /REG/ */
+#define RETURN	339	/* return */
+#define SHIFTL	340	/* << */
+#define SHIFTR	341	/* >> */
+#define SPRINT	342	/* sprint */
+#define SPRINTF	343	/* sprintf */
+#define STRING	344	/* ".." */
+#define SUB	345	/* - */
+#define SUBEQ	346	/* -= */
+#define SYSTEM	347	/* system */
+#define UMINUS	348	/* - */
 
-typedef double	Awkfloat;
+/* tokens in parser */
 
-/* unsigned char is more trouble than it's worth */
+#define VALUE	400	/* value node */
+#define INCDEC	401	/* ++, -- */
+#define PRE	402	/* pre incre/decre */
+#define POST	403	/* post incre/decre */
 
-typedef	unsigned char uschar;
+/* redirect in print(f) statement */
 
-#define	xfree(a)	{ if ((a) != NULL) { free((void *) (a)); (a) = NULL; } }
+#define R_OUT	410	/* > */
+#define R_APD	411	/* >> */
+#define R_PIPE	412	/* | */
+#define R_IN	413	/* < */
+#define R_PIN	414	/* | getline */
+#define R_POUT	415	/* print | */
 
-#define	NN(p)	((p) ? (p) : "(null)")	/* guaranteed non-null for dprintf 
-*/
-#define	DEBUG
-#ifdef	DEBUG
-			/* uses have to be doubly parenthesized */
-#	define	dprintf(x)	if (dbg) printf x
-#else
-#	define	dprintf(x)
-#endif
+/* function */
 
-extern int	compile_time;	/* 1 if compiling, 0 if running */
-extern int	safe;		/* 0 => unsafe, 1 => safe */
+#define ATAN2	500	/* atan2 */
+#define COS	501	/* cos */
+#define EXP	502	/* exp */
+#define INDEX	503	/* index */
+#define INT	504	/* int */
+#define LENGTH	505	/* length */
+#define LOG	506	/* log */
+#define RAND	507	/* rand */
+#define RGSUB	508	/* gsub */
+#define RMATCH	509	/* match */
+#define RSUB	510	/* sub */
+#define SIN	511	/* sin */
+#define SPLIT	512	/* split */
+#define SQRT	513	/* sqrt */
+#define SRAND	514	/* srand */
+#define SUBSTR	515	/* substr */
 
-#define	RECSIZE	(8 * 1024)	/* sets limit on records, fields, etc., etc. */
-extern int	recsize;	/* size of current record, orig RECSIZE */
+/* print(f) options */
 
-extern char	**FS;
-extern char	**RS;
-extern char	**ORS;
-extern char	**OFS;
-extern char	**OFMT;
-extern Awkfloat *NR;
-extern Awkfloat *FNR;
-extern Awkfloat *NF;
-extern char	**FILENAME;
-extern char	**SUBSEP;
-extern Awkfloat *RSTART;
-extern Awkfloat *RLENGTH;
+#define FORMAT	1024	/* PRINTF, SPRINTF */
+#define STROUT	2048	/* SPRINTF */
+#define PRMASK	0x3ff	/* ~(FORMAT|STROUT) */
 
-extern char	*record;	/* points to $0 */
-extern int	lineno;		/* line number in awk program */
-extern int	errorflag;	/* 1 if error has occurred */
-extern int	donefld;	/* 1 if record broken into fields */
-extern int	donerec;	/* 1 if record is valid (no fld has changed */
-extern char	inputFS[];	/* FS at time of input, for field splitting */
+	/* node - used in parsed tree */
 
-extern int	dbg;
+struct node {
+  int n_type;			/* node type */
+  struct node *n_next;		/* pointer to next node */
+  struct node *n_arg[1];	/* argument (variable length) */
+};
 
-extern	char	*patbeg;	/* beginning of pattern matched */
-extern	int	patlen;		/* length of pattern matched.  set in b.c */
+typedef struct node NODE;
 
-/* Cell:  all information about a variable or constant */
+	/* object cell */
 
-typedef struct Cell {
-	uschar	ctype;		/* OCELL, OBOOL, OJUMP, etc. */
-	uschar	csub;		/* CCON, CTEMP, CFLD, etc. */
-	char	*nval;		/* name, for variables only */
-	char	*sval;		/* string value */
-	Awkfloat fval;		/* value as number */
-	int	 tval;		/* type info: STR|NUM|ARR|FCN|FLD|CON|DONTFREE */
-	struct Cell *cnext;	/* ptr to next if chained */
-} Cell;
+struct cell {
+  int c_type;		/* cell type */
+  char *c_sval;		/* string value */
+  double c_fval;	/* floating value */
+};
 
-typedef struct Array {		/* symbol table array */
-	int	nelem;		/* elements in table right now */
-	int	size;		/* size of tab */
-	Cell	**tab;		/* hash table pointers */
-} Array;
+typedef struct cell CELL;
 
-#define	NSYMTAB	50	/* initial size of a symbol table */
-extern Array	*symtab;
+	/* cell type */
 
-extern Cell	*nrloc;		/* NR */
-extern Cell	*fnrloc;	/* FNR */
-extern Cell	*nfloc;		/* NF */
-extern Cell	*rstartloc;	/* RSTART */
-extern Cell	*rlengthloc;	/* RLENGTH */
+#define UDF	0	/* pass parameter */
+#define VAR	1	/* variable */
+#define NUM	2	/* number */
+#define ARR	4	/* array */
+#define STR	8	/* string */
+#define REC	16	/* record */
+#define FLD	32	/* filed */
+#define PAT	64	/* pattern (compiled REGEXPR) */
+#define BRK	128	/* break */
+#define CNT	256	/* continue */
+#define NXT	512	/* next */
+#define EXT	1024	/* exit */
+#define RTN	2048	/* return */
+#define TMP	4096	/* temp cell */
+#define POS	8192	/* argument position */
+#define FUN	16384	/* function */
 
-/* Cell.tval values: */
-#define	NUM	01	/* number value is valid */
-#define	STR	02	/* string value is valid */
-#define DONTFREE 04	/* string space is not freeable */
-#define	CON	010	/* this is a constant */
-#define	ARR	020	/* this is an array */
-#define	FCN	040	/* this is a function name */
-#define FLD	0100	/* this is a field $1, $2, ... */
-#define	REC	0200	/* this is $0 */
+	/* symbol cell - linked to symbol table */
 
+struct symbol {
+  char *s_name;
+  CELL *s_val;
+  struct symbol *s_next;
+};
 
-/* function types */
-#define	FLENGTH	1
-#define	FSQRT	2
-#define	FEXP	3
-#define	FLOG	4
-#define	FINT	5
-#define	FSYSTEM	6
-#define	FRAND	7
-#define	FSRAND	8
-#define	FSIN	9
-#define	FCOS	10
-#define	FATAN	11
-#define	FTOUPPER 12
-#define	FTOLOWER 13
-#define	FFLUSH	14
-
-/* Node:  parse tree is made of nodes, with Cell's at bottom */
-
-typedef struct Node {
-	int	ntype;
-	struct	Node *nnext;
-	int	lineno;
-	int	nobj;
-	struct	Node *narg[1];	/* variable: actual size set by calling malloc */
-} Node;
-
-#define	NIL	((Node *) 0)
-
-extern Node	*winner;
-extern Node	*nullstat;
-extern Node	*nullnode;
-
-/* ctypes */
-#define OCELL	1
-#define OBOOL	2
-#define OJUMP	3
-
-/* Cell subtypes: csub */
-#define	CFREE	7
-#define CCOPY	6
-#define CCON	5
-#define CTEMP	4
-#define CNAME	3 
-#define CVAR	2
-#define CFLD	1
-#define	CUNK	0
-
-/* bool subtypes */
-#define BTRUE	11
-#define BFALSE	12
-
-/* jump subtypes */
-#define JEXIT	21
-#define JNEXT	22
-#define	JBREAK	23
-#define	JCONT	24
-#define	JRET	25
-#define	JNEXTFILE	26
-
-/* node types */
-#define NVALUE	1
-#define NSTAT	2
-#define NEXPR	3
-
-
-extern	int	pairstack[], paircnt;
-
-#define notlegal(n)	(n <= FIRSTTOKEN || n >= LASTTOKEN || proctab[n-FIRSTTOKEN] == nullproc)
-#define isvalue(n)	((n)->ntype == NVALUE)
-#define isexpr(n)	((n)->ntype == NEXPR)
-#define isjump(n)	((n)->ctype == OJUMP)
-#define isexit(n)	((n)->csub == JEXIT)
-#define	isbreak(n)	((n)->csub == JBREAK)
-#define	iscont(n)	((n)->csub == JCONT)
-#define	isnext(n)	((n)->csub == JNEXT || (n)->csub == JNEXTFILE)
-#define	isret(n)	((n)->csub == JRET)
-#define isrec(n)	((n)->tval & REC)
-#define isfld(n)	((n)->tval & FLD)
-#define isstr(n)	((n)->tval & STR)
-#define isnum(n)	((n)->tval & NUM)
-#define isarr(n)	((n)->tval & ARR)
-#define isfcn(n)	((n)->tval & FCN)
-#define istrue(n)	((n)->csub == BTRUE)
-#define istemp(n)	((n)->csub == CTEMP)
-#define	isargument(n)	((n)->nobj == ARG)
-/* #define freeable(p)	(!((p)->tval & DONTFREE)) */
-#define freeable(p)	( ((p)->tval & (STR|DONTFREE)) == STR )
-
-/* structures used by regular expression matching machinery, mostly b.c: */
-
-#define NCHARS	(256+3)		/* 256 handles 8-bit chars; 128 does 7-bit */
-				/* watch out in match(), etc. */
-#define NSTATES	32
-
-typedef struct rrow {
-	long	ltype;	/* long avoids pointer warnings on 64-bit */
-	union {
-		int i;
-		Node *np;
-		uschar *up;
-	} lval;		/* because Al stores a pointer in it! */
-	int	*lfollow;
-} rrow;
-
-typedef struct fa {
-	uschar	gototab[NSTATES][NCHARS];
-	uschar	out[NSTATES];
-	uschar	*restr;
-	int	*posns[NSTATES];
-	int	anchor;
-	int	use;
-	int	initstat;
-	int	curstat;
-	int	accept;
-	int	reset;
-	struct	rrow re[1];	/* variable: actual size set by calling malloc */
-} fa;
-
-
-#include "proto.h"
+typedef struct symbol SYMBOL;

@@ -24,33 +24,19 @@
 #define PRI16		""
 #define PRILEAST16	""
 #define PRIFAST16	""
-
-#if __SIZEOF_LONG__ > 4
-#define PRI32		""
-#else
+#if _WORD_SIZE == 2
 #define PRI32		"l"
-#endif
-#define PRILEAST32	PRI32
-#define PRIFAST32	PRI32
-
-#if defined(__LONG_LONG_SUPPORTED)
-#define PRI64		"ll"
-#elif _WORD_SIZE > 2 && __L64
-#define PRI64		"l"
-#endif
-
-#ifdef PRI64
-#define PRILEAST64	PRI64
-#define PRIFAST64	PRI64
-#define PRIMAX		PRI64
+#define PRILEAST32	"l"
+#define PRIFAST32	"l"
 #else
-#define PRIMAX		PRI32
+#define PRI32		""
+#define PRILEAST32	""
+#define PRIFAST32	""
 #endif
-
-#if _PTR_SIZE == _WORD_SIZE
-#define PRIPTR		""
-#elif _PTR_SIZE == 2*_WORD_SIZE
-#define PRIPTR		"l"
+#if _WORD_SIZE > 2 && __L64
+#define PRI64		"l"
+#define PRILEAST64	"l"
+#define PRIFAST64	"l"
 #endif
 
 /* Macros for fprintf, the ones defined by the standard. */
@@ -63,13 +49,11 @@
 #define PRId32		PRI32"d"
 #define PRIdLEAST32	PRILEAST32"d"
 #define PRIdFAST32	PRIFAST32"d"
-#ifdef PRI64
+#if _WORD_SIZE > 2 && __L64
 #define PRId64		PRI64"d"
 #define PRIdLEAST64	PRILEAST64"d"
 #define PRIdFAST64	PRIFAST64"d"
 #endif
-#define PRIdMAX		PRIMAX"d"
-#define PRIdPTR		PRIPTR"d"
 
 #define PRIi8		PRI8"i"
 #define PRIiLEAST8	PRILEAST8"i"
@@ -80,13 +64,11 @@
 #define PRIi32		PRI32"i"
 #define PRIiLEAST32	PRILEAST32"i"
 #define PRIiFAST32	PRIFAST32"i"
-#ifdef PRI64
+#if _WORD_SIZE > 2 && __L64
 #define PRIi64		PRI64"i"
 #define PRIiLEAST64	PRILEAST64"i"
 #define PRIiFAST64	PRIFAST64"i"
 #endif
-#define PRIiMAX		PRIMAX"i"
-#define PRIiPTR		PRIPTR"i"
 
 #define PRIo8		PRI8"o"
 #define PRIoLEAST8	PRILEAST8"o"
@@ -97,13 +79,11 @@
 #define PRIo32		PRI32"o"
 #define PRIoLEAST32	PRILEAST32"o"
 #define PRIoFAST32	PRIFAST32"o"
-#ifdef PRI64
+#if _WORD_SIZE > 2 && __L64
 #define PRIo64		PRI64"o"
 #define PRIoLEAST64	PRILEAST64"o"
 #define PRIoFAST64	PRIFAST64"o"
 #endif
-#define PRIoMAX		PRIMAX"o"
-#define PRIoPTR		PRIPTR"o"
 
 #define PRIu8		PRI8"u"
 #define PRIuLEAST8	PRILEAST8"u"
@@ -114,13 +94,11 @@
 #define PRIu32		PRI32"u"
 #define PRIuLEAST32	PRILEAST32"u"
 #define PRIuFAST32	PRIFAST32"u"
-#ifdef PRI64
+#if _WORD_SIZE > 2 && __L64
 #define PRIu64		PRI64"u"
 #define PRIuLEAST64	PRILEAST64"u"
 #define PRIuFAST64	PRIFAST64"u"
 #endif
-#define PRIuMAX		PRIMAX"u"
-#define PRIuPTR		PRIPTR"u"
 
 #define PRIx8		PRI8"x"
 #define PRIxLEAST8	PRILEAST8"x"
@@ -131,13 +109,11 @@
 #define PRIx32		PRI32"x"
 #define PRIxLEAST32	PRILEAST32"x"
 #define PRIxFAST32	PRIFAST32"x"
-#ifdef PRI64
+#if _WORD_SIZE > 2 && __L64
 #define PRIx64		PRI64"x"
 #define PRIxLEAST64	PRILEAST64"x"
 #define PRIxFAST64	PRIFAST64"x"
 #endif
-#define PRIxMAX		PRIMAX"x"
-#define PRIxPTR		PRIPTR"x"
 
 #define PRIX8		PRI8"X"
 #define PRIXLEAST8	PRILEAST8"X"
@@ -148,13 +124,11 @@
 #define PRIX32		PRI32"X"
 #define PRIXLEAST32	PRILEAST32"X"
 #define PRIXFAST32	PRIFAST32"X"
-#ifdef PRI64
+#if _WORD_SIZE > 2 && __L64
 #define PRIX64		PRI64"X"
 #define PRIXLEAST64	PRILEAST64"X"
 #define PRIXFAST64	PRIFAST64"X"
 #endif
-#define PRIXMAX		PRIMAX"X"
-#define PRIXPTR		PRIPTR"X"
 
 /* Macros to scan integers with fscanf(), nonstandard first group. */
 #define SCN8		"hh"
@@ -256,12 +230,7 @@
 #endif /* !__cplusplus || __STDC_FORMAT_MACROS */
 
 /* Integer conversion functions for [u]intmax_t. */
-#ifdef __LONG_LONG_SUPPORTED
-#define stroimax(nptr, endptr, base)	strtoll(nptr, endptr, base)
-#define stroumax(nptr, endptr, base)	strtoull(nptr, endptr, base)
-#else
 #define stroimax(nptr, endptr, base)	strtol(nptr, endptr, base)
 #define stroumax(nptr, endptr, base)	strtoul(nptr, endptr, base)
-#endif
 
 #endif /* _INTTYPES_H */

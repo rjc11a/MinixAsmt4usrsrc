@@ -18,8 +18,7 @@
 #define USE_FORK       	   1	/* fork a new process */
 #define USE_NEWMAP     	   1	/* set a new memory map */
 #define USE_EXEC       	   1	/* update process after execute */
-#define USE_CLEAR	   1	/* clean up after process exit */
-#define USE_EXIT	   1	/* a system process wants to exit */
+#define USE_EXIT	   1	/* clean up after process exit */
 #define USE_TRACE      	   1	/* process information and tracing */
 #define USE_GETKSIG    	   1	/* retrieve pending kernel signals */
 #define USE_ENDKSIG    	   1	/* finish pending kernel signals */
@@ -30,21 +29,19 @@
 #define USE_GETINFO    	   1 	/* retrieve a copy of kernel data */
 #define USE_TIMES 	   1	/* get process and system time info */
 #define USE_SETALARM	   1	/* schedule a synchronous alarm */
-#define USE_VTIMER         1	/* set or retrieve a process-virtual timer */
 #define USE_DEVIO      	   1	/* read or write a single I/O port */
 #define USE_VDEVIO     	   1	/* process vector with I/O requests */
 #define USE_SDEVIO     	   1	/* perform I/O request on a buffer */
 #define USE_IRQCTL     	   1	/* set an interrupt policy */
 #define USE_SEGCTL     	   1	/* set up a remote segment */
 #define USE_PRIVCTL    	   1	/* system privileges control */
+#define USE_NICE 	   1	/* change scheduling priority */
 #define USE_UMAP       	   1	/* map virtual to physical address */
 #define USE_VIRCOPY   	   1	/* copy using virtual addressing */ 
+#define USE_VIRVCOPY  	   1	/* vector with virtual copy requests */
 #define USE_PHYSCOPY  	   1 	/* copy using physical addressing */
+#define USE_PHYSVCOPY  	   1	/* vector with physical copy requests */
 #define USE_MEMSET  	   1	/* write char to a given memory area */
-#define USE_RUNCTL         1	/* control stop flags of a process */
-#define USE_UPDATE         1	/* update a process into another */
-#define USE_MCONTEXT       1    /* enable getting and setting of mach context*/
-#define USE_STATECTL       1    /* let a process control its state */
 
 /* Length of program names stored in the process table. This is only used
  * for the debugging dumps that can be generated with the IS server. The PM
@@ -52,20 +49,36 @@
  */
 #define P_NAME_LEN	   8
 
+/* Kernel diagnostics are written to a circular buffer. After each message, 
+ * a system server is notified and a copy of the buffer can be retrieved to 
+ * display the message. The buffers size can safely be reduced.  
+ */
+#define KMESS_BUF_SIZE   256   	
+
+/* Buffer to gather randomness. This is used to generate a random stream by 
+ * the MEMORY driver when reading from /dev/random. 
+ */
+#define RANDOM_ELEMENTS   32
+
 /* This section contains defines for valuable system resources that are used
  * by device drivers. The number of elements of the vectors is determined by 
  * the maximum needed by any given driver. The number of interrupt hooks may
  * be incremented on systems with many device drivers. 
  */
-#ifndef CONFIG_APIC
 #define NR_IRQ_HOOKS	  16		/* number of interrupt hooks */
-#else
-#define NR_IRQ_HOOKS	  64		/* number of interrupt hooks */
-#endif
 #define VDEVIO_BUF_SIZE   64		/* max elements per VDEVIO request */
+#define VCOPY_VEC_SIZE    16		/* max elements per VCOPY request */
 
 /* How many bytes for the kernel stack. Space allocated in mpx.s. */
 #define K_STACK_BYTES   1024	
+
+#define K_PARAM_SIZE     512
+
+/* This section allows to enable kernel debugging and timing functionality.
+ * For normal operation all options should be disabled.
+ */
+#define DEBUG_SCHED_CHECK  0	/* sanity check of scheduling queues */
+#define DEBUG_TIME_LOCKS   0	/* measure time spent in locks */
 
 #endif /* CONFIG_H */
 

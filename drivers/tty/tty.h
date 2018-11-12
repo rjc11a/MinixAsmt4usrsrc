@@ -1,6 +1,8 @@
 /*	tty.h - Terminals	*/
 
 #include <timers.h>
+#include "../../kernel/const.h"
+#include "../../kernel/type.h"
 
 #undef lock
 #undef unlock
@@ -106,10 +108,12 @@ typedef struct tty {
 /* Memory allocated in tty.c, so extern here. */
 extern tty_t tty_table[NR_CONS+NR_RS_LINES+NR_PTYS];
 extern int ccurrent;		/* currently visible console */
-extern u32_t system_hz;		/* system clock frequency */
+extern int irq_hook_id;		/* hook id for keyboard irq */
 
 extern unsigned long kbd_irq_set;
 extern unsigned long rs_irq_set;
+
+extern int panicing;	/* From panic.c in sysutil */
 
 /* Values for the fields. */
 #define NOT_ESCAPED        0	/* previous character is not LNEXT (^V) */
@@ -128,6 +132,10 @@ extern unsigned long rs_irq_set;
 /* Times and timeouts. */
 #define force_timeout()	((void) (0))
 
+/* Memory allocated in tty.c, so extern here. */
+extern timer_t *tty_timers;		/* queue of TTY timers */
+extern clock_t tty_next_timeout;	/* next TTY timeout */
+
 /* Number of elements and limit of a buffer. */
 #define buflen(buf)	(sizeof(buf) / sizeof((buf)[0]))
 #define bufend(buf)	((buf) + buflen(buf))
@@ -141,16 +149,16 @@ extern struct kmessages kmess;
 /* Function prototypes for TTY driver. */
 /* tty.c */
 _PROTOTYPE( void handle_events, (struct tty *tp)			);
-_PROTOTYPE( void sigchar, (struct tty *tp, int sig, int mayflush)	);
+_PROTOTYPE( void sigchar, (struct tty *tp, int sig)			);
 _PROTOTYPE( void tty_task, (void)					);
-_PROTOTYPE( int in_process, (struct tty *tp, char *buf, int count,
-							int scode)	);
+_PROTOTYPE( int in_process, (struct tty *tp, char *buf, int count)	);
 _PROTOTYPE( void out_process, (struct tty *tp, char *bstart, char *bpos,
 				char *bend, int *icount, int *ocount)	);
 _PROTOTYPE( void tty_wakeup, (clock_t now)				);
 #define tty_reply(c, r, p, s) tty_reply_f(__FILE__, __LINE__, (c), (r), (p), (s))
 _PROTOTYPE( void tty_reply_f, (char *f, int l, int code, int replyee, int proc_nr,
 							int status)	);
+_PROTOTYPE( int tty_devnop, (struct tty *tp, int try)			);
 _PROTOTYPE( int select_try, (struct tty *tp, int ops)			);
 _PROTOTYPE( int select_retry, (struct tty *tp)				);
 
@@ -162,7 +170,7 @@ _PROTOTYPE( void rs_interrupt, (message *m)				);
 /* console.c */
 _PROTOTYPE( void kputc, (int c)						);
 _PROTOTYPE( void cons_stop, (void)					);
-_PROTOTYPE( void do_new_kmess, (void)					);
+_PROTOTYPE( void do_new_kmess, (message *m)				);
 _PROTOTYPE( void do_diagnostics, (message *m, int safe)			);
 _PROTOTYPE( void do_get_kmess, (message *m)				);
 _PROTOTYPE( void do_get_kmess_s, (message *m)				);
@@ -177,6 +185,7 @@ _PROTOTYPE( void do_video, (message *m)					);
 _PROTOTYPE( void kb_init, (struct tty *tp)				);
 _PROTOTYPE( void kb_init_once, (void)					);
 _PROTOTYPE( int kbd_loadmap, (message *m, int safe)			);
+_PROTOTYPE( void do_panic_dumps, (message *m)				);
 _PROTOTYPE( void do_fkey_ctl, (message *m)				);
 _PROTOTYPE( void kbd_interrupt, (message *m)				);
 _PROTOTYPE( void do_kbd, (message *m)					);
@@ -188,6 +197,10 @@ _PROTOTYPE( void do_pty, (struct tty *tp, message *m_ptr)		);
 _PROTOTYPE( void pty_init, (struct tty *tp)				);
 _PROTOTYPE( void select_retry_pty, (struct tty *tp)			);
 _PROTOTYPE( int pty_status, (message *m_ptr)				);
+
+/* vidcopy.s */
+_PROTOTYPE( void vid_vid_copy, (unsigned src, unsigned dst, unsigned count));
+_PROTOTYPE( void mem_vid_copy, (u16_t *src, unsigned dst, unsigned count));
 
 #endif /* (CHIP == INTEL) */
 

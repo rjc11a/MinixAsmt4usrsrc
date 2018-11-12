@@ -45,7 +45,7 @@
 #include <setjmp.h>
 #include "proto.h"
 
-#include <machine/archtypes.h>
+#include "../../kernel/arch/i386/include/archtypes.h"
 #include <kernel/const.h>
 #include <kernel/type.h>
 #include <kernel/proc.h>
@@ -73,7 +73,7 @@ struct b_pnt {
   char cmd[1];
 } *b_head, *curpnt;
 
-_PROTOTYPE( int main , (int argc, char *argv[]));
+_PROTOTYPE( void main , (int argc, char *argv[]));
 
 FORWARD _PROTOTYPE( void cleanup , (void));
 FORWARD _PROTOTYPE( void freepnt , (struct b_pnt *pnt ));
@@ -689,7 +689,7 @@ PRIVATE void command()
       case 'X':		/* print instruction - X n [, n] */
 	lj = strtol(cmd, &cmd, 0);
 	lk = 0;
-	if (*cmd != '\n') 
+	if (*cmd != '\0') 
 		lk = strtol(++cmd, &cmd, 0);
 	if (curpid > 0)
 		dasm(exp + lk, lj ? lj : 1, 1);
@@ -863,7 +863,7 @@ char *s;
   longjmp(mainlp, 0);
 }
 
-PUBLIC int main(argc, argv)
+PUBLIC void main(argc, argv)
 int argc;
 char *argv[];
 {

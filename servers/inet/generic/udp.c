@@ -40,7 +40,7 @@ FORWARD void reply_thr_get ARGS(( udp_fd_t *udp_fd, int reply,
 	int for_ioctl ));
 FORWARD int udp_setopt ARGS(( udp_fd_t *udp_fd ));
 FORWARD udpport_t find_unused_port ARGS(( int fd ));
-FORWARD int is_unused_port ARGS(( udpport_t port ));
+FORWARD int is_unused_port ARGS(( Udpport_t port ));
 FORWARD int udp_packet2user ARGS(( udp_fd_t *udp_fd ));
 FORWARD void restart_write_fd ARGS(( udp_fd_t *udp_fd ));
 FORWARD u16_t pack_oneCsum ARGS(( acc_t *pack ));
@@ -296,6 +296,7 @@ PRIVATE int udp_select(fd, operations)
 int fd;
 unsigned operations;
 {
+	int i;
 	unsigned resops;
 	udp_fd_t *udp_fd;
 
@@ -676,7 +677,8 @@ assert (data->acc_length == sizeof(nwio_udpopt_t));
 	return NW_OK;
 }
 
-PRIVATE udpport_t find_unused_port(int fd)
+PRIVATE udpport_t find_unused_port(fd)
+int fd;
 {
 	udpport_t port, nw_port;
 
@@ -727,7 +729,8 @@ int for_ioctl;
 	assert (!result);
 }
 
-PRIVATE int is_unused_port(udpport_t port)
+PRIVATE int is_unused_port(port)
+udpport_t port;
 {
 	int i;
 	udp_fd_t *udp_fd;
@@ -804,9 +807,11 @@ udp_fd_t *udp_fd;
 	return NW_SUSPEND;
 }
 
-PRIVATE int udp_sel_read (udp_fd_t *udp_fd)
+PRIVATE int udp_sel_read (udp_fd)
+udp_fd_t *udp_fd;
 {
-	acc_t *tmp_acc, *next_acc;
+	acc_t *pack, *tmp_acc, *next_acc;
+	int result;
 
 	if (!(udp_fd->uf_flags & UFF_OPTSET))
 		return 1;	/* Read will not block */
@@ -1181,11 +1186,15 @@ int fd;
 	udp_fd->uf_rdbuf_head= NULL;
 }
 
-PUBLIC int udp_write(int fd, size_t count)
+PUBLIC int udp_write(fd, count)
+int fd;
+size_t count;
 {
 	udp_fd_t *udp_fd;
+	udp_port_t *udp_port;
 
 	udp_fd= &udp_fd_table[fd];
+	udp_port= udp_fd->uf_port;
 
 	if (!(udp_fd->uf_flags & UFF_OPTSET))
 	{

@@ -8,283 +8,308 @@
  *   search_dir: search a directory for a string and return its inode number
  *
  */
- 
+
 #include "fs.h"
-#include "assert.h"
 #include <string.h>
+#include <minix/callnr.h>
 #include <minix/endpoint.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include "buf.h"
 #include "inode.h"
 #include "super.h"
+
 #include <minix/vfsif.h>
 
 
 PUBLIC char dot1[2] = ".";	/* used for search_dir to bypass the access */
 PUBLIC char dot2[3] = "..";	/* permissions for . and ..		    */
 
-FORWARD _PROTOTYPE( char *get_name, (char *name, char string[NAME_MAX+1]) );
-FORWARD _PROTOTYPE( int ltraverse, (struct inode *rip, char *suffix)	);
-FORWARD _PROTOTYPE( int parse_path, (ino_t dir_ino, ino_t root_ino,
-					int flags, struct inode **res_inop,
-					size_t *offsetp, int *symlinkp)	);
+FORWARD _PROTOTYPE( char *get_name, (char *old_name, char string [NAME_MAX]) );
+FORWARD _PROTOTYPE( int ltraverse, (struct inode *rip, char *path, 
+                    char *suffix, int pathlen)                         );
 
 
 /*===========================================================================*
- *                             fs_lookup				     *
+ *                             lookup					     *
  *===========================================================================*/
-PUBLIC int fs_lookup()
+PUBLIC int lookup()
 {
-  cp_grant_id_t grant, grant2;
-  int r, r1, flags, symlinks;
-  unsigned int len;
-  size_t offset = 0, path_size, cred_size;
-  ino_t dir_ino, root_ino;
+  char string[PATH_MAX];
   struct inode *rip;
+  int s_error, flags;
+  int len;
 
-  grant		= (cp_grant_id_t) fs_m_in.REQ_GRANT;
-  path_size	= (size_t) fs_m_in.REQ_PATH_SIZE; /* Size of the buffer */
-  len		= (int) fs_m_in.REQ_PATH_LEN; /* including terminating nul */
-  dir_ino	= (ino_t) fs_m_in.REQ_DIR_INO;
-  root_ino	= (ino_t) fs_m_in.REQ_ROOT_INO;
-  flags		= (int) fs_m_in.REQ_FLAGS;
-
+  string[0] = '\0';
+  
   /* Check length. */
-  if(len > sizeof(user_path)) return(E2BIG);	/* too big for buffer */
-  if(len == 0) return(EINVAL);			/* too small */
+  len = fs_m_in.REQ_PATH_LEN;
+  if(len > sizeof(user_path)) return E2BIG;	/* too big for buffer */
+  if(len < 1) return EINVAL;			/* too small for \0 */
 
   /* Copy the pathname and set up caller's user and group id */
-  r = sys_safecopyfrom(VFS_PROC_NR, grant, /*offset*/ (vir_bytes) 0, 
-            (vir_bytes) user_path, (size_t) len, D);
-  if(r != OK) return(r);
+  err_code = sys_datacopy(FS_PROC_NR, (vir_bytes) fs_m_in.REQ_PATH, SELF, 
+            (vir_bytes) user_path, (phys_bytes) len);
+  if (err_code != OK) {
+	printf("mfs:%s:%d: sys_datacopy failed: %d\n", __FILE__, __LINE__, err_code);
+	return err_code;
+  }
 
   /* Verify this is a null-terminated path. */
-  if(user_path[len - 1] != '\0') return(EINVAL);
-
-  if(flags & PATH_GET_UCRED) { /* Do we have to copy uid/gid credentials? */
-  	grant2 = (cp_grant_id_t) fs_m_in.REQ_GRANT2;
-  	cred_size = (size_t) fs_m_in.REQ_UCRED_SIZE;
-
-  	if (cred_size > sizeof(credentials)) return(EINVAL); /* Too big. */
-  	r = sys_safecopyfrom(VFS_PROC_NR, grant2, (vir_bytes) 0,
-  			     (vir_bytes) &credentials, cred_size, D);
-  	if (r != OK) return(r);
-
-  	caller_uid = credentials.vu_uid;
-  	caller_gid = credentials.vu_gid;
-  } else {
-  	memset(&credentials, 0, sizeof(credentials));
-	caller_uid	= (uid_t) fs_m_in.REQ_UID;
-	caller_gid	= (gid_t) fs_m_in.REQ_GID;
+  if(user_path[len-1] != '\0') {
+	printf("mfs:lookup: didn't get null-terminated string.\n");
+	return EINVAL;
   }
+
+  caller_uid = fs_m_in.REQ_UID;
+  caller_gid = fs_m_in.REQ_GID;
+  flags = fs_m_in.REQ_FLAGS;
+
+  /* Clear RES_OFFSET for ENOENT */
+  fs_m_out.RES_OFFSET= 0;
 
   /* Lookup inode */
-  rip = NULL;
-  r = parse_path(dir_ino, root_ino, flags, &rip, &offset, &symlinks);
-
-  if(symlinks != 0 && (r == ELEAVEMOUNT || r == EENTERMOUNT || r == ESYMLINK)){
-	len = strlen(user_path)+1;
-	if(len > path_size) return(ENAMETOOLONG);
-
-	r1 = sys_safecopyto(VFS_PROC_NR, grant, (vir_bytes) 0,
-			    (vir_bytes) user_path, (size_t) len, D);
-	if(r1 != OK) return(r1);
-  }
-
-  if(r == ELEAVEMOUNT || r == ESYMLINK) {
-	  /* Report offset and the error */
-	  fs_m_out.RES_OFFSET = offset;
-	  fs_m_out.RES_SYMLOOP = symlinks;
-
-	  return(r);
-  }
-
-  if (r != OK && r != EENTERMOUNT) return(r);
-
-  fs_m_out.RES_INODE_NR	= rip->i_num;
-  fs_m_out.RES_MODE		= rip->i_mode;
-  fs_m_out.RES_FILE_SIZE_LO	= rip->i_size;
-  fs_m_out.RES_SYMLOOP		= symlinks;
-  fs_m_out.RES_UID		= rip->i_uid;
-  fs_m_out.RES_GID		= rip->i_gid;
+  rip = parse_path(user_path, string, flags);
   
-  /* This is only valid for block and character specials. But it doesn't
-   * cause any harm to set RES_DEV always. */
-  fs_m_out.RES_DEV		= (dev_t) rip->i_zone[0];
-
-  if(r == EENTERMOUNT) {
-	  fs_m_out.RES_OFFSET	= offset;
-	  put_inode(rip); /* Only return a reference to the final object */
+  /* Copy back the last name if it is required */
+  if (err_code != OK || (flags & PATH_PENULTIMATE)) {
+      	s_error = sys_datacopy(SELF_E, (vir_bytes) string, FS_PROC_NR, 
+              (vir_bytes) fs_m_in.REQ_USER_ADDR, (phys_bytes) NAME_MAX);
+      if (s_error != OK) {
+	printf("mfs:%s:%d: sys_datacopy failed: %d\n",
+		__FILE__, __LINE__, s_error);
+	return s_error;
+      }
   }
 
-  return(r);
+  /* Error or mount point encountered */
+  if (rip == NIL_INODE)
+  {
+	if (err_code != EENTERMOUNT)
+		fs_m_out.RES_INODE_NR = 0;		/* signal no inode */
+	return err_code;
+  }
+
+  fs_m_out.RES_INODE_NR = rip->i_num;
+  fs_m_out.RES_MODE = rip->i_mode;
+  fs_m_out.RES_FILE_SIZE = rip->i_size;
+  
+  /* If 'path' is a block special file, return dev number. */
+  if ( (rip->i_mode & I_TYPE) == I_BLOCK_SPECIAL) {
+        fs_m_out.RES_DEV = (dev_t) rip->i_zone[0];
+  }
+
+  /* Drop inode (path parse increased the counter) */
+  put_inode(rip);
+
+  return err_code;
 }
 
 
 /*===========================================================================*
  *                             parse_path				     *
  *===========================================================================*/
-PRIVATE int parse_path(dir_ino, root_ino, flags, res_inop, offsetp, symlinkp)
-ino_t dir_ino;
-ino_t root_ino;
-int flags;
-struct inode **res_inop;
-size_t *offsetp;
-int *symlinkp;
+PUBLIC struct inode *parse_path(path, string, action)
+char *path;                    /* the path name to be parsed */
+char string[NAME_MAX];         /* the final component is returned here */
+int action;                    /* action on last part of path */
 {
-  /* Parse the path in user_path, starting at dir_ino. If the path is the empty
-   * string, just return dir_ino. It is upto the caller to treat an empty
-   * path in a special way. Otherwise, if the path consists of just one or
-   * more slash ('/') characters, the path is replaced with ".". Otherwise,
-   * just look up the first (or only) component in path after skipping any
-   * leading slashes. 
-   */
-  int r, leaving_mount;
+/* This is the actual code for last_dir and eat_path. Return the inode of
+ * the last directory and the name of object within that directory, or the
+ * inode of the last object (an empty name will be returned). Names are
+ * returned in string. If string is null the name is discarded. The action
+ * code determines how "last" is defined. If an error occurs, NIL_INODE
+ * will be returned with an error code in err_code.
+ */
+
   struct inode *rip, *dir_ip;
-  char *cp, *next_cp; /* component and next component */
-  char component[NAME_MAX+1];
-
-  /* Start parsing path at the first component in user_path */
-  cp = user_path;  
-
-  /* No symlinks encountered yet */
-  *symlinkp = 0;
-
+  struct inode *ver_rip;
+  char *new_name;
+  char lstring[NAME_MAX];
+  
   /* Find starting inode inode according to the request message */
-  if((rip = find_inode(fs_dev, dir_ino)) == NULL) 
-	return(ENOENT);
+  if ((rip = find_inode(fs_dev, fs_m_in.REQ_INODE_NR)) == NIL_INODE) {
+        printf("FS: couldn't find starting inode req_nr: %d %s\n", req_nr,
+			user_path);
+        err_code = ENOENT;
+printf("%s, %d\n", __FILE__, __LINE__);
+        return NIL_INODE;
+  }
+
+  /* Find chroot inode according to the request message */
+  if (fs_m_in.REQ_CHROOT_NR != 0) {
+	  if ((chroot_dir = find_inode(fs_dev, fs_m_in.REQ_CHROOT_NR)) 
+			  == NIL_INODE) {
+		  printf("FS: couldn't find chroot inode\n");
+		  err_code = ENOENT;
+printf("%s, %d\n", __FILE__, __LINE__);
+		  return NIL_INODE;
+	  }
+  }
+  else chroot_dir = NIL_INODE;
+
+  /* Set user and group ID */
+  caller_uid = fs_m_in.REQ_UID;
+  caller_gid = fs_m_in.REQ_GID;
+      
+  /* No characters were processed yet */
+  path_processed = 0;  
+
+  /* Current number of symlinks encountered */
+  symloop = fs_m_in.REQ_SYMLOOP;
 
   /* If dir has been removed return ENOENT. */
-  if (rip->i_nlinks == NO_LINK) return(ENOENT);
- 
-  dup_inode(rip);
+  /* Note: empty (start) path is checked in the VFS process */
+  if (rip->i_nlinks == 0/* || *path == '\0'*/) {
+	err_code = ENOENT;
+printf("%s, %d\n", __FILE__, __LINE__);
+	return(NIL_INODE);
+  }
 
-  /* If the given start inode is a mountpoint, we must be here because the file
-   * system mounted on top returned an ELEAVEMOUNT error. In this case, we must
-   * only accept ".." as the first path component.
+  /* There is only one way how the starting directory of the lookup
+   * can be a mount point which is not a root directory, 
+   * namely: climbing up on a mount (ELEAVEMOUNT).
+   * In this case the lookup is intrested in the parent dir of the mount
+   * point, but the last ".." component was processed in the 'previous'
+   * FS process. Let's do that first.
    */
-  leaving_mount = rip->i_mountpoint; /* True iff rip is a mountpoint */
+  if (rip->i_mount == I_MOUNT && rip->i_num != ROOT_INODE) {
+	dir_ip = rip;
+	rip = advance(&dir_ip, "..");
+  	if (rip == NIL_INODE)
+	{
+printf("%s, %d\n", __FILE__, __LINE__);
+		return NIL_INODE;
+	}
+	put_inode(rip);  	/* advance() increased the counter */
+  }
+
+  dup_inode(rip);		/* inode will be returned with put_inode */
+  
+  /* Looking for the starting directory? 
+   * Note: this happens after EENTERMOUNT or ELEAVEMOUNT 
+   * without more path component */
+  if (*path == '\0') {
+	  return rip;
+  }
+
+  if (string == (char *) 0) string = lstring;
 
   /* Scan the path component by component. */
   while (TRUE) {
-	if(cp[0] == '\0') {
-		/* We're done; either the path was empty or we've parsed all 
-		   components of the path */
-		
-		*res_inop = rip;
-		*offsetp += cp - user_path;
-
-		/* Return EENTERMOUNT if we are at a mount point */
-		if (rip->i_mountpoint) return(EENTERMOUNT);
-		
-		return(OK);
+	int slashes = 0;
+	/* Extract one component. Skip slashes first. */
+	while (path[slashes] == '/') {
+	  slashes++;
+	  path_processed++;
+  	}
+	fs_m_out.RES_OFFSET = path_processed;	/* For ENOENT */
+	if ( (new_name = get_name(path+slashes, string)) == (char*) 0) {
+		put_inode(rip);	/* bad path in user space */
+		return(NIL_INODE);
 	}
-
-	while(cp[0] == '/') cp++;
-	next_cp = get_name(cp, component);
-
-	/* Special code for '..'. A process is not allowed to leave a chrooted
-	 * environment. A lookup of '..' at the root of a mounted filesystem
-	 * has to return ELEAVEMOUNT. In both cases, the caller needs search
-	 * permission for the current inode, as it is used as directory.
-	 */
-	if(strcmp(component, "..") == 0) {
-		/* 'rip' is now accessed as directory */
-		if ((r = forbidden(rip, X_BIT)) != OK) {
+	if (*new_name == '\0' && (action & PATH_PENULTIMATE)) {
+		if ( (rip->i_mode & I_TYPE) == I_DIRECTORY) {
+			return(rip);	/* normal exit */
+		} else {
+			/* last file of path prefix is not a directory */
 			put_inode(rip);
-			return(r);
+			err_code = ENOTDIR;			
+			return(NIL_INODE);
 		}
+        }
 
-		if (rip->i_num == root_ino) {
-			cp = next_cp;
-			continue;	/* Ignore the '..' at a process' root 
-					   and move on to the next component */
-		}
-		
-		if (rip->i_num == ROOT_INODE && !rip->i_sp->s_is_root) {
-			/* Climbing up to parent FS */
-
-			put_inode(rip);
-			*offsetp += cp - user_path; 
-			return(ELEAVEMOUNT);
-		}
-	}
-
-	/* Only check for a mount point if we are not coming from one. */
-	if (!leaving_mount && rip->i_mountpoint) {
-		/* Going to enter a child FS */
-
-		*res_inop = rip;
-		*offsetp += cp - user_path;
-		return(EENTERMOUNT);
-	}
-
-	/* There is more path.  Keep parsing.
-	 * If we're leaving a mountpoint, skip directory permission checks.
-	 */
+	/* There is more path.  Keep parsing. */
 	dir_ip = rip;
-	rip = advance(dir_ip, leaving_mount ? dot2 : component, CHK_PERM);
-	if(err_code == ELEAVEMOUNT || err_code == EENTERMOUNT)
-		err_code = OK;
-
-	if (err_code != OK) {
+	rip = advance(&dir_ip, string);
+	
+	/* Mount point encountered? */
+	if (rip == NIL_INODE && (err_code == EENTERMOUNT || 
+				err_code == ELEAVEMOUNT)) {
 		put_inode(dir_ip);
-		return(err_code);
+		return NIL_INODE;
 	}
-	
-	leaving_mount = 0;
 
-	/* The call to advance() succeeded.  Fetch next component. */
-	if (S_ISLNK(rip->i_mode)) {
-
-		if (next_cp[0] == '\0' && (flags & PATH_RET_SYMLINK)) {
+	if (rip == NIL_INODE) {
+		if (*new_name == '\0' && (action & PATH_NONSYMBOLIC) != 0)
+		{
+			return(dir_ip);
+		}
+		else if (err_code == ENOENT)
+		{
+			return(dir_ip);
+		}
+		else {
 			put_inode(dir_ip);
-			*res_inop = rip;
-			*offsetp += next_cp - user_path;
-			return(OK);
+			return(NIL_INODE);
 		}
+	}
 
-		/* Extract path name from the symlink file */
-		r = ltraverse(rip, next_cp);
-		next_cp = user_path;
-		*offsetp = 0;
+       /* The call to advance() succeeded.  Fetch next component. */
+       if (S_ISLNK(rip->i_mode)) {
+                if (*new_name != '\0' || (action & PATH_OPAQUE) == 0) {
+                    
+                       if (*new_name != '\0') new_name--;
 
-		/* Symloop limit reached? */
-		if (++(*symlinkp) > SYMLOOP_MAX)
-			r = ELOOP;
+                       /* Extract path name from the symlink file */
+                       if (ltraverse(rip, user_path, new_name,
+			sizeof(user_path)) != OK) {
+                           put_inode(dir_ip);
+                           err_code = ENOENT;
+                           return NIL_INODE;
+                       }
 
-		if (r != OK) {
-			put_inode(dir_ip);
-			put_inode(rip);
-			return(r);
-		}
+                       /* Symloop limit reached? */
+                       if (++symloop > SYMLOOP) {
+                           put_inode(dir_ip);
+                           err_code = ELOOP;
+                           return NIL_INODE;
+                       }
 
-		if (next_cp[0] == '/') {
-                        put_inode(dir_ip);
-                        put_inode(rip);
-                        return(ESYMLINK);
-		}
-	
-		put_inode(rip);
-		dup_inode(dir_ip);
-		rip = dir_ip;
-	} 
-
-	put_inode(dir_ip);
-	cp = next_cp; /* Process subsequent component in next round */
+                       /* Start over counting */
+                       path_processed = 0;
+                       
+                       /* Check whether new path is relative or absolute */
+                       if (user_path[0] == '/') {
+                           /* Go back to VFS */
+                           put_inode(dir_ip);
+                           err_code = ESYMLINK;
+                           fs_m_out.RES_OFFSET = path_processed;
+                           fs_m_out.RES_SYMLOOP = symloop;
+                           return NIL_INODE;
+                       }
+                       /* Path is relative */
+                       else {
+                           rip = dir_ip;
+                           path = user_path;
+                           continue;
+                       }
+               }
+       } 
+       else if (*new_name != '\0') {
+               put_inode(dir_ip);
+               path = new_name;
+               continue;
+	}
+      
+       /* Either last name reached or symbolic link is opaque */
+       if ((action & PATH_NONSYMBOLIC) != 0) {
+               put_inode(rip);
+               return(dir_ip);
+       } else {
+               put_inode(dir_ip);
+               return(rip);
+       }
   }
 }
-
 
 /*===========================================================================*
  *                             ltraverse				     *
  *===========================================================================*/
-PRIVATE int ltraverse(rip, suffix)
-register struct inode *rip;	/* symbolic link */
-char *suffix;			/* current remaining path. Has to point in the
-				 * user_path buffer
-				 */
+PRIVATE int ltraverse(rip, path, suffix, pathlen)
+register struct inode *rip;    /* symbolic link */
+char *path;                    /* path containing link */
+char *suffix;                  /* suffix following link within path */
+int pathlen;
 {
 /* Traverse a symbolic link. Copy the link text from the inode and insert
  * the text into the path. Return error code or report success. Base 
@@ -292,97 +317,98 @@ char *suffix;			/* current remaining path. Has to point in the
  * new pathname.
  */
   
-  block_t blink;	/* block containing link text */
-  size_t llen;		/* length of link */
-  size_t slen;		/* length of suffix */
-  struct buf *bp;	/* buffer containing link text */
-  char *sp;		/* start of link text */
+  block_t b;                   /* block containing link text */
+  struct buf *bp;              /* buffer containing link text */
+  size_t sl;                   /* length of link */
+  size_t tl;                   /* length of suffix */
+  char *sp;                    /* start of link text */
+  int r = OK;
 
-  if ((blink = read_map(rip, (off_t) 0)) == NO_BLOCK)
-	return(EIO);
+  bp  = NIL_BUF;
 
-  bp = get_block(rip->i_dev, blink, NORMAL);
-  llen = (size_t) rip->i_size;
-  sp = bp->b_data;
-  slen = strlen(suffix);
+  if ((b = read_map(rip, (off_t) 0)) != NO_BLOCK) {
+       bp = get_block(rip->i_dev, b, NORMAL);
+       sl = rip->i_size;
+       sp = bp->b_data;
 
-  /* The path we're parsing looks like this:
-   * /already/processed/path/<link> or
-   * /already/processed/path/<link>/not/yet/processed/path
-   * After expanding the <link>, the path will look like
-   * <expandedlink> or
-   * <expandedlink>/not/yet/processed
-   * In both cases user_path must have enough room to hold <expandedlink>.
-   * However, in the latter case we have to move /not/yet/processed to the
-   * right place first, before we expand <link>. When strlen(<expandedlink>) is
-   * smaller than strlen(/already/processes/path), we move the suffix to the
-   * left. Is strlen(<expandedlink>) greater then we move it to the right. Else
-   * we do nothing.
-   */ 
-
-  if (slen > 0) { /* Do we have path after the link? */
-	/* For simplicity we require that suffix starts with a slash */
-	if (suffix[0] != '/') {
-		panic("ltraverse: suffix does not start with a slash");
-	}
-
-	/* To be able to expand the <link>, we have to move the 'suffix'
-	 * to the right place.
-	 */
-	if (slen + llen + 1 > sizeof(user_path))
-		return(ENAMETOOLONG);/* <expandedlink>+suffix+\0 does not fit*/
-	if ((unsigned) (suffix-user_path) != llen) { 
-		/* Move suffix left or right */
-		memmove(&user_path[llen], suffix, slen+1);
-	}
-  } else {
-  	if (llen + 1 > sizeof(user_path))
-  		return(ENAMETOOLONG); /* <expandedlink> + \0 does not fix */
-  		
-	/* Set terminating nul */
-	user_path[llen]= '\0';
+       /* Insert symbolic text into path name. */
+       tl = strlen(suffix);
+       if (sl > 0 && sl + tl <= PATH_MAX-1) {
+	   if(sl+tl >= pathlen)
+		panic(__FILE__,"path too small for symlink", sl+tl);
+           memmove(path+sl, suffix, tl);
+           memmove(path, sp, sl);
+           path[sl+tl] = 0;
+           
+           /* Copy back to VFS layer   THIS SHOULD BE IN parse_path.
+	    * sys_datacopy() error, if any, gets returned as r later.
+	    */
+           r = sys_datacopy(SELF_E, (vir_bytes) path, FS_PROC_NR, 
+                   (vir_bytes) vfs_slink_storage, (phys_bytes) sl+tl+1);
+           /*
+           dup_inode(bip = path[0] == '/' ? chroot_dir : ldip);
+           */
+	   if(r != OK) {
+		printf("mfs:%s:%d: sys_datacopy failed: %d\n",
+			__FILE__, __LINE__, r);
+	   }
+       } else panic(__FILE__,"didn't copy symlink", sl+tl);
   }
-
-  /* Everything is set, now copy the expanded link to user_path */
-  memmove(user_path, sp, llen);
-
+  else {
+       r = ENOENT;
+  }
+  
   put_block(bp, DIRECTORY_BLOCK);
-  return(OK);
+  put_inode(rip);
+  return r;
 }
+
+
 
 
 /*===========================================================================*
  *				advance					     *
  *===========================================================================*/
-PUBLIC struct inode *advance(dirp, string, chk_perm)
-struct inode *dirp;		/* inode for directory to be searched */
+PUBLIC struct inode *advance(pdirp, string)
+struct inode **pdirp;		/* inode for directory to be searched */
 char string[NAME_MAX];		/* component name to look for */
-int chk_perm;			/* check permissions when string is looked up*/
 {
 /* Given a directory and a component of a path, look up the component in
  * the directory, find the inode, open it, and return a pointer to its inode
- * slot.
+ * slot.  If it can't be done, return NIL_INODE.
  */
+
+  register struct inode *rip, *dirp;
+  register struct super_block *sp;
+  int r, inumb;
+  dev_t mnt_dev;
   ino_t numb;
-  struct inode *rip;
 
-  /* If 'string' is empty, return an error. */
-  if (string[0] == '\0') {
-  	err_code = ENOENT;
-	return(NULL);
-  }
+  dirp = *pdirp;
 
-  /* Check for NULL. */
-  if (dirp == NULL) return(NULL);
+  /* If 'string' is empty, yield same inode straight away. */
+  if (string[0] == '\0') { return(get_inode(dirp->i_dev, (int) dirp->i_num)); }
+
+  /* Check for NIL_INODE. */
+  if (dirp == NIL_INODE) { return(NIL_INODE); }
 
   /* If 'string' is not present in the directory, signal error. */
-  if ( (err_code = search_dir(dirp, string, &numb, LOOK_UP, chk_perm)) != OK) {
-	return(NULL);
+  if ( (r = search_dir(dirp, string, &numb, LOOK_UP)) != OK) {
+	err_code = r;
+	return(NIL_INODE);
+  }
+
+  /* Don't go beyond the current root directory, unless the string is dot2. 
+   * Note: it has to be checked only if this FS process owns the chroot
+   * directory of the process */
+  if (chroot_dir != NIL_INODE) {
+	  if (dirp == chroot_dir && strcmp(string, "..") == 0 && string != dot2)
+		  return(get_inode(dirp->i_dev, (int) dirp->i_num));
   }
 
   /* The component has been found in the directory.  Get inode. */
-  if ( (rip = get_inode(dirp->i_dev, (int) numb)) == NULL)  {
-	return(NULL);
+  if ( (rip = get_inode(dirp->i_dev, (int) numb)) == NIL_INODE)  {
+	return(NIL_INODE);
   }
 
   /* The following test is for "mountpoint/.." where mountpoint is a
@@ -398,82 +424,99 @@ int chk_perm;			/* check permissions when string is looked up*/
   if (rip->i_num == ROOT_INODE) {
 	  if (dirp->i_num == ROOT_INODE) {
 		  if (string[1] == '.') {
-			  if (!rip->i_sp->s_is_root) {
+			  sp = rip->i_sp;
+			  if (!sp->s_is_root) {
+/*printf("FSadvance: ELEAVEMOUNT callnr: %d, cp: %d, restp: %s\n", 
+	call_nr, path_processed, user_path + path_processed);*/
+
 				  /* Climbing up mountpoint */
 				  err_code = ELEAVEMOUNT;
+				  /* This will be the FS process endoint */
+				  fs_m_out.m_source = rip->i_dev;
+				  fs_m_out.RES_OFFSET = path_processed;
+                                  fs_m_out.RES_SYMLOOP = symloop;
+				  put_inode(rip);
+				  /*put_inode(dirp);*/
+				  rip = NIL_INODE;
 			  }
 		  }
 	  }
   }
+  if (rip == NIL_INODE) return(NIL_INODE);
 
   /* See if the inode is mounted on.  If so, switch to root directory of the
    * mounted file system.  The super_block provides the linkage between the
    * inode mounted on and the root directory of the mounted file system.
    */
-  if (rip->i_mountpoint) {
+  if (rip != NIL_INODE && rip->i_mount == I_MOUNT) {
+/*printf("FSadvance: EENTERMOUNT callnr: %d, cp: %d, vmnti: %d, restp: %s\n", 
+	call_nr, path_processed, rip->i_vmnt_ind, user_path + path_processed);*/
+
 	  /* Mountpoint encountered, report it */
 	  err_code = EENTERMOUNT;
+	  fs_m_out.RES_INODE_NR = rip->i_num;
+	  fs_m_out.RES_OFFSET = path_processed;
+          fs_m_out.RES_SYMLOOP = symloop;
+	  put_inode(rip);
+	  rip = NIL_INODE;
   }
-
-  return(rip);
+  return(rip);		/* return pointer to inode's component */
 }
 
 
 /*===========================================================================*
  *				get_name				     *
  *===========================================================================*/
-PRIVATE char *get_name(path_name, string)
-char *path_name;		/* path name to parse */
-char string[NAME_MAX+1];	/* component extracted from 'old_name' */
+PRIVATE char *get_name(old_name, string)
+char *old_name;			/* path name to parse */
+char string[NAME_MAX];		/* component extracted from 'old_name' */
 {
-/* Given a pointer to a path name in fs space, 'path_name', copy the first
- * component to 'string' (truncated if necessary, always nul terminated).
- * A pointer to the string after the first component of the name as yet
- * unparsed is returned.  Roughly speaking,
- * 'get_name' = 'path_name' - 'string'.
+/* Given a pointer to a path name in fs space, 'old_name', copy the next
+ * component to 'string' and pad with zeros.  A pointer to that part of
+ * the name as yet unparsed is returned.  Roughly speaking,
+ * 'get_name' = 'old_name' - 'string'.
  *
  * This routine follows the standard convention that /usr/ast, /usr//ast,
  * //usr///ast and /usr/ast/ are all equivalent.
  */
-  size_t len;
-  char *cp, *ep;
 
-  cp = path_name;
+  register int c;
+  register char *np, *rnp;
 
-  /* Skip leading slashes */
-  while (cp[0] == '/') cp++;
+  np = string;			/* 'np' points to current position */
+  rnp = old_name;		/* 'rnp' points to unparsed string */
 
-  /* Find the end of the first component */
-  ep = cp;
-  while(ep[0] != '\0' && ep[0] != '/')
-	ep++;
-
-  len = (size_t) (ep - cp);
-
-  /* Truncate the amount to be copied if it exceeds NAME_MAX */
-  if (len > NAME_MAX) len = NAME_MAX;
-
-  /* Special case of the string at cp is empty */
-  if (len == 0) 
-	strcpy(string, ".");  /* Return "." */
-  else {
-	memcpy(string, cp, len);
-	string[len]= '\0';
+  c = *rnp;
+  /* Copy the unparsed path, 'old_name', to the array, 'string'. */
+  while ( rnp < &old_name[PATH_MAX]  &&  c != '/'   &&  c != '\0') {
+	  if (np < &string[NAME_MAX]) *np++ = c;
+	  c = *++rnp;		/* advance to next character */
+	  path_processed++; 	/* count characters */
   }
 
-  return(ep);
-}
+  /* To make /usr/ast/ equivalent to /usr/ast, skip trailing slashes. */
+  while (c == '/' && rnp < &old_name[PATH_MAX]) {
+	  c = *++rnp;
+	  path_processed++; 	/* count characters */
+  }
 
+  if (np < &string[NAME_MAX]) *np = '\0';	/* Terminate string */
+
+  if (rnp >= &old_name[PATH_MAX]) {
+	  err_code = ENAMETOOLONG;
+	  return((char *) 0);
+  }
+  return(rnp);
+}
 
 /*===========================================================================*
  *				search_dir				     *
  *===========================================================================*/
-PUBLIC int search_dir(ldir_ptr, string, numb, flag, check_permissions)
+PUBLIC int search_dir(ldir_ptr, string, numb, flag)
 register struct inode *ldir_ptr; /* ptr to inode for dir to search */
 char string[NAME_MAX];		 /* component to search for */
 ino_t *numb;			 /* pointer to inode number */
 int flag;			 /* LOOK_UP, ENTER, DELETE or IS_EMPTY */
-int check_permissions;		 /* check permissions when flag is !IS_EMPTY */
 {
 /* This function searches the directory whose inode is pointed to by 'ldip':
  * if (flag == ENTER)  enter 'string' in the directory with inode # '*numb';
@@ -507,9 +550,8 @@ int check_permissions;		 /* check permissions when flag is !IS_EMPTY */
 	if (string == dot1 || string == dot2) {
 		if (flag != LOOK_UP) r = read_only(ldir_ptr);
 				     /* only a writable device is required. */
-        } else if(check_permissions) {
-		r = forbidden(ldir_ptr, bits); /* check access permissions */
-	}
+        }
+	else r = forbidden(ldir_ptr, bits); /* check access permissions */
   }
   if (r != OK) return(r);
   
@@ -525,7 +567,8 @@ int check_permissions;		 /* check permissions when flag is !IS_EMPTY */
 	/* Since directories don't have holes, 'b' cannot be NO_BLOCK. */
 	bp = get_block(ldir_ptr->i_dev, b, NORMAL);	/* get a dir block */
 
-	assert(bp != NULL);
+	if (bp == NO_BLOCK)
+		panic(__FILE__,"get_block returned NO_BLOCK", NO_NUM);
 
 	/* Search a directory block. */
 	for (dp = &bp->b_dir[0];
@@ -537,7 +580,7 @@ int check_permissions;		 /* check permissions when flag is !IS_EMPTY */
 		}
 
 		/* Match occurs if string found. */
-		if (flag != ENTER && dp->d_ino != NO_ENTRY) {
+		if (flag != ENTER && dp->d_ino != 0) {
 			if (flag == IS_EMPTY) {
 				/* If this test succeeds, dir is not empty. */
 				if (strcmp(dp->d_name, "." ) != 0 &&
@@ -557,14 +600,13 @@ int check_permissions;		 /* check permissions when flag is !IS_EMPTY */
 				/* Save d_ino for recovery. */
 				t = NAME_MAX - sizeof(ino_t);
 				*((ino_t *) &dp->d_name[t]) = dp->d_ino;
-				dp->d_ino = NO_ENTRY;	/* erase entry */
+				dp->d_ino = 0;	/* erase entry */
 				bp->b_dirt = DIRTY;
 				ldir_ptr->i_update |= CTIME | MTIME;
 				ldir_ptr->i_dirt = DIRTY;
 			} else {
 				sp = ldir_ptr->i_sp;	/* 'flag' is LOOK_UP */
-				*numb = (ino_t) conv4(sp->s_native,
-						      (int) dp->d_ino);
+				*numb = conv4(sp->s_native, (int) dp->d_ino);
 			}
 			put_block(bp, DIRECTORY_BLOCK);
 			return(r);
@@ -593,7 +635,7 @@ int check_permissions;		 /* check permissions when flag is !IS_EMPTY */
   if (e_hit == FALSE) { /* directory is full and no room left in last block */
 	new_slots++;		/* increase directory size by 1 entry */
 	if (new_slots == 0) return(EFBIG); /* dir size limited by slot count */
-	if ( (bp = new_block(ldir_ptr, ldir_ptr->i_size)) == NULL)
+	if ( (bp = new_block(ldir_ptr, ldir_ptr->i_size)) == NIL_BUF)
 		return(err_code);
 	dp = &bp->b_dir[0];
 	extended = 1;
@@ -614,5 +656,37 @@ int check_permissions;		 /* check permissions when flag is !IS_EMPTY */
 	if (extended) rw_inode(ldir_ptr, WRITING);
   }
   return(OK);
+}
+
+
+/*===========================================================================*
+ *                             eat_path					     *
+ *===========================================================================*/
+PUBLIC struct inode *eat_path(path)
+char *path;                    /* the path name to be parsed */
+{
+ /* Parse the path 'path' and put its inode in the inode table. If not possible,
+  * return NIL_INODE as function value and an error code in 'err_code'.
+  */
+  
+  return parse_path(path, (char *) 0, EAT_PATH);
+}
+
+/*===========================================================================*
+ *                             last_dir					     *
+ *===========================================================================*/
+PUBLIC struct inode *last_dir(path, string)
+char *path;                    /* the path name to be parsed */
+char string[NAME_MAX];         /* the final component is returned here */
+{
+/* Given a path, 'path', located in the fs address space, parse it as
+ * far as the last directory, fetch the inode for the last directory into
+ * the inode table, and return a pointer to the inode.  In
+ * addition, return the final component of the path in 'string'.
+ * If the last directory can't be opened, return NIL_INODE and
+ * the reason for failure in 'err_code'.
+ */
+  
+  return parse_path(path, string, LAST_DIR);
 }
 

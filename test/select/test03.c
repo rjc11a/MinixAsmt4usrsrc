@@ -1,5 +1,5 @@
 /*
- * Test name: test03.c
+ * Test name: test02.c
  *
  * Objetive: The purpose of this test is to make sure that select works
  * when working with files.
@@ -28,8 +28,7 @@ void dump_fdset(fd_set *set) {
 	printf("\n");
 }
 
-int main(int argc, char *argv[])
-{
+void main(void) {
 	int fd1, fd2, fd3, fd4, fd5, fd6;	/* file descriptors of files */
 	fd_set fds_read, fds_write;		/* bit maps */
 	struct timeval timeout;			/* timeout */
@@ -133,5 +132,4 @@ int main(int argc, char *argv[])
 	unlink("dummy4.txt");
 	unlink("dummy5.txt");
 	unlink("dummy6.txt");
-	return 0;
 }

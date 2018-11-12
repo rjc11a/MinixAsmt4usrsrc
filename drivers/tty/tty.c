@@ -18,9 +18,8 @@
  *
  * The valid messages and their parameters are:
  *
- *   notify from HARDWARE:       output has been completed or input has arrived
- *   notify from SYSTEM  :      e.g., MINIX wants to shutdown; run code to 
- *   				cleanly stop
+ *   HARD_INT:       output has been completed or input has arrived
+ *   SYS_SIG:      e.g., MINIX wants to shutdown; run code to cleanly stop
  *   DEV_READ:       a process wants to read from a terminal
  *   DEV_WRITE:      a process wants to write on a terminal
  *   DEV_IOCTL:      a process wants to change a terminal's parameters
@@ -57,20 +56,20 @@
  *   Jul 13, 2004   support for function key observers  (Jorrit N. Herder)  
  */
 
-#include <minix/drivers.h>
-#include <minix/driver.h>
+#include "../drivers.h"
 #include <termios.h>
 #include <sys/ioc_tty.h>
 #include <signal.h>
 #include <minix/callnr.h>
-#include <minix/sys_config.h>
-#include <minix/tty.h>
+#if (CHIP == INTEL)
 #include <minix/keymap.h>
-#include <minix/endpoint.h>
+#endif
 #include "tty.h"
 
 #include <sys/time.h>
 #include <sys/select.h>
+
+extern int irq_hook_id;
 
 unsigned long kbd_irq_set = 0;
 unsigned long rs_irq_set = 0;
@@ -93,7 +92,6 @@ unsigned long rs_irq_set = 0;
 #if NR_RS_LINES == 0
 #define rs_init(tp)	((void) 0)
 #endif
-
 #if NR_PTYS == 0
 #define pty_init(tp)	((void) 0)
 #define do_pty(tp, mp)	((void) 0)
@@ -102,6 +100,7 @@ unsigned long rs_irq_set = 0;
 struct kmessages kmess;
 
 FORWARD _PROTOTYPE( void tty_timed_out, (timer_t *tp)			);
+FORWARD _PROTOTYPE( void expire_timers, (void)				);
 FORWARD _PROTOTYPE( void settimer, (tty_t *tty_ptr, int enable)		);
 FORWARD _PROTOTYPE( void do_cancel, (tty_t *tp, message *m_ptr)		);
 FORWARD _PROTOTYPE( void do_ioctl, (tty_t *tp, message *m_ptr, int s)	);
@@ -135,40 +134,47 @@ PRIVATE struct winsize winsize_defaults;	/* = all zeroes */
 /* Global variables for the TTY task (declared extern in tty.h). */
 PUBLIC tty_t tty_table[NR_CONS+NR_RS_LINES+NR_PTYS];
 PUBLIC int ccurrent;			/* currently active console */
+PUBLIC timer_t *tty_timers;		/* queue of TTY timers */
+PUBLIC clock_t tty_next_timeout;	/* time that the next alarm is due */
 PUBLIC struct machine machine;		/* kernel environment variables */
-PUBLIC u32_t system_hz;
-
-/* SEF functions and variables. */
-FORWARD _PROTOTYPE( void sef_local_startup, (void) );
-FORWARD _PROTOTYPE( int sef_cb_init_fresh, (int type, sef_init_info_t *info) );
-FORWARD _PROTOTYPE( void sef_cb_signal_handler, (int signo) );
 
 /*===========================================================================*
  *				tty_task				     *
  *===========================================================================*/
-PUBLIC int main(void)
+PUBLIC void main(void)
 {
 /* Main routine of the terminal task. */
 
   message tty_mess;		/* buffer for all incoming messages */
-  int ipc_status;
   unsigned line;
-  int r;
+  int r, s;
+  register struct proc *rp;
   register tty_t *tp;
 
-  /* SEF local startup. */
-  sef_local_startup();
+  /* Get kernel environment (protected_mode, pc_at and ega are needed). */ 
+  if (OK != (s=sys_getmachine(&machine))) {
+    panic("TTY","Couldn't obtain kernel environment.", s);
+  }
+
+  /* Initialize the TTY driver. */
+  tty_init();
+
+  /* Final one-time keyboard initialization. */
+  kb_init_once();
+
+  printf("\n");
 
   while (TRUE) {
+
 	/* Check for and handle any events on any of the ttys. */
 	for (tp = FIRST_TTY; tp < END_TTY; tp++) {
 		if (tp->tty_events) handle_events(tp);
 	}
 
 	/* Get a request message. */
-	r= driver_receive(ANY, &tty_mess, &ipc_status);
+	r= receive(ANY, &tty_mess);
 	if (r != 0)
-		panic("driver_receive failed with: %d", r);
+		panic("TTY", "receive failed with %d", r);
 
 	/* First handle all kernel notification types that the TTY supports. 
 	 *  - An alarm went off, expire all timers and handle the events. 
@@ -179,48 +185,37 @@ PUBLIC int main(void)
 	 * request and should be handled separately. These extra functions
 	 * do not operate on a device, in constrast to the driver requests. 
 	 */
-
-	if (is_ipc_notify(ipc_status)) {
-		switch (_ENDPOINT_P(tty_mess.m_source)) {
-			case CLOCK:
-				/* run watchdogs of expired timers */
-				expire_timers(tty_mess.NOTIFY_TIMESTAMP);
-				break;
-			case HARDWARE: 
-				/* hardware interrupt notification */
-				
-				/* fetch chars from keyboard */
-				if (tty_mess.NOTIFY_ARG & kbd_irq_set)
-					kbd_interrupt(&tty_mess);
+	switch (tty_mess.m_type) { 
+	case SYN_ALARM: 		/* fall through */
+		expire_timers();	/* run watchdogs of expired timers */
+		continue;		/* contine to check for events */
+	case DEV_PING:
+		notify(tty_mess.m_source);
+		continue;
+	case HARD_INT: {		/* hardware interrupt notification */
+		if (tty_mess.NOTIFY_ARG & kbd_irq_set)
+			kbd_interrupt(&tty_mess);/* fetch chars from keyboard */
 #if NR_RS_LINES > 0
-				/* serial I/O */
-				if (tty_mess.NOTIFY_ARG & rs_irq_set)
-					rs_interrupt(&tty_mess);
+		if (tty_mess.NOTIFY_ARG & rs_irq_set)
+			rs_interrupt(&tty_mess);/* serial I/O */
 #endif
-				/* run watchdogs of expired timers */
-				expire_timers(tty_mess.NOTIFY_TIMESTAMP);
-				break;
-			default:
-				/* do nothing */
-				break;
-		}
-
-		/* done, get new message */
+		expire_timers();	/* run watchdogs of expired timers */
+		continue;		/* contine to check for events */
+	}
+	case PROC_EVENT: {
+		cons_stop();		/* switch to primary console */
 		continue;
 	}
-
-	switch (tty_mess.m_type) { 
-	case DIAGNOSTICS_OLD: 		/* a server wants to print some */
-#if 0
-		if (tty_mess.m_source != LOG_PROC_NR)
-		{
-			printf("[%d ", tty_mess.m_source);
-		}
-#endif
+	case SYS_SIG: {			/* system signal */
+		sigset_t sigset = (sigset_t) tty_mess.NOTIFY_ARG;
+		if (sigismember(&sigset, SIGKMESS)) do_new_kmess(&tty_mess);
+		continue;
+	}
+	case DIAGNOSTICS: 		/* a server wants to print some */
+		printf("WARNING: old DIAGNOSTICS from %d\n", tty_mess.m_source);
 		do_diagnostics(&tty_mess, 0);
 		continue;
-	case DIAGNOSTICS_S_OLD: 
-	case ASYN_DIAGNOSTICS_OLD: 
+	case DIAGNOSTICS_S: 
 		do_diagnostics(&tty_mess, 1);
 		continue;
 	case GET_KMESS:
@@ -299,66 +294,6 @@ PUBLIC int main(void)
 	    tty_reply(TASK_REPLY, tty_mess.m_source,
 						tty_mess.IO_ENDPT, EINVAL);
 	}
-  }
-
-  return 0;
-}
-
-/*===========================================================================*
- *			       sef_local_startup			     *
- *===========================================================================*/
-PRIVATE void sef_local_startup()
-{
-  /* Register init callbacks. */
-  sef_setcb_init_fresh(sef_cb_init_fresh);
-  sef_setcb_init_restart(sef_cb_init_fresh);
-
-  /* No live update support for now. */
-
-  /* Register signal callbacks. */
-  sef_setcb_signal_handler(sef_cb_signal_handler);
-
-  /* Let SEF perform startup. */
-  sef_startup();
-}
-
-/*===========================================================================*
- *		            sef_cb_init_fresh                                *
- *===========================================================================*/
-PRIVATE int sef_cb_init_fresh(int type, sef_init_info_t *info)
-{
-/* Initialize the tty driver. */
-  int r;
-
-  /* Get kernel environment (protected_mode, pc_at and ega are needed). */ 
-  if (OK != (r=sys_getmachine(&machine))) {
-    panic("Couldn't obtain kernel environment: %d", r);
-  }
-
-  /* Initialize the TTY driver. */
-  tty_init();
-
-  /* Final one-time keyboard initialization. */
-  kb_init_once();
-
-  return(OK);
-}
-
-/*===========================================================================*
- *		           sef_cb_signal_handler                             *
- *===========================================================================*/
-PRIVATE void sef_cb_signal_handler(int signo)
-{
-  /* Check for known signals, ignore anything else. */
-  switch(signo) {
-      /* There is a pending message from the kernel. */
-      case SIGKMESS:
-          do_new_kmess();
-      break;
-      /* Switch to primary console on termination. */
-      case SIGTERM:
-          cons_stop();
-      break;
   }
 }
 
@@ -442,10 +377,8 @@ message *m_ptr;
   }
 
   /* Almost done. Send back the reply message to the caller. */
-  status = sendnb(m_ptr->m_source, m_ptr);
-  if (status != OK) {
-	printf("tty`do_status: send to %d failed: %d\n",
-		m_ptr->m_source, status);
+  if ((status = send(m_ptr->m_source, m_ptr)) != OK) {
+	panic("TTY","send in do_status failed, status\n", status);
   }
 }
 
@@ -458,7 +391,7 @@ register message *m_ptr;	/* pointer to message sent to the task */
 int safe;			/* use safecopies? */
 {
 /* A process wants to read from a terminal. */
-  int r;
+  int r, status;
 
   /* Check if there is already a process hanging in a read, check if the
    * parameters are correct, do I/O.
@@ -724,7 +657,7 @@ int safe;
 	   r = sys_vircopy( m_ptr->IO_ENDPT, D, (vir_bytes) m_ptr->ADDRESS,
 		SELF, D, (vir_bytes) &tp->tty_winsize, (vir_bytes) size);
 	}
-	sigchar(tp, SIGWINCH, 0);
+	sigchar(tp, SIGWINCH);
 	break;
 
 #if (MACHINE == IBM_PC)
@@ -836,6 +769,9 @@ message *m_ptr;			/* pointer to message sent to task */
   if ((mode & W_BIT) && tp->tty_outleft != 0 && proc_nr == tp->tty_outproc &&
 	(!tp->tty_out_safe || tp->tty_out_vir_g==(vir_bytes)m_ptr->IO_GRANT)) {
 	/* Process was writing when killed.  Clean up output. */
+#if DEAD_CODE
+	(*tp->tty_ocancel)(tp, 0); 
+#endif
 	r = tp->tty_outcum > 0 ? tp->tty_outcum : EAGAIN;
 	tp->tty_outleft = tp->tty_outcum = tp->tty_outrevived = 0;
   } 
@@ -907,6 +843,9 @@ tty_t *tp;			/* TTY to check for events. */
  * messages (in proc.c).  This is handled by explicitly checking each line
  * for fresh input and completed output on each interrupt.
  */
+  char *buf;
+  unsigned count;
+  int status;
 
   do {
 	tp->tty_events = 0;
@@ -1033,27 +972,10 @@ register tty_t *tp;		/* pointer to terminal to read from */
 /*===========================================================================*
  *				in_process				     *
  *===========================================================================*/
-PRIVATE void in_process_send_byte(
-  tty_t *tp,	/* terminal on which character has arrived */
-  int ch	/* input character */
-)
-{
-	/* Save the character in the input queue. */
-	*tp->tty_inhead++ = ch;
-	if (tp->tty_inhead == bufend(tp->tty_inbuf))
-		tp->tty_inhead = tp->tty_inbuf;
-	tp->tty_incount++;
-	if (ch & IN_EOT) tp->tty_eotct++;
-
-	/* Try to finish input if the queue threatens to overflow. */
-	if (tp->tty_incount == buflen(tp->tty_inbuf)) in_transfer(tp);
-}
- 
-PUBLIC int in_process(tp, buf, count, scode)
+PUBLIC int in_process(tp, buf, count)
 register tty_t *tp;		/* terminal on which character has arrived */
 char *buf;			/* buffer with input characters */
 int count;			/* number of input characters */
-int scode;			/* scan code */
 {
 /* Characters have just been typed in.  Process, save, and echo them.  Return
  * the number of characters processed.
@@ -1061,11 +983,7 @@ int scode;			/* scan code */
 
   int ch, sig, ct;
   int timeset = FALSE;
-
-  /* Send scancode if requested */
-  if (tp->tty_termios.c_iflag & SCANCODES) {
-	in_process_send_byte(tp, (scode & BYTE) | IN_EOT);
-  }
+  static unsigned char csize_mask[] = { 0x1F, 0x3F, 0x7F, 0xFF };
 
   for (ct = 0; ct < count; ct++) {
 	/* Take one character. */
@@ -1171,7 +1089,7 @@ int scode;			/* scan code */
 					|| ch == tp->tty_termios.c_cc[VQUIT]) {
 			sig = SIGINT;
 			if (ch == tp->tty_termios.c_cc[VQUIT]) sig = SIGQUIT;
-			sigchar(tp, sig, 1);
+			sigchar(tp, sig);
 			(void) tty_echo(tp, ch);
 			continue;
 		}
@@ -1199,10 +1117,15 @@ int scode;			/* scan code */
 	/* Perform the intricate function of echoing. */
 	if (tp->tty_termios.c_lflag & (ECHO|ECHONL)) ch = tty_echo(tp, ch);
 
-	/* Send processed byte of input unless scancodes sent instead */
-	if (!(tp->tty_termios.c_iflag & SCANCODES)) {
-		in_process_send_byte(tp, ch);
-	}
+	/* Save the character in the input queue. */
+	*tp->tty_inhead++ = ch;
+	if (tp->tty_inhead == bufend(tp->tty_inbuf))
+		tp->tty_inhead = tp->tty_inbuf;
+	tp->tty_incount++;
+	if (ch & IN_EOT) tp->tty_eotct++;
+
+	/* Try to finish input if the queue threatens to overflow. */
+	if (tp->tty_incount == buflen(tp->tty_inbuf)) in_transfer(tp);
   }
   return ct;
 }
@@ -1444,7 +1367,7 @@ tty_t *tp;
  * sure that an attribute change doesn't affect the processing of current
  * output.  Once output finishes the ioctl is executed as in do_ioctl().
  */
-  int result = EINVAL;
+  int result;
 
   if (tp->tty_outleft > 0) return;		/* output not finished */
 
@@ -1514,10 +1437,7 @@ tty_t *tp;
   }
 
   /* Setting the output speed to zero hangs up the phone. */
-  if (tp->tty_termios.c_ospeed == B0) sigchar(tp, SIGHUP, 1);
-
-  /* SCANCODES is supported only for the console */
-  if (!isconsole(tp)) tp->tty_termios.c_iflag &= ~SCANCODES;
+  if (tp->tty_termios.c_ospeed == B0) sigchar(tp, SIGHUP);
 
   /* Set new line speed, character size, etc at the device level. */
   (*tp->tty_ioctl)(tp, 0);
@@ -1548,25 +1468,25 @@ int status;			/* reply code */
    * placeholder for something that is not supposed to be a message.
    */
   if(code == TTY_REVIVE) {
+	panicing = 1;
 	printf("%s:%d: ", file, line);
-	panic("tty_reply sending TTY_REVIVE");
+	panic("TTY","tty_reply sending TTY_REVIVE", NO_NUM);
   }
 
-  status = sendnb(replyee, &tty_mess);
-  if (status != OK)
-	printf("tty`tty_reply: send to %d failed: %d\n", replyee, status);
+  if ((status = send(replyee, &tty_mess)) != OK) {
+	printf("tty: tty_reply to %d failed: %d\n", replyee, status);
+  }
 }
 
 /*===========================================================================*
  *				sigchar					     *
  *===========================================================================*/
-PUBLIC void sigchar(tp, sig, mayflush)
+PUBLIC void sigchar(tp, sig)
 register tty_t *tp;
 int sig;			/* SIGINT, SIGQUIT, SIGKILL or SIGHUP */
-int mayflush;
 {
 /* Process a SIGINT, SIGQUIT or SIGKILL char from the keyboard or SIGHUP from
- * a tty close, "stty 0", or a real RS-232 hangup.  PM will send the signal to
+ * a tty close, "stty 0", or a real RS-232 hangup.  MM will send the signal to
  * the process group (INT, QUIT), all processes (KILL), or the session leader
  * (HUP).
  */
@@ -1574,11 +1494,11 @@ int mayflush;
 
   if (tp->tty_pgrp != 0)  {
       if (OK != (status = sys_kill(tp->tty_pgrp, sig))) {
-        panic("Error; call to sys_kill failed: %d", status);
+        panic("TTY","Error, call to sys_kill failed", status);
       }
   }
 
-  if (mayflush && !(tp->tty_termios.c_lflag & NOFLSH)) {
+  if (!(tp->tty_termios.c_lflag & NOFLSH)) {
 	tp->tty_incount = tp->tty_eotct = 0;	/* kill earlier input */
 	tp->tty_intail = tp->tty_inhead;
 	(*tp->tty_ocancel)(tp, 0);			/* kill all output */
@@ -1601,15 +1521,6 @@ register tty_t *tp;
 }
 
 /*===========================================================================*
- *				tty_devnop				     *
- *===========================================================================*/
-PRIVATE int tty_devnop(tty_t *tp, int try)
-{
-  /* Some functions need not be implemented at the device level. */
-  return 0;
-}
-
-/*===========================================================================*
  *				tty_init				     *
  *===========================================================================*/
 PRIVATE void tty_init()
@@ -1618,15 +1529,14 @@ PRIVATE void tty_init()
 
   register tty_t *tp;
   int s;
-
-  system_hz = sys_hz();
+  struct sigaction sa;
 
   /* Initialize the terminal lines. */
   for (tp = FIRST_TTY,s=0; tp < END_TTY; tp++,s++) {
 
   	tp->tty_index = s;
 
-  	init_timer(&tp->tty_tmr);
+  	tmr_inittimer(&tp->tty_tmr);
 
   	tp->tty_intail = tp->tty_inhead = tp->tty_inbuf;
   	tp->tty_min = 1;
@@ -1650,6 +1560,18 @@ PRIVATE void tty_init()
   	}
   }
 
+#if DEAD_CODE
+  /* Install signal handlers. Ask PM to transform signal into message. */
+  sa.sa_handler = SIG_MESS;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;
+  if (sigaction(SIGTERM,&sa,NULL)<0) panic("TTY","sigaction failed", errno);
+  if (sigaction(SIGKMESS,&sa,NULL)<0) panic("TTY","sigaction failed", errno);
+  if (sigaction(SIGKSTOP,&sa,NULL)<0) panic("TTY","sigaction failed", errno);
+#endif
+#if DEBUG
+	printf("end of tty_init\n");
+#endif
 }
 
 /*===========================================================================*
@@ -1665,23 +1587,76 @@ PRIVATE void tty_timed_out(timer_t *tp)
 }
 
 /*===========================================================================*
+ *				expire_timers			    	     *
+ *===========================================================================*/
+PRIVATE void expire_timers(void)
+{
+/* A synchronous alarm message was received. Check if there are any expired 
+ * timers. Possibly set the event flag and reschedule another alarm.  
+ */
+  clock_t now;				/* current time */
+  int s;
+
+  /* Get the current time to compare the timers against. */
+  if ((s=getuptime(&now)) != OK)
+ 	panic("TTY","Couldn't get uptime from clock.", s);
+
+  /* Scan the queue of timers for expired timers. This dispatch the watchdog
+   * functions of expired timers. Possibly a new alarm call must be scheduled.
+   */
+  tmrs_exptimers(&tty_timers, now, NULL);
+  if (tty_timers == NULL) tty_next_timeout = TMR_NEVER;
+  else {  					  /* set new sync alarm */
+  	tty_next_timeout = tty_timers->tmr_exp_time;
+  	if ((s=sys_setalarm(tty_next_timeout, 1)) != OK)
+ 		panic("TTY","Couldn't set synchronous alarm.", s);
+  }
+}
+
+/*===========================================================================*
  *				settimer				     *
  *===========================================================================*/
 PRIVATE void settimer(tty_ptr, enable)
 tty_t *tty_ptr;			/* line to set or unset a timer on */
 int enable;			/* set timer if true, otherwise unset */
 {
-  clock_t ticks;
+  clock_t now;				/* current time */
+  clock_t exp_time;
+  int s;
 
+  /* Get the current time to calculate the timeout time. */
+  if ((s=getuptime(&now)) != OK)
+ 	panic("TTY","Couldn't get uptime from clock.", s);
   if (enable) {
-  	ticks = tty_ptr->tty_termios.c_cc[VTIME] * (system_hz/10);
-
+  	exp_time = now + tty_ptr->tty_termios.c_cc[VTIME] * (HZ/10);
  	/* Set a new timer for enabling the TTY events flags. */
-	set_timer(&tty_ptr->tty_tmr, ticks, tty_timed_out, 0);
+ 	tmrs_settimer(&tty_timers, &tty_ptr->tty_tmr, 
+ 		exp_time, tty_timed_out, NULL);  
   } else {
   	/* Remove the timer from the active and expired lists. */
-  	cancel_timer(&tty_ptr->tty_tmr);
+  	tmrs_clrtimer(&tty_timers, &tty_ptr->tty_tmr, NULL);
   }
+  
+  /* Now check if a new alarm must be scheduled. This happens when the front
+   * of the timers queue was disabled or reinserted at another position, or
+   * when a new timer was added to the front.
+   */
+  if (tty_timers == NULL) tty_next_timeout = TMR_NEVER;
+  else if (tty_timers->tmr_exp_time != tty_next_timeout) { 
+  	tty_next_timeout = tty_timers->tmr_exp_time;
+  	if ((s=sys_setalarm(tty_next_timeout, 1)) != OK)
+ 		panic("TTY","Couldn't set synchronous alarm.", s);
+  }
+}
+
+/*===========================================================================*
+ *				tty_devnop				     *
+ *===========================================================================*/
+PUBLIC int tty_devnop(tp, try)
+tty_t *tp;
+int try;
+{
+  /* Some functions need not be implemented at the device level. */
 }
 
 /*===========================================================================*

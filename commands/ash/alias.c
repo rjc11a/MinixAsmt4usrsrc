@@ -35,8 +35,8 @@
 static char sccsid[] = "@(#)alias.c	8.3 (Berkeley) 5/4/95";
 #endif
 #endif /* not lint */
-#include <sys/cdefs.h>
 /*
+#include <sys/cdefs.h>
 __FBSDID("$FreeBSD: src/bin/sh/alias.c,v 1.18 2004/04/06 20:06:51 markm Exp $");
 */
 
@@ -49,18 +49,19 @@ __FBSDID("$FreeBSD: src/bin/sh/alias.c,v 1.18 2004/04/06 20:06:51 markm Exp $");
 #include "mystring.h"
 #include "alias.h"
 #include "options.h"	/* XXX for argptr (should remove?) */
+#include "builtins.h"
 
 #define ATABSIZE 39
 
 STATIC struct alias *atab[ATABSIZE];
 
-STATIC void setalias(const char *, const char *);
-STATIC int unalias(const char *);
-STATIC struct alias **hashalias(const char *);
+STATIC void setalias(char *, char *);
+STATIC int unalias(char *);
+STATIC struct alias **hashalias(char *);
 
 STATIC
 void
-setalias(const char *name, const char *val)
+setalias(char *name, char *val)
 {
 	struct alias *ap, **app;
 
@@ -113,7 +114,7 @@ setalias(const char *name, const char *val)
 }
 
 STATIC int
-unalias(const char *name)
+unalias(char *name)
 {
 	struct alias *ap, **app;
 
@@ -174,7 +175,7 @@ rmaliases(void)
 }
 
 struct alias *
-lookupalias(const char *name, int check)
+lookupalias(char *name, int check)
 {
 	struct alias *ap = *hashalias(name);
 
@@ -249,7 +250,7 @@ unaliascmd(int argc __unused, char **argv __unused)
 }
 
 STATIC struct alias **
-hashalias(const char *p)
+hashalias(char *p)
 {
 	unsigned int hashval;
 

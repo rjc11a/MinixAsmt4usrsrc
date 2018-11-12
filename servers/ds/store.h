@@ -1,45 +1,33 @@
-#ifndef _DS_STORE_H_
-#define _DS_STORE_H_
-
 /* Type definitions for the Data Store Server. */
+
 #include <sys/types.h>
-#include <minix/config.h>
+#include <minix/sys_config.h>
 #include <minix/ds.h>
 #include <minix/bitmap.h>
 #include <regex.h>
 
-#define NR_DS_KEYS	(2*NR_SYS_PROCS)	/* number of entries */
-#define NR_DS_SUBS	(4*NR_SYS_PROCS)	/* number of subscriptions */
-#define NR_DS_SNAPSHOT	5	/* number of snapshots */
+/* Constants for the Data Store Server. */
+#define NR_DS_KEYS               64	/* reserve space for so many items */
+#define NR_DS_SUBS   (4*_NR_SYS_PROCS)	/* .. and so many subscriptions */
 
-/* Base 'class' for the following 3 structs. */
+/* Types. */
+
 struct data_store {
-	int	flags;
-	char	key[DS_MAX_KEYLEN];	/* key to lookup information */
-	char	owner[DS_MAX_KEYLEN];
+  int ds_flags;			/* flags for this store, includes type info */
+  char ds_key[DS_MAX_KEYLEN];	/* key to lookup information */
+  union {
+    u32_t ds_val_u32;			/* u32 data (DS_TYPE_U32) */
+    char  ds_val_str[DS_MAX_VALLEN];	/* string data (DS_TYPE_STR) */
+  } ds_val;
 
-	union {
-		unsigned u32;
-		struct {
-			void *data;
-			size_t length;
-			size_t reallen;
-		} mem;
-		struct dsi_map {
-			void *data;
-			size_t length;
-			void *realpointer;
-			void *snapshots[NR_DS_SNAPSHOT];
-			int sindex;
-		} map;
-	} u;
+  /* out of date subscribers. */
+  bitchunk_t ds_old_subs[BITMAP_CHUNKS(NR_DS_SUBS)];	
 };
 
 struct subscription {
-	int		flags;
-	char		owner[DS_MAX_KEYLEN];
-	regex_t		regex;
-	bitchunk_t	old_subs[BITMAP_CHUNKS(NR_DS_KEYS)];	
+  int sub_flags;		/* flags for this subscription */
+  regex_t sub_regex;		/* regular expression agains keys */
+  endpoint_t sub_owner;		/* who is subscribed */
 };
 
-#endif /* _DS_STORE_H_ */
+

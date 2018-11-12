@@ -10,148 +10,168 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <minix/com.h>
-#include <minix/ds.h>
 #include "param.h"
 
+/* Some devices may or may not be there in the next table. */
+#define DT(enable, opcl, io, driver, flags) \
+  { (enable?(opcl):no_dev), (enable?(io):0), \
+  	(enable?(driver):0), (flags) },
 #define NC(x) (NR_CTRLRS >= (x))
 
-/* The order of the entries in the table determines the mapping between major
- * device numbers and device drivers. Character and block devices
- * can be intermixed at random.  The ordering determines the device numbers in
- * /dev. Note that the major device numbers used in /dev are NOT the same as 
- * the process numbers of the device drivers. See <minix/dmap.h> for mappings.
+/* The order of the entries here determines the mapping between major device
+ * numbers and tasks.  The first entry (major device 0) is not used.  The
+ * next entry is major device 1, etc.  Character and block devices can be
+ * intermixed at random.  The ordering determines the device numbers in /dev/.
+ * Note that FS knows the device number of /dev/ram/ to load the RAM disk.
+ * Also note that the major device numbers used in /dev/ are NOT the same as 
+ * the process numbers of the device drivers. 
  */
+/*
+  Driver enabled     Open/Cls  I/O     Driver #     Flags Device  File
+  --------------     --------  ------  -----------  ----- ------  ----       
+ */
+struct dmap dmap[NR_DEVICES];				/* actual map */ 
+PRIVATE struct dmap init_dmap[] = {
+  DT(1, no_dev,   0,       0,       	0) 	  	/* 0 = not used   */
+  DT(1, gen_opcl, gen_io,  MEM_PROC_NR, 0)	        /* 1 = /dev/mem   */
+  DT(0, no_dev,   0,       0,           DMAP_MUTABLE)	/* 2 = /dev/fd0   */
+  DT(0, no_dev,   0,       0,           DMAP_MUTABLE)	/* 3 = /dev/c0    */
+  DT(1, tty_opcl, gen_io,  TTY_PROC_NR, 0)    	  	/* 4 = /dev/tty00 */
+  DT(1, ctty_opcl,ctty_io, TTY_PROC_NR, 0)     	   	/* 5 = /dev/tty   */
+  DT(0, no_dev,   0,       NONE,	DMAP_MUTABLE)	/* 6 = /dev/lp    */
 
-struct dmap dmap[NR_DEVICES];
-
-#define DT_EMPTY { no_dev, no_dev_io, NONE, "", 0, STYLE_NDEV, NULL }
+#if (MACHINE == IBM_PC)
+  DT(1, no_dev,   0,       0,   	DMAP_MUTABLE)   /* 7 = /dev/ip    */
+  DT(0, no_dev,   0,       NONE,        DMAP_MUTABLE)   /* 8 = /dev/c1    */
+  DT(0, 0,        0,       0,   	DMAP_MUTABLE)   /* 9 = not used   */
+  DT(0, no_dev,   0,       0,           DMAP_MUTABLE)   /*10 = /dev/c2    */
+  DT(0, 0,        0,       0,   	DMAP_MUTABLE)   /*11 = not used   */
+  DT(0, no_dev,   0,       NONE,     	DMAP_MUTABLE)   /*12 = /dev/c3    */
+  DT(0, no_dev,   0,       NONE,	DMAP_MUTABLE)   /*13 = /dev/audio */
+  DT(0, no_dev,   0,       NONE,	DMAP_MUTABLE)   /*14 = /dev/mixer */
+  DT(1, gen_opcl, gen_io,  LOG_PROC_NR, 0)  	        /*15 = /dev/klog  */
+  DT(0, no_dev,   0,       NONE,	DMAP_MUTABLE)   /*16 = /dev/random*/
+  DT(0, no_dev,   0,       NONE,	DMAP_MUTABLE)   /*17 = /dev/cmos  */
+#endif /* IBM_PC */
+};
 
 /*===========================================================================*
- *				do_mapdriver		 		     *
+ *				do_devctl		 		     *
  *===========================================================================*/
-PUBLIC int do_mapdriver()
+PUBLIC int do_devctl()
 {
-	int r, flags, major;
-	endpoint_t endpoint;
-	vir_bytes label_vir;
-	size_t label_len;
-	char label[LABEL_MAX];
-
-	/* Only RS can map drivers. */
-	if (who_e != RS_PROC_NR)
+	if (!super_user)
 	{
-		printf("vfs: unauthorized call of do_mapdriver by proc %d\n",
+		printf("FS: unauthorized call of do_devctl by proc %d\n",
 			who_e);
-		return(EPERM);
+		return(EPERM);	/* only su (should be only RS or some drivers)
+				 * may call do_devctl.
+				 */
 	}
+	return fs_devctl(m_in.ctl_req, m_in.dev_nr, m_in.driver_nr,
+		m_in.dev_style, m_in.m_force);
+}
 
-	/* Get the label */
-	label_vir= (vir_bytes)m_in.md_label;
-	label_len= m_in.md_label_len;
+/*===========================================================================*
+ *				fs_devctl		 		     *
+ *===========================================================================*/
+PUBLIC int fs_devctl(req, dev, proc_nr_e, style, force)
+int req;
+int dev;
+int proc_nr_e;
+int style;
+int force;
+{
+  int result, proc_nr_n;
 
-	if (label_len+1 > sizeof(label))
-	{
-		printf("vfs:do_mapdriver: label too long\n");
-		return EINVAL;
+  switch(req) {
+  case DEV_MAP:
+      if (!force)
+      {
+	/* Check process number of new driver. */
+	if (isokendpt(proc_nr_e, &proc_nr_n) != OK)
+		return(EINVAL);
+      }
+
+      /* Try to update device mapping. */
+      result = map_driver(dev, proc_nr_e, style, force);
+      if (result == OK)
+      {
+	/* If a driver has completed its exec(), it can be announced to be
+	 * up.
+	 */
+	if(force || fproc[proc_nr_n].fp_execced) {
+		dev_up(dev);
+	} else {
+		dmap[dev].dmap_flags |= DMAP_BABY;
 	}
-
-	r= sys_vircopy(who_e, D, label_vir, SELF, D, (vir_bytes)label,
-		label_len);
-	if (r != OK)
-	{
-		printf("vfs:do_mapdriver: sys_vircopy failed: %d\n", r);
-		return EINVAL;
-	}
-
-	label[label_len]= '\0';
-
-	r= ds_retrieve_label_endpt(label, &endpoint);
-	if (r != OK)
-	{
-		printf("vfs:do_mapdriver: ds doesn't know '%s'\n", label);
-		return EINVAL;
-	}
-
-	/* Try to update device mapping. */
-	major= m_in.md_major;
-	flags= m_in.md_flags;
-	r= map_driver(label, major, endpoint, m_in.md_style, flags);
-
-	return(r);
+      }
+      break;
+  case DEV_UNMAP:
+      result = map_driver(dev, NONE, 0, 0);
+      break;
+  default:
+      result = EINVAL;
+  }
+  return(result);
 }
 
 /*===========================================================================*
  *				map_driver		 		     *
  *===========================================================================*/
-PUBLIC int map_driver(label, major, proc_nr_e, style, flags)
-const char *label;		/* name of the driver */
+PUBLIC int map_driver(major, proc_nr_e, style, force)
 int major;			/* major number of the device */
-endpoint_t proc_nr_e;		/* process number of the driver */
+int proc_nr_e;			/* process number of the driver */
 int style;			/* style of the device */
-int flags;			/* device flags */
+int force;
 {
-/* Set a new device driver mapping in the dmap table.
- * If the proc_nr is set to NONE, we're supposed to unmap it.
+/* Set a new device driver mapping in the dmap table. Given that correct 
+ * arguments are given, this only works if the entry is mutable and the 
+ * current driver is not busy.  If the proc_nr is set to NONE, we're supposed
+ * to unmap it.
+ *
+ * Normal error codes are returned so that this function can be used from
+ * a system call that tries to dynamically install a new driver.
  */
-  int proc_nr_n;
-  size_t len;
   struct dmap *dp;
+  int proc_nr_n;
 
   /* Get pointer to device entry in the dmap table. */
   if (major < 0 || major >= NR_DEVICES) return(ENODEV);
   dp = &dmap[major];		
 
-  /* Check if we're supposed to unmap it. */
+  /* Check if we're supposed to unmap it. If so, do it even
+   * if busy or unmutable, as unmap is called when driver has
+   * exited.
+   */
  if(proc_nr_e == NONE) {
 	dp->dmap_opcl = no_dev;
 	dp->dmap_io = no_dev_io;
 	dp->dmap_driver = NONE;
-	dp->dmap_flags = flags;
+	dp->dmap_flags = DMAP_MUTABLE;	/* When gone, not busy or reserved. */
 	return(OK);
   }
+	
+  /* See if updating the entry is allowed. */
+  if (! (dp->dmap_flags & DMAP_MUTABLE))  return(EPERM);
+  if (dp->dmap_flags & DMAP_BUSY)  return(EBUSY);
 
-  /* Check process number of new driver if requested. */
-  if (! (flags & DRV_FORCED))
+  if (!force)
   {
+	/* Check process number of new driver. */
 	if (isokendpt(proc_nr_e, &proc_nr_n) != OK)
 		return(EINVAL);
   }
 
-  if (label != NULL) {
-	len= strlen(label);
-	if (len+1 > sizeof(dp->dmap_label))
-		panic("map_driver: label too long: %d", len);
-	strcpy(dp->dmap_label, label);
-  }
-
   /* Try to update the entry. */
   switch (style) {
-  case STYLE_DEV:
-	dp->dmap_opcl = gen_opcl;
-	dp->dmap_io = gen_io;
-	break;
-  case STYLE_DEVA:
-	dp->dmap_opcl = gen_opcl;
-	dp->dmap_io = asyn_io;
-	break;
-  case STYLE_TTY:
-	dp->dmap_opcl = tty_opcl;
-	dp->dmap_io = gen_io;
-	break;
-  case STYLE_CTTY:
-	dp->dmap_opcl = ctty_opcl;
-	dp->dmap_io = ctty_io;
-	break;
-  case STYLE_CLONE:
-	dp->dmap_opcl = clone_opcl;
-	dp->dmap_io = gen_io;
-	break;
-  default:
-	return(EINVAL);
+  case STYLE_DEV:	dp->dmap_opcl = gen_opcl;	break;
+  case STYLE_TTY:	dp->dmap_opcl = tty_opcl;	break;
+  case STYLE_CLONE:	dp->dmap_opcl = clone_opcl;	break;
+  default:		return(EINVAL);
   }
+  dp->dmap_io = gen_io;
   dp->dmap_driver = proc_nr_e;
-  dp->dmap_flags = flags;
-  dp->dmap_style = style;
 
   return(OK); 
 }
@@ -164,7 +184,7 @@ PUBLIC void dmap_unmap_by_endpt(int proc_nr_e)
 	int i, r;
 	for (i=0; i<NR_DEVICES; i++)
 	  if(dmap[i].dmap_driver && dmap[i].dmap_driver == proc_nr_e)
-	    if((r=map_driver(NULL, i, NONE, 0, 0)) != OK)
+	    if((r=map_driver(i, NONE, 0, 0)) != OK)
 		printf("FS: unmap of p %d / d %d failed: %d\n", proc_nr_e,i,r);
 
 	return;
@@ -172,55 +192,67 @@ PUBLIC void dmap_unmap_by_endpt(int proc_nr_e)
 }
 
 /*===========================================================================*
- *		               map_service                                   *
- *===========================================================================*/
-PUBLIC int map_service(struct rprocpub *rpub)
-{
-/* Map a new service by storing its device driver properties. */
-  int r;
-
-  /* Not a driver, nothing more to do. */
-  if(!rpub->dev_nr) {
-	return OK;
-  }
-
-  /* Map driver. */
-  r = map_driver(rpub->label, rpub->dev_nr, rpub->endpoint,
-	rpub->dev_style, rpub->dev_flags);
-  if(r != OK) {
-	return r;
-  }
-
-  /* If driver has two major numbers associated, also map the other one. */
-  if(rpub->dev_style2 != STYLE_NDEV) {
-	r = map_driver(rpub->label, rpub->dev_nr+1, rpub->endpoint,
-		rpub->dev_style2, rpub->dev_flags);
-	if(r != OK) {
-		return r;
-	}
-  }
-
-  return OK;
-}
-
-/*===========================================================================*
  *				build_dmap		 		     *
  *===========================================================================*/
 PUBLIC void build_dmap()
 {
-/* Initialize the table with empty device <-> driver mappings. */
+/* Initialize the table with all device <-> driver mappings. Then, map  
+ * the boot driver to a controller and update the dmap table to that
+ * selection. The boot driver and the controller it handles are set at 
+ * the boot monitor.  
+ */
   int i;
-  struct dmap dmap_default = DT_EMPTY;
+  struct dmap *dp;
 
+  /* Build table with device <-> driver mappings. */
   for (i=0; i<NR_DEVICES; i++) {
-	dmap[i] = dmap_default;
+      dp = &dmap[i];		
+      if (i < sizeof(init_dmap)/sizeof(struct dmap) && 
+              init_dmap[i].dmap_opcl != no_dev) {	/* a preset driver */
+          dp->dmap_opcl = init_dmap[i].dmap_opcl;
+          dp->dmap_io = init_dmap[i].dmap_io;
+          dp->dmap_driver = init_dmap[i].dmap_driver;
+          dp->dmap_flags = init_dmap[i].dmap_flags;
+      } else {						/* no default */
+          dp->dmap_opcl = no_dev;
+          dp->dmap_io = no_dev_io;
+          dp->dmap_driver = NONE;
+          dp->dmap_flags = DMAP_MUTABLE;
+      }
   }
+
+#if 0
+  /* Get settings of 'controller' and 'driver' at the boot monitor. */
+  if ((s = env_get_param("label", driver, sizeof(driver))) != OK) 
+      panic(__FILE__,"couldn't get boot monitor parameter 'driver'", s);
+  if ((s = env_get_param("controller", controller, sizeof(controller))) != OK) 
+      panic(__FILE__,"couldn't get boot monitor parameter 'controller'", s);
+
+  /* Determine major number to map driver onto. */
+  if (controller[0] == 'f' && controller[1] == 'd') {
+      major = FLOPPY_MAJOR;
+  } 
+  else if (controller[0] == 'c' && isdigit(controller[1])) {
+      if ((nr = (unsigned) atoi(&controller[1])) > NR_CTRLRS)
+          panic(__FILE__,"monitor 'controller' maximum 'c#' is", NR_CTRLRS);
+      major = CTRLR(nr);
+  } 
+  else {
+      panic(__FILE__,"monitor 'controller' syntax is 'c#' of 'fd'", NO_NUM); 
+  }
+  
+  /* Now try to set the actual mapping and report to the user. */
+  if ((s=map_driver(major, DRVR_PROC_NR, STYLE_DEV)) != OK)
+      panic(__FILE__,"map_driver failed",s);
+  printf("Boot medium driver: %s driver mapped onto controller %s.\n",
+      driver, controller);
+#endif
 }
 
 /*===========================================================================*
  *				dmap_driver_match	 		     *
  *===========================================================================*/ 
-PUBLIC int dmap_driver_match(endpoint_t proc, int major)
+PUBLIC int dmap_driver_match(int proc, int major)
 {
 	if (major < 0 || major >= NR_DEVICES) return(0);
 	if(dmap[major].dmap_driver != NONE && dmap[major].dmap_driver == proc)
@@ -236,7 +268,9 @@ PUBLIC void dmap_endpt_up(int proc_e)
 	int i;
 	for (i=0; i<NR_DEVICES; i++) {
 		if(dmap[i].dmap_driver != NONE
-			&& dmap[i].dmap_driver == proc_e) {
+			&& dmap[i].dmap_driver == proc_e
+			&& (dmap[i].dmap_flags & DMAP_BABY)) {
+			dmap[i].dmap_flags &= ~DMAP_BABY;
 			dev_up(i);
 		}
 	}

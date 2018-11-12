@@ -1,38 +1,22 @@
-#	$NetBSD: Makefile,v 1.50 2010/04/22 19:15:23 sjg Exp $
-#	@(#)Makefile	5.2 (Berkeley) 12/28/90
+# Makefile for make (!)
 
-PROG=	make
-SRCS=	arch.c buf.c compat.c cond.c dir.c for.c hash.c job.c main.c \
-	make.c parse.c str.c suff.c targ.c trace.c var.c util.c
-SRCS+=  strlist.c
-SRCS+=  make_malloc.c
-SRCS+=	lstAppend.c lstAtEnd.c lstAtFront.c lstClose.c lstConcat.c \
-	lstDatum.c lstDeQueue.c lstDestroy.c lstDupl.c lstEnQueue.c \
-	lstFind.c lstFindFrom.c lstFirst.c lstForEach.c lstForEachFrom.c \
-	lstInit.c lstInsert.c lstIsAtEnd.c lstIsEmpty.c lstLast.c \
-	lstMember.c lstNext.c lstOpen.c lstRemove.c lstReplace.c lstSucc.c
-SRCS+=	lstPrev.c
+CFLAGS = -O -Dunix -D_MINIX -D_POSIX_SOURCE
+CC = exec cc
 
+OBJ =	check.o input.o macro.o main.o make.o reader.o rules.o archive.o
 
-# For MINIX
-CPPFLAGS+=	-DHAVE_SETENV -DHAVE_STRERROR -DHAVE_STRDUP \
-		-DHAVE_STRFTIME -DHAVE_VSNPRINTF -DUSE_SELECT
-MACHINE=${ARCH}
-MACHINE_ARCH=${ARCH}
-CPPFLAGS+= -DTARGET_MACHINE=\"${MACHINE}\" \
-	-DTARGET_MACHINE_ARCH=\"${MACHINE_ARCH}\" \
-	-DMAKE_MACHINE=\"${MACHINE}\"
+all:	make
 
+make :	$(OBJ)
+	$(CC) -i -o make $(OBJ)
+	install -S 330k make
 
- .PATH:	${.CURDIR}/lst.lib
+install:	/usr/bin/make
 
-# .if make(obj) || make(clean)
-# SUBDIR+= unit-tests
-# .endif
+/usr/bin/make:	make
+	install -c -o bin make $@
+ 
+$(OBJ): h.h
 
-.include <bsd.prog.mk>
-.include <bsd.subdir.mk>
-
-# A simple unit-test driver to help catch regressions
-accept test:
-	cd ${.CURDIR}/unit-tests && ${.MAKE} -r -m / TEST_MAKE=${TEST_MAKE:U${.OBJDIR}/${PROG:T}} ${.TARGET}
+clean:
+	rm -f *.o *.bak core make

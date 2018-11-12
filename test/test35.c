@@ -18,8 +18,6 @@
 #define ITERATIONS     10
 #define N 100
 
-#include "common.c"
-
 #define System(cmd)   if (system(cmd) != 0) printf("``%s'' failed\n", cmd)
 #define Chdir(dir)    if (chdir(dir) != 0) printf("Can't goto %s\n", dir)
 #define Stat(a,b)     if (stat(a,b) != 0) printf("Can't stat %s\n", a)
@@ -32,6 +30,7 @@
 
 #define PASSWD_FILE 	"/etc/passwd"
 
+int errct = 0;
 int subtest = 1;
 int I_can_chown;
 int superuser;
@@ -40,19 +39,27 @@ char MaxPath[PATH_MAX];		/* Same for path */
 char NameTooLong[NAME_MAX + 2];	/* Name of maximum +1 length */
 char PathTooLong[PATH_MAX + 1];	/* Same for path, both too long */
 
+_PROTOTYPE(void main, (int argc, char *argv[]));
 _PROTOTYPE(void test35a, (void));
 _PROTOTYPE(void test35b, (void));
 _PROTOTYPE(void test35c, (void));
 _PROTOTYPE(void makelongnames, (void));
+_PROTOTYPE(void e, (int number));
+_PROTOTYPE(void quit, (void));
 _PROTOTYPE(void getids, (uid_t * uid, gid_t * gid));
 
-int main(int argc, char *argv[])
+void main(argc, argv)
+int argc;
+char *argv[];
 {
   int i, m = 0xFFFF;
 
   sync();
   if (argc == 2) m = atoi(argv[1]);
-  start(35);
+  printf("Test 35 ");
+  fflush(stdout);
+  System("rm -rf DIR_35; mkdir DIR_35");
+  Chdir("DIR_35");
   makelongnames();
   superuser = (geteuid() == 0);
 
@@ -72,7 +79,6 @@ int main(int argc, char *argv[])
 	if (m & 0004) test35c();
   }
   quit();
-  return 1;
 }
 
 void test35a()
@@ -172,7 +178,7 @@ void test35c()
   gid_t gid, gid2;
   uid_t uid, uid2;
   struct utimbuf ub;
-  int fd, does_truncate, stat_loc;
+  int stat_loc;
 
   subtest = 3;
 
@@ -252,15 +258,18 @@ void test35c()
   }
 
   /* Test names that are too long. */
-  does_truncate = does_fs_truncate();
-  fd = creat(NameTooLong, 0777);
-  if (does_truncate) {
-	if (utime(NameTooLong, NULL) != 0) e(18);
-  } else {
-	if (utime(NameTooLong, NULL) != -1) e(19);
-	if (errno != ENAMETOOLONG) e(20);
-  }
-  (void) close(fd);
+#ifdef _POSIX_NO_TRUNC
+# if _POSIX_NO_TRUNC - 0 != -1
+  /* Not exist might also be a propper response? */
+  if (utime(NameTooLong, NULL) != -1) e(18);
+  if (errno != ENAMETOOLONG) e(19);
+# else
+  Creat(NameTooLong);
+  if (utime(NameTooLong, NULL) != 0) e(20);
+# endif
+#else
+# include "error, this case requires dynamic checks and is not handled"
+#endif
 
   /* Make PathTooLong contain ././.../a */
   PathTooLong[strlen(PathTooLong) - 2] = '/';
@@ -299,6 +308,37 @@ void makelongnames()
   NameTooLong[NAME_MAX + 1] = '\0';	/* extend NameTooLong by one too many*/
   PathTooLong[PATH_MAX - 1] = '/';
   PathTooLong[PATH_MAX] = '\0';	/* inc PathTooLong by one */
+}
+
+void e(n)
+int n;
+{
+  int err_num = errno;		/* Save in case printf clobbers it. */
+
+  printf("Subtest %d,  error %d  errno=%d: ", subtest, n, errno);
+  errno = err_num;
+  perror("");
+  if (errct++ > MAX_ERROR) {
+	printf("Too many errors; test aborted\n");
+	chdir("..");
+	system("rm -rf DIR* > /dev/null 2>/dev/null");
+	exit(1);
+  }
+  errno = 0;
+}
+
+void quit()
+{
+  Chdir("..");
+  System("rm -rf DIR_35");
+
+  if (errct == 0) {
+	printf("ok\n");
+	exit(0);
+  } else {
+	printf("%d errors\n", errct);
+	exit(1);
+  }
 }
 
 /* Getids returns a valid uid and gid. Is used PASSWD FILE.

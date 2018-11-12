@@ -10,9 +10,10 @@
 #define _DEVIO_H
 
 #include <minix/sys_config.h>     /* needed to include <minix/type.h> */
-#include <minix/types.h>        /* u8_t, u16_t, u32_t needed */
+#include <sys/types.h>        /* u8_t, u16_t, u32_t needed */
 
 typedef u16_t port_t;
+typedef U16_t Port_t;
 
 /* We have different granularities of port I/O: 8, 16, 32 bits.
  * Also see <ibm/portio.h>, which has functions for bytes, words,  
@@ -28,10 +29,10 @@ typedef struct { u16_t port; u32_t value; } pvl_pair_t;
 	(pv).port = _p;						\
 	(pv).value = _v;					\
 	if((pv).port != _p || (pv).value != _v) {		\
-		printf("%s:%d: actual port: 0x%x != 0x%lx || "	\
-			"actual value: 0x%x != 0x%lx\n",	\
+		printf("%s:%d: actual port: %x != %x || "	\
+			"actual value: %x != %x\n",		\
 			__FILE__, __LINE__, (pv).port, _p, (pv).value, _v); \
-		panic("pv_set(" #pv ", " #p ", " #v ")"); \
+		panic(__FILE__, "pv_set(" #pv ", " #p ", " #v ")", NO_NUM); \
 	}							\
 } while(0)
 

@@ -495,11 +495,11 @@ static void disbss()
   *                                                         *
   * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-int
+void
 main(argc,argv)
 
    int argc;                  /* Command-line args from OS  */
-   char **argv;
+   register char **argv;
 
 {/* * * * * * * * * * * START OF main() * * * * * * * * * * */
 

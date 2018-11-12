@@ -9,8 +9,6 @@
 
 #include "elle.h"
 
-static void moveborder(int);
-
 
 #if FX_NEWWIN
 /* EFUN: "New Window" */
@@ -120,6 +118,7 @@ f_scdnwind()
 /* EFUN: "Move to Window Top" (not EMACS) - from IMAGEN config */
 f_mvwtop()
 {
+	extern moveborder();
 	moveborder(1);
 }
 #endif /*FX_MVWTOP*/
@@ -128,6 +127,7 @@ f_mvwtop()
 /* EFUN: "Move to Window Bottom" (not EMACS) - from IMAGEN config */
 f_mvwbot()
 {
+	extern moveborder();
 	moveborder(0);
 }
 #endif /*FX_MVWBOT*/
@@ -202,7 +202,7 @@ register int n;
 #endif /* FX_SC%%WIND */
 
 #if FX_MVWTOP || FX_MVWBOT	/* Guts for above two functions */
-static void
+static
 moveborder(top)
 int top;
 {

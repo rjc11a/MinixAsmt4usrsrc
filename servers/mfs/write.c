@@ -1,12 +1,11 @@
+
 /* This file is the counterpart of "read.c".  It contains the code for writing
- * insofar as this is not contained in fs_readwrite().
+ * insofar as this is not contained in read_write().
  *
  * The entry points into this file are
- *   write_map:    write a new zone into an inode
+ *   do_write:     call read_write to perform the WRITE system call
  *   clear_zone:   erase a zone in the middle of a file
  *   new_block:    acquire a new block
- *   zero_block:   overwrite a block with zeroes
- *
  */
 
 #include "fs.h"
@@ -42,7 +41,7 @@ int op;				/* special actions */
   zone_t z, z1, z2 = NO_ZONE, old_zone;
   register block_t b;
   long excess, zone;
-  struct buf *bp_dindir = NULL, *bp = NULL;
+  struct buf *bp_dindir = NIL_BUF, *bp = NIL_BUF;
 
   rip->i_dirt = DIRTY;		/* inode will be changed */
   scale = rip->i_sp->s_log_zone_size;		/* for zone-block conversion */
@@ -119,7 +118,7 @@ int op;				/* special actions */
 
 	new_ind = TRUE;
 	/* If double ind, it is dirty. */
-	if (bp_dindir != NULL) bp_dindir->b_dirt = DIRTY;
+	if (bp_dindir != NIL_BUF) bp_dindir->b_dirt = DIRTY;
 	if (z1 == NO_ZONE) {
 		/* Release dbl indirect blk. */
 		put_block(bp_dindir, INDIRECT_BLOCK);
@@ -142,7 +141,7 @@ int op;				/* special actions */
 		}
 
 		/* Last reference in the indirect block gone? Then
-		 * free the indirect block.
+		 * Free the indirect block.
 		 */
 		if(empty_indir(bp, rip->i_sp)) {
 			free_zone(rip->i_dev, z1);
@@ -161,18 +160,15 @@ int op;				/* special actions */
 	} else {
 		wr_indir(bp, ex, new_zone);
 	}
-	/* z1 equals NO_ZONE only when we are freeing up the indirect block. */
-	bp->b_dirt = (z1 == NO_ZONE) ? CLEAN : DIRTY;
+	bp->b_dirt = DIRTY;
 	put_block(bp, INDIRECT_BLOCK);
   }
 
   /* If the single indirect block isn't there (or was just freed),
-   * see if we have to keep the double indirect block, if any.
-   * If we don't have to keep it, don't bother writing it out.
+   * see if we have to keep the double indirect block.
    */
-  if(z1 == NO_ZONE && !single && z2 != NO_ZONE &&
-     empty_indir(bp_dindir, rip->i_sp)) {
-	bp_dindir->b_dirt = CLEAN;
+  if(z1 == NO_ZONE && !single && empty_indir(bp_dindir, rip->i_sp) &&
+     z2 != NO_ZONE) {
 	free_zone(rip->i_dev, z2);
 	rip->i_zone[zones+1] = NO_ZONE;
   }
@@ -181,7 +177,6 @@ int op;				/* special actions */
 
   return(OK);
 }
-
 
 /*===========================================================================*
  *				wr_indir				     *
@@ -195,8 +190,8 @@ zone_t zone;			/* zone to write */
 
   struct super_block *sp;
 
-  if(bp == NULL)
-	panic("wr_indir() on NULL");
+  if(bp == NIL_BUF)
+	panic(__FILE__, "wr_indir() on NIL_BUF", NO_NUM);
 
   sp = get_super(bp->b_dev);	/* need super block to find file sys type */
 
@@ -206,7 +201,6 @@ zone_t zone;			/* zone to write */
   else
 	bp->b_v2_ind[index] = (zone_t)  conv4(sp->s_native, (long) zone);
 }
-
 
 /*===========================================================================*
  *				empty_indir				     *
@@ -218,14 +212,19 @@ struct super_block *sb;		/* superblock of device block resides on */
 /* Return nonzero if the indirect block pointed to by bp contains
  * only NO_ZONE entries.
  */
-  unsigned int i;
-  for(i = 0; i < V2_INDIRECTS(sb->s_block_size); i++)
-	if( bp->b_v2_ind[i] != NO_ZONE)
-		return(0);
+	int i;
+	if(sb->s_version == V1) {
+		for(i = 0; i < V1_INDIRECTS; i++)
+			if(bp->b_v1_ind[i] != NO_ZONE)
+				return 0;
+	} else {
+		for(i = 0; i < V2_INDIRECTS(sb->s_block_size); i++)
+			if(bp->b_v2_ind[i] != NO_ZONE)
+				return 0;
+	}
 
-  return(1);
+	return 1;
 }
-
 
 /*===========================================================================*
  *				clear_zone				     *
@@ -233,30 +232,31 @@ struct super_block *sb;		/* superblock of device block resides on */
 PUBLIC void clear_zone(rip, pos, flag)
 register struct inode *rip;	/* inode to clear */
 off_t pos;			/* points to block to clear */
-int flag;			/* 1 if called by new_block, 0 otherwise */
+int flag;			/* 0 if called by read_write, 1 by new_block */
 {
 /* Zero a zone, possibly starting in the middle.  The parameter 'pos' gives
  * a byte in the first block to be zeroed.  Clearzone() is called from 
- * fs_readwrite(), truncate_inode(), and new_block().
+ * read_write and new_block().
  */
 
-  struct buf *bp;
-  block_t b, blo, bhi;
-  off_t next;
-  int scale, zone_size;
+  register struct buf *bp;
+  register block_t b, blo, bhi;
+  register off_t next;
+  register int scale;
+  register zone_t zone_size;
 
   /* If the block size and zone size are the same, clear_zone() not needed. */
   scale = rip->i_sp->s_log_zone_size;
   if (scale == 0) return;
 
-  zone_size = rip->i_sp->s_block_size << scale;
-  if (flag == 1) pos = (off_t) ((pos/zone_size) * zone_size);
+  zone_size = (zone_t) rip->i_sp->s_block_size << scale;
+  if (flag == 1) pos = (pos/zone_size) * zone_size;
   next = pos + rip->i_sp->s_block_size - 1;
 
   /* If 'pos' is in the last block of a zone, do not clear the zone. */
   if (next/zone_size != pos/zone_size) return;
   if ( (blo = read_map(rip, next)) == NO_BLOCK) return;
-  bhi = (block_t) (  ((blo>>scale)+1) << scale)   - 1;
+  bhi = (  ((blo>>scale)+1) << scale)   - 1;
 
   /* Clear all the blocks between 'blo' and 'bhi'. */
   for (b = blo; b <= bhi; b++) {
@@ -265,7 +265,6 @@ int flag;			/* 1 if called by new_block, 0 otherwise */
 	put_block(bp, FULL_DATA_BLOCK);
   }
 }
-
 
 /*===========================================================================*
  *				new_block				     *
@@ -284,28 +283,26 @@ off_t position;			/* file pointer */
   zone_t z;
   zone_t zone_size;
   int scale, r;
+  struct super_block *sp;
 
   /* Is another block available in the current zone? */
   if ( (b = read_map(rip, position)) == NO_BLOCK) {
-	if (rip->i_zsearch == NO_ZONE) {
-		/* First search for this file. Start looking from
-		 * the file's first data zone to prevent fragmentation
-		 */
-		if ( (z = rip->i_zone[0]) == NO_ZONE) {
-		 	/* No first zone for file either, let alloc_zone
-		 	 * decide. */
-			z = (zone_t) rip->i_sp->s_firstdatazone;
-		}
+	/* Choose first zone if possible. */
+	/* Lose if the file is nonempty but the first zone number is NO_ZONE
+	 * corresponding to a zone full of zeros.  It would be better to
+	 * search near the last real zone.
+	 */
+	if (rip->i_zone[0] == NO_ZONE) {
+		sp = rip->i_sp;
+		z = sp->s_firstdatazone;
 	} else {
-		/* searched before, start from last find */
-		z = rip->i_zsearch;
+		z = rip->i_zone[0];	/* hunt near first zone */
 	}
-	if ( (z = alloc_zone(rip->i_dev, z)) == NO_ZONE) return(NULL);
-	rip->i_zsearch = z;	/* store for next lookup */
+	if ( (z = alloc_zone(rip->i_dev, z)) == NO_ZONE) return(NIL_BUF);
 	if ( (r = write_map(rip, position, z, 0)) != OK) {
 		free_zone(rip->i_dev, z);
 		err_code = r;
-		return(NULL);
+		return(NIL_BUF);
 	}
 
 	/* If we are not writing at EOF, clear the zone, just to be safe. */
@@ -321,7 +318,6 @@ off_t position;			/* file pointer */
   return(bp);
 }
 
-
 /*===========================================================================*
  *				zero_block				     *
  *===========================================================================*/
@@ -329,9 +325,7 @@ PUBLIC void zero_block(bp)
 register struct buf *bp;	/* pointer to buffer to zero */
 {
 /* Zero a block. */
-  ASSERT(bp->b_bytes > 0);
-  ASSERT(bp->bp);
-  memset(bp->b_data, 0, (size_t) bp->b_bytes);
+  memset(bp->b_data, 0, _MAX_BLOCK_SIZE);
   bp->b_dirt = DIRTY;
 }
 

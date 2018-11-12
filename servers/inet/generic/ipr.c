@@ -195,7 +195,7 @@ ipaddr_t *nexthop;
 
 	oroute= oroute_find_ent(port_nr, dest);
 	if (!oroute || oroute->ort_dist > ttl)
-		return ENETUNREACH;
+		return EDSTNOTRCH;
 	if (msgsize && oroute->ort_mtu && 
 		oroute->ort_mtu < msgsize)
 	{
@@ -651,12 +651,11 @@ time_t timeout;
 	assert(result == NW_OK);
 }
 
-PUBLIC void ipr_mtu(
-  int port_nr,
-  ipaddr_t dest,
-  u16_t mtu,
-  time_t timeout
-)
+PUBLIC void ipr_mtu(port_nr, dest, mtu, timeout)
+int port_nr;
+ipaddr_t dest;
+u16_t mtu;
+time_t timeout;
 {
 	oroute_t *oroute;
 	int result;

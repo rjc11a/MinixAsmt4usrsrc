@@ -11,7 +11,7 @@
  *	I/O could be used as well but would result in poor performance.
  */
 
-#include <minix/drivers.h>
+#include "../drivers.h"
 
 #include <net/gen/ether.h>
 #include <net/gen/eth_io.h>
@@ -22,9 +22,7 @@
 
 #if ENABLE_3C503
 
-extern u32_t system_hz;
-
-#define MILLIS_TO_TICKS(m)  (((m)*system_hz/1000)+1)
+#define MILLIS_TO_TICKS(m)  (((m)*HZ/1000)+1)
 
 _PROTOTYPE(static void el2_init, (dpeth_t *dep));
 _PROTOTYPE(static void el2_stop, (dpeth_t *dep));
@@ -96,7 +94,7 @@ dpeth_t * dep;
   /* Set interrupt level for 3c503 */
   irq = (dep->de_irq &= ~DEI_DEFAULT);	/* Strip the default flag. */
   if (irq == 9) irq = 2;
-  if (irq < 2 || irq > 5) panic("bad 3c503 irq configuration: %d", irq);
+  if (irq < 2 || irq > 5) panic("", "bad 3c503 irq configuration", irq);
   outb_el2(dep, EL2_IDCFG, (0x04 << irq));
 
   outb_el2(dep, EL2_DRQCNT, 0x08);	/* Set burst size to 8 */

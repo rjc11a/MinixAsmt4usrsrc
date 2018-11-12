@@ -6,10 +6,8 @@
 #endif
 
 #ifndef _TYPES_H
-#include <minix/types.h>
+#include <sys/types.h>
 #endif
-
-#include <stdint.h>
 
 /* Type definitions. */
 typedef unsigned int vir_clicks; 	/*  virtual addr/length in clicks */
@@ -17,10 +15,8 @@ typedef unsigned long phys_bytes;	/* physical addr/length in bytes */
 typedef unsigned int phys_clicks;	/* physical addr/length in clicks */
 typedef int endpoint_t;			/* process identifier */
 
-typedef int32_t cp_grant_id_t;		/* A grant ID. */
-
 #if (_MINIX_CHIP == _CHIP_INTEL)
-typedef long unsigned int vir_bytes;	/* virtual addresses/lengths in bytes */
+typedef unsigned int vir_bytes;	/* virtual addresses and lengths in bytes */
 #endif
 
 #if (_MINIX_CHIP == _CHIP_M68000)
@@ -47,9 +43,22 @@ struct far_mem {
 
 /* Structure for virtual copying by means of a vector with requests. */
 struct vir_addr {
-  endpoint_t proc_nr_e;
+  int proc_nr_e;
   int segment;
   vir_bytes offset;
+};
+
+/* Memory allocation by PM. */
+struct hole {
+  struct hole *h_next;          /* pointer to next entry on the list */
+  phys_clicks h_base;           /* where does the hole begin? */
+  phys_clicks h_len;            /* how big is the hole? */
+};
+
+/* Memory info from PM. */
+struct pm_mem_info {
+	struct hole pmi_holes[_NR_HOLES];/* memory (un)allocations */
+	u32_t pmi_hi_watermark;		 /* highest ever-used click + 1 */
 };
 
 #define phys_cp_req vir_cp_req 
@@ -65,12 +74,12 @@ typedef struct {
 } iovec_t;
 
 typedef struct {
-  cp_grant_id_t iov_grant;	/* grant ID of an I/O buffer */
+  int iov_grant;		/* grant ID of an I/O buffer */
   vir_bytes iov_size;		/* sizeof an I/O buffer */
 } iovec_s_t;
 
 /* PM passes the address of a structure of this type to KERNEL when
- * sys_sigsend() is invoked as part of the signal catching mechanism.
+ * sys_sendsig() is invoked as part of the signal catching mechanism.
  * The structure contain all the information that KERNEL needs to build
  * the signal stack.
  */
@@ -89,18 +98,21 @@ struct kinfo {
   phys_bytes data_base;		/* base of kernel data */
   phys_bytes data_size;
   vir_bytes proc_addr;		/* virtual address of process table */
-  phys_bytes _kmem_base;	/* kernel memory layout (/dev/kmem) */
-  phys_bytes _kmem_size;
+  phys_bytes kmem_base;		/* kernel memory layout (/dev/kmem) */
+  phys_bytes kmem_size;
   phys_bytes bootdev_base;	/* boot device from boot image (/dev/boot) */
   phys_bytes bootdev_size;
   phys_bytes ramdev_base;	/* boot device from boot image (/dev/boot) */
   phys_bytes ramdev_size;
-  phys_bytes _params_base;	/* parameters passed by boot monitor */
-  phys_bytes _params_size;
+  phys_bytes params_base;	/* parameters passed by boot monitor */
+  phys_bytes params_size;
   int nr_procs;			/* number of user processes */
   int nr_tasks;			/* number of kernel tasks */
   char release[6];		/* kernel release number */
   char version[6];		/* kernel version number */
+#if DEBUG_LOCK_CHECK
+  int relocking;		/* interrupt locking depth (should be 0) */
+#endif
 };
 
 /* Load data accounted every this no. of seconds. */
@@ -127,8 +139,6 @@ struct machine {
   int padding;	/* used to be protected */
   int vdu_ega;
   int vdu_vga;
-  int apic_enabled; /* does the kernel use APIC or not? */
-  phys_bytes	acpi_rsdp; /* where is the acpi RSDP */
 };
 
 struct io_range
@@ -166,52 +176,4 @@ struct memory {
 	phys_bytes	size;
 };
 
-#define STATICINIT(v, n) \
-	if(!(v)) {	\
-		if(!((v) = alloc_contig(sizeof(*(v)) * (n), 0, NULL))) { \
-			panic("allocating " #v " failed: %d", n);	\
-		}	\
-	}
-
-/* The kernel outputs diagnostic messages in a circular buffer. */
-struct kmessages {
-  int km_next;                          /* next index to write */
-  int km_size;                          /* current size in buffer */
-  char km_buf[_KMESS_BUF_SIZE];          /* buffer for messages */
-};
-
-#include <minix/config.h>
-#include <machine/interrupt.h>
-
-/* randomness struct: random sources after interrupts: */
-#define RANDOM_SOURCES			16
-#define RANDOM_ELEMENTS			64
-
-typedef unsigned short rand_t;
-
-struct k_randomness {
-  int random_elements, random_sources;
-  struct k_randomness_bin {
-        int r_next;                             /* next index to write */
-        int r_size;                             /* number of random elements */
-        rand_t r_buf[RANDOM_ELEMENTS]; /* buffer for random info */
-  } bin[RANDOM_SOURCES];
-};
-
-/* information on PCI devices */
-
-#define PCIINFO_ENTRY_SIZE 80
-
-struct pciinfo_entry {
-	u16_t pie_vid;
-	u16_t pie_did;
-	char pie_name[PCIINFO_ENTRY_SIZE];
-};
-
-struct pciinfo {
-	size_t pi_count;
-	struct pciinfo_entry pi_entries[NR_PCIDEV];
-};
-
 #endif /* _TYPE_H */
-
